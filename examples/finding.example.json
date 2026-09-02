@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0.0",
+  "finding_id": "FIND-RUN001-001",
+  "run_id": "RUN-EXAMPLE-001",
+  "case_id": "VAD-PAUSE-800",
+  "title": "No false endpoint during 800ms pause",
+  "severity": "P3",
+  "status": "confirmed",
+  "description": "The device waited through the planned 800ms intra-utterance pause and responded only after the full tester utterance ended.",
+  "expected_behavior": "Device must not start speaking during the planned pause.",
+  "actual_behavior": "Device speech began after the tester completed the second segment.",
+  "confidence": 0.98,
+  "suspected_layers": ["unknown"],
+  "requires_log_verification": false,
+  "metric_ids": ["METRIC-RUN001-LATENCY"],
+  "evidence": [
+    {
+      "artifact_id": "ART-REC-001",
+      "event_ids": ["EVT-002", "EVT-003"],
+      "start_ms": 1000,
+      "end_ms": 5480,
+      "transcript_excerpt": "我想问你一个问题……为什么天空是蓝色的"
+    }
+  ],
+  "regression_case_candidate": false
+}
