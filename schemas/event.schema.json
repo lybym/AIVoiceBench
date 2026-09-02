@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/event.schema.json",
+  "title": "AIVoiceBench Event",
+  "type": "object",
+  "required": ["schema_version", "event_id", "run_id", "case_id", "type", "start_ms", "source", "evidence"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0.0"},
+    "event_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "case_id": {"type": "string"},
+    "turn_id": {"type": ["string", "null"]},
+    "type": {
+      "enum": [
+        "tester_speech_start", "tester_speech_end",
+        "device_speech_start", "device_speech_end",
+        "interrupt_start", "interrupt_end",
+        "overlap_start", "overlap_end",
+        "timeout", "disconnect", "reconnect",
+        "asr_segment", "custom"
+      ]
+    },
+    "start_ms": {"type": "number", "minimum": 0},
+    "end_ms": {"type": ["number", "null"], "minimum": 0},
+    "source": {"enum": ["audio_signal", "asr", "device_log", "manual_annotation", "derived"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
+    "payload": {"type": "object", "additionalProperties": true},
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["artifact_id"],
+        "properties": {
+          "artifact_id": {"type": "string"},
+          "track": {"type": ["string", "null"]},
+          "start_ms": {"type": ["number", "null"]},
+          "end_ms": {"type": ["number", "null"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
