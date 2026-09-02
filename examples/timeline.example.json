@@ -1,0 +1,48 @@
+{
+  "run_id": "RUN-EXAMPLE-001",
+  "case_id": "VAD-PAUSE-800",
+  "events": [
+    {
+      "schema_version": "1.0.0",
+      "event_id": "EVT-001",
+      "run_id": "RUN-EXAMPLE-001",
+      "case_id": "VAD-PAUSE-800",
+      "turn_id": "TURN-001",
+      "type": "tester_speech_start",
+      "start_ms": 1000,
+      "end_ms": null,
+      "source": "audio_signal",
+      "confidence": 1.0,
+      "payload": {},
+      "evidence": [{"artifact_id": "ART-STIM-001", "track": "stimulus", "start_ms": 1000, "end_ms": null}]
+    },
+    {
+      "schema_version": "1.0.0",
+      "event_id": "EVT-002",
+      "run_id": "RUN-EXAMPLE-001",
+      "case_id": "VAD-PAUSE-800",
+      "turn_id": "TURN-001",
+      "type": "tester_speech_end",
+      "start_ms": 4100,
+      "end_ms": null,
+      "source": "audio_signal",
+      "confidence": 1.0,
+      "payload": {},
+      "evidence": [{"artifact_id": "ART-STIM-001", "track": "stimulus", "start_ms": 4100, "end_ms": null}]
+    },
+    {
+      "schema_version": "1.0.0",
+      "event_id": "EVT-003",
+      "run_id": "RUN-EXAMPLE-001",
+      "case_id": "VAD-PAUSE-800",
+      "turn_id": "TURN-001",
+      "type": "device_speech_start",
+      "start_ms": 5480,
+      "end_ms": null,
+      "source": "audio_signal",
+      "confidence": 0.98,
+      "payload": {},
+      "evidence": [{"artifact_id": "ART-REC-001", "track": "device", "start_ms": 5480, "end_ms": null}]
+    }
+  ]
+}
