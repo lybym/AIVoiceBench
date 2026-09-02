@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/metric.schema.json",
+  "title": "AIVoiceBench MetricResult",
+  "type": "object",
+  "required": ["schema_version", "metric_id", "run_id", "case_id", "name", "value", "status", "measurement_scope", "method", "evidence"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0.0"},
+    "metric_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "case_id": {"type": "string"},
+    "name": {"type": "string"},
+    "value": {"type": ["number", "string", "boolean", "null"]},
+    "unit": {"type": ["string", "null"]},
+    "status": {"enum": ["pass", "fail", "warn", "not_applicable", "insufficient_evidence"]},
+    "threshold": {"type": ["object", "null"], "additionalProperties": true},
+    "measurement_scope": {"enum": ["black_box", "white_box", "hybrid"]},
+    "method": {"enum": ["deterministic", "ground_truth_comparison", "llm_judge", "manual"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
+    "aggregation": {"type": ["string", "null"]},
+    "notes": {"type": "string"},
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "artifact_id": {"type": "string"},
+          "event_ids": {"type": "array", "items": {"type": "string"}},
+          "start_ms": {"type": ["number", "null"]},
+          "end_ms": {"type": ["number", "null"]}
+        },
+        "required": ["artifact_id"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
