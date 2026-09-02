@@ -1,0 +1,31 @@
+schema_version: "1.0.0"
+case_id: "VAD-PAUSE-800"
+case_version: "1.0.0"
+name: "800ms natural pause without false endpoint"
+description: "Verify that an 800ms intra-utterance pause does not cause the device to answer before the tester resumes."
+category:
+  level1: "speech_chain"
+  level2: "vad_endpoint"
+  level3: "false_endpoint"
+mode: "fixed_audio"
+stimulus:
+  segments:
+    - type: "tts"
+      text: "我想问你一个问题"
+      asset_id: "tts_seg_vad_common_a"
+    - type: "silence"
+      duration_ms: 800
+    - type: "tts"
+      text: "为什么天空是蓝色的"
+      asset_id: "tts_seg_vad_common_b"
+expected:
+  device_must_not_speak_during_pause: true
+metrics:
+  - "false_endpoint"
+  - "e2e_first_audio_latency_ms"
+repeat: 5
+environment_profile: "quiet_1m_front"
+tags:
+  - "golden"
+  - "vad"
+  - "endpoint"
