@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0.0",
+  "metric_id": "METRIC-RUN001-LATENCY",
+  "run_id": "RUN-EXAMPLE-001",
+  "case_id": "VAD-PAUSE-800",
+  "name": "e2e_first_audio_latency_ms",
+  "value": 1380,
+  "unit": "ms",
+  "status": "pass",
+  "threshold": {"operator": "<=", "value": 2000},
+  "measurement_scope": "black_box",
+  "method": "deterministic",
+  "confidence": 0.98,
+  "aggregation": null,
+  "notes": "Computed from tester_speech_end to device_speech_start.",
+  "evidence": [
+    {
+      "artifact_id": "ART-REC-001",
+      "event_ids": ["EVT-002", "EVT-003"],
+      "start_ms": 4100,
+      "end_ms": 5480
+    }
+  ]
+}
