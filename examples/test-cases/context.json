@@ -1,21 +1,21 @@
 {
   "schema_version": "2.0.0",
-  "case_id": "VAD-PAUSE-800",
+  "case_id": "CTX-FACT-001",
   "case_version": "2.0.0",
-  "name": "VAD-PAUSE-800 contract fixture",
+  "name": "CTX-FACT-001 contract fixture",
   "category": {
-    "level1": "L1",
-    "level2": "vad_endpoint"
+    "level1": "L3",
+    "level2": "context"
   },
   "capability_refs": [
-    "vad_endpoint"
+    "context"
   ],
-  "mode": "fixed_audio",
+  "mode": "multi_turn",
   "stimulus": {
     "assets": [
       {
-        "asset_id": "vad_a",
-        "path": "assets/vad_a.wav",
+        "asset_id": "ctx_1",
+        "path": "assets/ctx_1.wav",
         "asset_version": "1.0.0",
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
         "format": {
@@ -35,8 +35,8 @@
         }
       },
       {
-        "asset_id": "vad_b",
-        "path": "assets/vad_b.wav",
+        "asset_id": "ctx_2",
+        "path": "assets/ctx_2.wav",
         "asset_version": "1.0.0",
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
         "format": {
@@ -56,21 +56,34 @@
         }
       }
     ],
-    "segments": [
+    "turns": [
       {
-        "type": "tts",
-        "asset_id": "vad_a",
-        "text": "我想问你一个问题"
+        "turn_id": "turn_1",
+        "segments": [
+          {
+            "type": "audio_asset",
+            "asset_id": "ctx_1"
+          }
+        ],
+        "wait_for": {
+          "event": "device_speech_end",
+          "timeout_ms": 15000,
+          "on_timeout": "block"
+        }
       },
       {
-        "type": "silence",
-        "sample_count": 12800,
-        "sample_rate_hz": 16000
-      },
-      {
-        "type": "tts",
-        "asset_id": "vad_b",
-        "text": "为什么天空是蓝色的"
+        "turn_id": "turn_2",
+        "segments": [
+          {
+            "type": "audio_asset",
+            "asset_id": "ctx_2"
+          }
+        ],
+        "wait_for": {
+          "event": "device_speech_end",
+          "timeout_ms": 15000,
+          "on_timeout": "block"
+        }
       }
     ]
   },
@@ -78,21 +91,20 @@
     "assertions": [
       {
         "assertion_id": "A1",
-        "evaluator": "deterministic",
-        "metric_id": "false_endpoint",
-        "operator": "eq",
-        "value": false
+        "evaluator": "llm_judge",
+        "metric_id": "context_success",
+        "rubric": "First turn states 我的猫叫小米. Second asks 我的猫叫什么. Response should recall 小米; cite both turns.",
+        "requires_human_review": true
       }
     ]
   },
   "metrics": [
-    "false_endpoint"
+    "context_success"
   ],
   "case_timeout_ms": 60000,
   "tags": [
     "synthetic",
     "contract-fixture"
   ],
-  "notes": "Synthetic contract example. Asset hashes are placeholders; no audio exists and no HIL result is claimed.",
-  "description": "800 ms planned intra-utterance pause; example case condition, not an approved universal threshold."
+  "notes": "Synthetic contract example. Asset hashes are placeholders; no audio exists and no HIL result is claimed."
 }

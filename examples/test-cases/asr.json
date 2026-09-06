@@ -1,0 +1,66 @@
+{
+  "schema_version": "2.0.0",
+  "case_id": "ASR-NUMBERS-001",
+  "case_version": "2.0.0",
+  "name": "ASR-NUMBERS-001 contract fixture",
+  "category": {
+    "level1": "L1",
+    "level2": "asr"
+  },
+  "capability_refs": [
+    "asr"
+  ],
+  "mode": "fixed_audio",
+  "stimulus": {
+    "assets": [
+      {
+        "asset_id": "asr_numbers",
+        "path": "assets/asr_numbers.wav",
+        "asset_version": "1.0.0",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "format": {
+          "container": "wav",
+          "encoding": "PCM_S16LE",
+          "sample_rate_hz": 16000,
+          "channels": 1
+        },
+        "provenance": {
+          "provider": "fixture-only",
+          "model": "not-generated",
+          "voice": "not-generated",
+          "config": {
+            "fixture": true
+          },
+          "generator_version": "1.0.0"
+        }
+      }
+    ],
+    "segments": [
+      {
+        "type": "audio_asset",
+        "asset_id": "asr_numbers"
+      }
+    ]
+  },
+  "expected": {
+    "assertions": [
+      {
+        "assertion_id": "A1",
+        "evaluator": "deterministic",
+        "metric_id": "asr_cer",
+        "operator": "eq",
+        "value": 0
+      }
+    ],
+    "reference_text": "请记住型号AB12，日期是九月六日"
+  },
+  "metrics": [
+    "asr_cer"
+  ],
+  "case_timeout_ms": 60000,
+  "tags": [
+    "synthetic",
+    "contract-fixture"
+  ],
+  "notes": "Synthetic contract example. Asset hashes are placeholders; no audio exists and no HIL result is claimed. Device ASR accuracy requires device transcript evidence; external ASR is not that truth."
+}

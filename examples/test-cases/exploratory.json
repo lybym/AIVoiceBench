@@ -1,0 +1,44 @@
+{
+  "schema_version": "2.0.0",
+  "case_id": "EXP-CONTEXT-001",
+  "case_version": "2.0.0",
+  "name": "EXP-CONTEXT-001 contract fixture",
+  "category": {
+    "level1": "L3",
+    "level2": "context"
+  },
+  "capability_refs": [
+    "context"
+  ],
+  "mode": "exploratory_agent",
+  "stimulus": {
+    "agent": {
+      "provider": "configure-at-runtime",
+      "model": "verify-before-use",
+      "config_profile": "exploration-local",
+      "instructions": "Explore recall failures without real personal information.",
+      "max_turns": 5,
+      "max_duration_ms": 45000
+    }
+  },
+  "expected": {
+    "assertions": [
+      {
+        "assertion_id": "A1",
+        "evaluator": "llm_judge",
+        "metric_id": "context_success",
+        "rubric": "Compare response against earlier supplied facts; retain evidence before proposing a regression candidate.",
+        "requires_human_review": true
+      }
+    ]
+  },
+  "metrics": [
+    "context_success"
+  ],
+  "case_timeout_ms": 60000,
+  "tags": [
+    "synthetic",
+    "contract-fixture"
+  ],
+  "notes": "Synthetic contract example. Asset hashes are placeholders; no audio exists and no HIL result is claimed."
+}

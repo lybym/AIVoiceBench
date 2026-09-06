@@ -1,21 +1,21 @@
 {
   "schema_version": "2.0.0",
-  "case_id": "VAD-PAUSE-800",
+  "case_id": "BARGE-001",
   "case_version": "2.0.0",
-  "name": "VAD-PAUSE-800 contract fixture",
+  "name": "BARGE-001 contract fixture",
   "category": {
-    "level1": "L1",
-    "level2": "vad_endpoint"
+    "level1": "L2",
+    "level2": "barge_in"
   },
   "capability_refs": [
-    "vad_endpoint"
+    "barge_in"
   ],
-  "mode": "fixed_audio",
+  "mode": "interactive",
   "stimulus": {
     "assets": [
       {
-        "asset_id": "vad_a",
-        "path": "assets/vad_a.wav",
+        "asset_id": "barge_prompt",
+        "path": "assets/barge_prompt.wav",
         "asset_version": "1.0.0",
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
         "format": {
@@ -35,8 +35,8 @@
         }
       },
       {
-        "asset_id": "vad_b",
-        "path": "assets/vad_b.wav",
+        "asset_id": "barge_interrupt",
+        "path": "assets/barge_interrupt.wav",
         "asset_version": "1.0.0",
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
         "format": {
@@ -56,43 +56,45 @@
         }
       }
     ],
-    "segments": [
+    "prompt": [
       {
-        "type": "tts",
-        "asset_id": "vad_a",
-        "text": "我想问你一个问题"
-      },
-      {
-        "type": "silence",
-        "sample_count": 12800,
-        "sample_rate_hz": 16000
-      },
-      {
-        "type": "tts",
-        "asset_id": "vad_b",
-        "text": "为什么天空是蓝色的"
+        "type": "audio_asset",
+        "asset_id": "barge_prompt"
       }
-    ]
+    ],
+    "interruption": [
+      {
+        "type": "audio_asset",
+        "asset_id": "barge_interrupt"
+      }
+    ],
+    "trigger": {
+      "event": "device_speech_start",
+      "offset_ms": 500,
+      "timeout_ms": 15000,
+      "require_active_device_speech": true,
+      "on_timeout": "block",
+      "on_early_speech_end": "block"
+    }
   },
   "expected": {
     "assertions": [
       {
         "assertion_id": "A1",
-        "evaluator": "deterministic",
-        "metric_id": "false_endpoint",
-        "operator": "eq",
-        "value": false
+        "evaluator": "llm_judge",
+        "metric_id": "barge_in_success",
+        "rubric": "Combine measured old-response stop with evidence that the new user intent is answered; missing either is insufficient evidence.",
+        "requires_human_review": true
       }
     ]
   },
   "metrics": [
-    "false_endpoint"
+    "barge_in_success"
   ],
   "case_timeout_ms": 60000,
   "tags": [
     "synthetic",
     "contract-fixture"
   ],
-  "notes": "Synthetic contract example. Asset hashes are placeholders; no audio exists and no HIL result is claimed.",
-  "description": "800 ms planned intra-utterance pause; example case condition, not an approved universal threshold."
+  "notes": "Synthetic contract example. Asset hashes are placeholders; no audio exists and no HIL result is claimed."
 }

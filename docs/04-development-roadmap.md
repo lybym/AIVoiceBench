@@ -1,5 +1,7 @@
 # Development Roadmap
 
+Final acceptance: Windows executable or installer, verified local startup and complete test/analysis workflow with configuration and usage instructions. Local execution may call configured online providers; no cloud cluster is mandatory. Continuously push source, tests, schemas, build configuration and docs through Issue PRs without automatic merge. CLI MVP is an intermediate milestone. Detailed scope: `05-project-context.md`; actual progress: `06-work-log.md`.
+
 ## Phase 0 - Contracts and methodology
 
 Goal: stabilize the vocabulary and data contracts before building UI or infrastructure.
@@ -36,11 +38,11 @@ Planned capabilities:
 
 Exit criteria:
 
-At least 20-30 real cases can be run repeatedly and compared between two device/software versions.
+A small versioned set covering VAD, ASR, latency, barge-in and context runs through the chain. Record actual hardware coverage and missing provider/hardware inputs; synthetic dry-run is separate. The historical 20-30 count is a planning reference, not an approved minimum. Two-version comparisons are verified when both versions are available.
 
-## Phase 2 - Control Plane
+## Phase 2 - Local application and Control Plane
 
-Goal: persist and manage tests as a platform.
+Goal: persist and manage tests through a complete locally usable Windows program. Provide Case/run management, local configuration, reports/evidence browsing and documented startup. Choose and verify a Windows packaging approach, dependencies and external tools; produce an executable or installer and test local startup/full workflow. Keep central/Edge deployment optional.
 
 Suggested stack:
 
@@ -48,6 +50,8 @@ Suggested stack:
 - PostgreSQL
 - React/Next.js
 - local filesystem initially, S3/MinIO later
+
+These are expansion choices, not mandatory local services. Introduce dependencies only when the current stage requires them; a lightweight local persistence option should support the packaged product.
 
 Core entities:
 

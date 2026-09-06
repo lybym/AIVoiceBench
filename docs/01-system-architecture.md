@@ -2,6 +2,8 @@
 
 ## Target architecture
 
+Local Windows execution is the default deployment. Package the controller, station, local storage and user-facing management into a locally startable program. The diagram describes logical modules and later distributed expansion; it does not require cloud services or a service cluster for local use. Add online provider adapters through local configuration. Packaging choice and external binaries must be verified at the delivery phase.
+
 ```text
 Web Control Plane
   Projects / Devices / Versions / Cases / Suites / Runs / Reports
@@ -11,7 +13,7 @@ Web Control Plane
                 |
       +---------+----------+
       |         |          |
- Fixed Audio  Multi-turn  Exploratory Agent
+ Fixed/Interactive Audio  Multi-turn  Exploratory Agent
       |         |          |
       +---------+----------+
                 v
