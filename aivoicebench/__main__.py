@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from .validation import case_errors, load_document
+from .validation import case_errors, load_document, timeline_errors
 
 
 def main(argv=None):
@@ -12,11 +12,13 @@ def main(argv=None):
     subparsers = parser.add_subparsers(dest='command', required=True)
     validate = subparsers.add_parser('validate', help='Validate TestCase JSON/YAML without hardware or network')
     validate.add_argument('paths', nargs='+', type=Path)
+    validate.add_argument('--kind', choices=['test-case', 'timeline'], default='test-case')
     args = parser.parse_args(argv)
     failures = 0
     for path in args.paths:
         try:
-            errors = case_errors(load_document(path))
+            checker = case_errors if args.kind == 'test-case' else timeline_errors
+            errors = checker(load_document(path))
         except (OSError, ValueError) as error:
             errors = [str(error)]
         except Exception as error:

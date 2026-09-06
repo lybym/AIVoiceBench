@@ -37,3 +37,29 @@ Assertions have unique IDs and must reference the case's `metrics`. `eq` support
 ### Offline validation
 
 `python -m aivoicebench validate <case.json> [case.yaml ...]` checks JSON Schema Draft 2020-12 plus reference/timing/uniqueness invariants. Invalid input exits 1 with file and object path. Duplicate YAML/JSON keys and unsafe YAML tags are rejected. Validation is local, requires no credentials and does not execute audio. It does not certify that an asset exists or that a case passed on hardware.
+
+## Event / EventTimeline 2.0.0 and Evidence 1.0.0 (Issue #2)
+
+The seed Timeline wrapper was not governed by a schema. `event-timeline.schema.json` now governs run/case/attempt identity, version snapshots, tracks, artifacts, evidence catalog, ordered events and gaps. `event.schema.json` governs one event. Evidence becomes its own reusable contract ahead of Finding integration in #4. Seed inline artifact snippets migrate to `evidence` catalog entries plus `evidence_ids`. Never silently treat old seed examples as a measured capture.
+
+### Time and tracks
+
+All Event/Evidence/gap times are finite, nonnegative milliseconds from a documented run monotonic origin. Wall-clock time is not used for duration arithmetic. Boundaries are point events (`end_ms == start_ms`); ASR/custom intervals may span time. Intervals use `[start, end)` for duration arithmetic, while point evidence at a boundary is allowed.
+
+Each audio artifact references one logical recording track, with an explicit clock ID/sample rate and sync metadata. `run_ms = sample_index * 1000 / sample_rate_hz + offset_ms`; drift and uncertainty bound cross-track calculations. `duration_ms` is artifact-local elapsed duration; evidence offsets are always run-relative. Multichannel files may be exposed as separate logical track artifacts. `uncalibrated` uses null offsets/uncertainty/drift; consumers must not subtract unrelated clocks. `synthetic` calibration and artifacts cannot be relabeled a hardware run. Calibration measurement/verification belongs to #6; schema validation is not calibration.
+
+Hardware runs require stimulus/device-output track declarations and non-null device/hardware/firmware/model/Prompt/environment snapshots. Runtime additionally verifies actual recorded channels, version values and hash manifests. Blocked/dry-run/imported/synthetic runs can record unknown metadata as null, rather than inventing versions.
+
+### Ordering, association and missing evidence
+
+Events are in nondecreasing `start_ms` order. For equal times the serialized array order is the stable tie-break; no implicit event priority is inferred. Start/end pairs use type + turn ID + response ID. Device speech requires both turn and response; interrupted old and new responses use distinct response IDs. Tester pauses can close/reopen speech within one turn. Complete timelines cannot have unmatched pairs. Partial timelines may retain observed unmatched boundaries with explicit gaps; never generate a missing start/end to make the structure look complete. A blocked timeline can have zero events/evidence and a reason plus required evidence.
+
+`planned_pause_*` represents declared stimulus timing, not an observed device-internal VAD state. `controller` captures scheduling/execution records; measured acoustic onsets should cite audio. `asr_segment` requires text and producer profile identifying the external ASR configuration. It must not be labeled internal device ASR unless supported by an explicit device-log source. `custom` requires a namespaced custom name. New core event types require versioned taxonomy changes instead of arbitrary payload fields.
+
+### Source, scope and confidence
+
+Allowed sources: audio_signal, asr, device_log, manual_annotation, controller, derived. White-box events require device-log sources and device-log artifacts. External audio/ASR/manual/controller/derived observations remain black-box in this version; derived internal-log analysis needs a separately designed provenance contract. Do not use black-box events to name internal VAD/ASR/LLM/TTS stages.
+
+Confidence is required in [0,1] with no default. It expresses producer confidence in annotation/source association, not a statistically calibrated probability or measurement precision. Preserve timestamp uncertainty in sync metadata separately. Evidence must resolve to an artifact/track, have a valid interval, and cover the event it supports. Missing confidence is invalid; uncertain observations may carry low confidence, while absent observations belong in gaps.
+
+Run `python -m aivoicebench validate --kind timeline <timeline.json>`. It checks shape, finite values, identities, ordering, pair association, references and mapped artifact bounds. Physical files/hash accuracy, calibration and observational truth are runtime checks, not guaranteed by this validator.
