@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from .validation import case_errors, load_document, timeline_errors
+from .validation import case_errors, load_document, timeline_errors, metric_errors
 
 
 def main(argv=None):
@@ -12,13 +12,19 @@ def main(argv=None):
     subparsers = parser.add_subparsers(dest='command', required=True)
     validate = subparsers.add_parser('validate', help='Validate TestCase JSON/YAML without hardware or network')
     validate.add_argument('paths', nargs='+', type=Path)
-    validate.add_argument('--kind', choices=['test-case', 'timeline'], default='test-case')
+    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric'], default='test-case')
+    validate.add_argument('--timeline', type=Path, help='Required context for metric references')
     args = parser.parse_args(argv)
+    if args.kind == 'metric' and args.timeline is None:
+        parser.error('--kind metric requires --timeline')
     failures = 0
     for path in args.paths:
         try:
-            checker = case_errors if args.kind == 'test-case' else timeline_errors
-            errors = checker(load_document(path))
+            if args.kind == 'metric':
+                errors = metric_errors(load_document(path), load_document(args.timeline))
+            else:
+                checker = case_errors if args.kind == 'test-case' else timeline_errors
+                errors = checker(load_document(path))
         except (OSError, ValueError) as error:
             errors = [str(error)]
         except Exception as error:

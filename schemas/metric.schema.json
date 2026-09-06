@@ -1,38 +1,619 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aivoicebench.local/schemas/metric.schema.json",
-  "title": "AIVoiceBench MetricResult",
+  "title": "MetricResult 2.0.0",
   "type": "object",
-  "required": ["schema_version", "metric_id", "run_id", "case_id", "name", "value", "status", "measurement_scope", "method", "evidence"],
   "properties": {
-    "schema_version": {"type": "string", "const": "1.0.0"},
-    "metric_id": {"type": "string"},
-    "run_id": {"type": "string"},
-    "case_id": {"type": "string"},
-    "name": {"type": "string"},
-    "value": {"type": ["number", "string", "boolean", "null"]},
-    "unit": {"type": ["string", "null"]},
-    "status": {"enum": ["pass", "fail", "warn", "not_applicable", "insufficient_evidence"]},
-    "threshold": {"type": ["object", "null"], "additionalProperties": true},
-    "measurement_scope": {"enum": ["black_box", "white_box", "hybrid"]},
-    "method": {"enum": ["deterministic", "ground_truth_comparison", "llm_judge", "manual"]},
-    "confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
-    "aggregation": {"type": ["string", "null"]},
-    "notes": {"type": "string"},
-    "evidence": {
+    "schema_version": {
+      "const": "2.0.0"
+    },
+    "metric_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "name": {
+      "enum": [
+        "e2e_first_audio_latency_ms",
+        "semantic_response_latency_ms",
+        "barge_in_stop_latency_ms",
+        "overlap_duration_ms",
+        "false_endpoint",
+        "barge_in_success",
+        "barge_in_stop_success",
+        "barge_in_new_response_success",
+        "context_success",
+        "instruction_success",
+        "internal_vad_latency_ms",
+        "internal_asr_latency_ms",
+        "internal_llm_latency_ms",
+        "internal_tts_latency_ms",
+        "aec_erle_db",
+        "asr_cer",
+        "timeout_rate",
+        "false_endpoint_rate",
+        "barge_in_success_rate",
+        "context_success_rate",
+        "instruction_success_rate"
+      ]
+    },
+    "definition_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "execution_kind": {
+      "enum": [
+        "hardware",
+        "dry_run",
+        "synthetic",
+        "imported"
+      ]
+    },
+    "value": {
+      "type": [
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "unit": {
+      "enum": [
+        "ms",
+        "ratio",
+        "boolean",
+        "dB"
+      ]
+    },
+    "status": {
+      "enum": [
+        "observed",
+        "pass",
+        "fail",
+        "not_applicable",
+        "insufficient_evidence"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "measurement_scope": {
+      "enum": [
+        "black_box",
+        "white_box",
+        "hybrid"
+      ]
+    },
+    "method": {
+      "enum": [
+        "deterministic",
+        "ground_truth_comparison",
+        "llm_judge",
+        "manual",
+        "composite"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "evidence_ids": {
       "type": "array",
       "items": {
-        "type": "object",
-        "properties": {
-          "artifact_id": {"type": "string"},
-          "event_ids": {"type": "array", "items": {"type": "string"}},
-          "start_ms": {"type": ["number", "null"]},
-          "end_ms": {"type": ["number", "null"]}
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "event_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "threshold": {
+      "type": "object",
+      "properties": {
+        "operator": {
+          "enum": [
+            "eq",
+            "lt",
+            "lte",
+            "gt",
+            "gte"
+          ]
         },
-        "required": ["artifact_id"],
-        "additionalProperties": false
-      }
+        "value": {
+          "type": [
+            "number",
+            "boolean"
+          ]
+        },
+        "policy_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
+        "policy_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "source": {
+          "enum": [
+            "case",
+            "release_gate"
+          ]
+        }
+      },
+      "required": [
+        "operator",
+        "value",
+        "policy_id",
+        "policy_version",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "aggregation": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "single",
+            "percentile",
+            "rate",
+            "micro"
+          ]
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "excluded_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "percentile": {
+          "enum": [
+            50,
+            90,
+            95,
+            99
+          ]
+        },
+        "algorithm": {
+          "enum": [
+            "single",
+            "R7",
+            "eligible_ratio",
+            "micro_cer"
+          ]
+        },
+        "input_metric_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "kind",
+        "sample_count",
+        "total_count",
+        "excluded_count",
+        "algorithm",
+        "input_metric_ids"
+      ],
+      "additionalProperties": false
+    },
+    "judge_profile": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
     }
   },
-  "additionalProperties": false
+  "required": [
+    "schema_version",
+    "metric_id",
+    "run_id",
+    "case_id",
+    "name",
+    "definition_version",
+    "execution_kind",
+    "value",
+    "unit",
+    "status",
+    "measurement_scope",
+    "method",
+    "confidence",
+    "evidence_ids",
+    "event_ids",
+    "aggregation"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "not_applicable",
+              "insufficient_evidence"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "value": {
+            "type": "null"
+          },
+          "aggregation": {
+            "properties": {
+              "sample_count": {
+                "const": 0
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "value": {
+            "type": [
+              "number",
+              "boolean"
+            ]
+          },
+          "evidence_ids": {
+            "minItems": 1
+          },
+          "aggregation": {
+            "properties": {
+              "sample_count": {
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "pass",
+              "fail"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "threshold"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "observed"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "threshold"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "name": {
+            "enum": [
+              "e2e_first_audio_latency_ms",
+              "semantic_response_latency_ms",
+              "barge_in_stop_latency_ms",
+              "overlap_duration_ms"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "ms"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "measurement_scope": {
+            "const": "black_box"
+          },
+          "method": {
+            "const": "deterministic"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "name": {
+            "enum": [
+              "false_endpoint",
+              "barge_in_success",
+              "barge_in_stop_success",
+              "barge_in_new_response_success",
+              "context_success",
+              "instruction_success"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "boolean"
+          },
+          "value": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "name": {
+            "const": "asr_cer"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "ratio"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "measurement_scope": {
+            "const": "white_box"
+          },
+          "method": {
+            "const": "ground_truth_comparison"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "name": {
+            "const": "timeout_rate"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "ratio"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "method": {
+            "const": "deterministic"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "name": {
+            "enum": [
+              "internal_vad_latency_ms",
+              "internal_asr_latency_ms",
+              "internal_llm_latency_ms",
+              "internal_tts_latency_ms",
+              "aec_erle_db"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "measurement_scope": {
+            "const": "white_box"
+          },
+          "method": {
+            "const": "deterministic"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "name": {
+            "enum": [
+              "internal_vad_latency_ms",
+              "internal_asr_latency_ms",
+              "internal_llm_latency_ms",
+              "internal_tts_latency_ms"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "ms"
+          },
+          "value": {
+            "minimum": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "name": {
+            "const": "aec_erle_db"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "dB"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "name": {
+            "enum": [
+              "false_endpoint",
+              "barge_in_stop_success"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "method": {
+            "const": "deterministic"
+          },
+          "measurement_scope": {
+            "const": "black_box"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "name": {
+            "const": "barge_in_success"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "method": {
+            "const": "composite"
+          },
+          "measurement_scope": {
+            "const": "black_box"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "method": {
+            "const": "llm_judge"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "judge_profile"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "name": {
+            "enum": [
+              "false_endpoint_rate",
+              "barge_in_success_rate",
+              "context_success_rate",
+              "instruction_success_rate"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "ratio"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "method": {
+            "const": "deterministic"
+          },
+          "aggregation": {
+            "properties": {
+              "kind": {
+                "const": "rate"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

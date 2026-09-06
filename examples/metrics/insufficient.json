@@ -1,31 +1,26 @@
 {
   "schema_version": "2.0.0",
-  "metric_id": "METRIC-RUN001-LATENCY",
-  "run_id": "RUN-EXAMPLE-001",
-  "case_id": "VAD-PAUSE-800",
+  "metric_id": "METRIC-BLOCKED",
+  "run_id": "RUN-BLOCKED-001",
+  "case_id": "LAT-FIRST-001",
   "name": "e2e_first_audio_latency_ms",
   "definition_version": "1.0.0",
   "execution_kind": "synthetic",
-  "value": 1380,
+  "value": null,
   "unit": "ms",
-  "status": "observed",
+  "status": "insufficient_evidence",
   "measurement_scope": "black_box",
   "method": "deterministic",
-  "confidence": 0.9,
-  "evidence_ids": [
-    "EVD-EVT-006",
-    "EVD-EVT-007"
-  ],
-  "event_ids": [
-    "EVT-006",
-    "EVT-007"
-  ],
+  "confidence": 0,
+  "evidence_ids": [],
+  "event_ids": [],
   "aggregation": {
     "kind": "single",
-    "sample_count": 1,
+    "sample_count": 0,
     "total_count": 1,
-    "excluded_count": 0,
+    "excluded_count": 1,
     "algorithm": "single",
     "input_metric_ids": []
-  }
+  },
+  "reason": "No recorded device output; cannot calculate latency"
 }

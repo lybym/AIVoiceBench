@@ -63,3 +63,9 @@ Allowed sources: audio_signal, asr, device_log, manual_annotation, controller, d
 Confidence is required in [0,1] with no default. It expresses producer confidence in annotation/source association, not a statistically calibrated probability or measurement precision. Preserve timestamp uncertainty in sync metadata separately. Evidence must resolve to an artifact/track, have a valid interval, and cover the event it supports. Missing confidence is invalid; uncertain observations may carry low confidence, while absent observations belong in gaps.
 
 Run `python -m aivoicebench validate --kind timeline <timeline.json>`. It checks shape, finite values, identities, ordering, pair association, references and mapped artifact bounds. Physical files/hash accuracy, calibration and observational truth are runtime checks, not guaranteed by this validator.
+
+## MetricResult 2.0.0 (Issue #3)
+
+Migrates inline evidence to Evidence IDs with explicit supporting event IDs. Adds definition_version, execution_kind, structured aggregation/counts/input metric references and traceable threshold policy. Replaces seed string/null values and ambiguous aggregation strings. `observed` represents measurements without a threshold; pass/fail requires a consistent configured comparison. Missing/ineligible results require reason plus null value. White-box metrics require device-log Evidence when linked to a Timeline. No precise technical timing from an LLM.
+
+Validate with `python -m aivoicebench validate --kind metric --timeline examples/timeline.example.json examples/metrics.example.json`. Aggregate input IDs resolve in the future report container; this command checks one Timeline's evidence. Definition/formula details and calculation examples are in `03-metric-definition.md`. Reference arithmetic is implemented/tested; capture/event selection remains #8.

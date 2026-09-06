@@ -196,3 +196,64 @@ def timeline_errors(timeline):
         if gap['end_ms'] < gap['start_ms']:
             errors.append('/gaps: end_ms precedes start_ms')
     return errors
+
+
+def metric_errors(metric, timeline=None):
+    errors = schema_errors(metric, 'metric')
+    if errors:
+        return errors
+    aggregation = metric['aggregation']
+    n = aggregation['sample_count']
+    if n + aggregation['excluded_count'] != aggregation['total_count']:
+        errors.append('/aggregation: sample_count + excluded_count must equal total_count')
+    algorithms = {'single': 'single', 'percentile': 'R7', 'rate': 'eligible_ratio', 'micro': 'micro_cer'}
+    if aggregation['algorithm'] != algorithms[aggregation['kind']]:
+        errors.append('/aggregation/algorithm: incompatible with kind')
+    if aggregation['kind'] == 'single' and (n > 1 or aggregation['total_count'] != 1):
+        errors.append('/aggregation: single requires total_count=1 and at most one sample')
+    if (aggregation['kind'] == 'percentile') != ('percentile' in aggregation):
+        errors.append('/aggregation/percentile: required only for percentile kind')
+    if aggregation['kind'] == 'percentile' and (metric['unit'] != 'ms' or len(aggregation['input_metric_ids']) != n):
+        errors.append('/aggregation: latency percentile must link every eligible input metric')
+    if aggregation['kind'] == 'micro' and metric['name'] != 'asr_cer':
+        errors.append('/aggregation: micro is only defined for asr_cer')
+    if aggregation['kind'] in ('rate', 'micro') and len(aggregation['input_metric_ids']) != n:
+        errors.append('/aggregation: aggregate must link every eligible input metric')
+    threshold = metric.get('threshold')
+    if threshold and metric['status'] in ('pass', 'fail'):
+        left, right, op = metric['value'], threshold['value'], threshold['operator']
+        if type(left) is bool and (type(right) is not bool or op != 'eq'):
+            errors.append('/threshold: boolean metric requires boolean eq threshold')
+        elif type(left) is not bool and type(right) is bool:
+            errors.append('/threshold: numeric metric requires numeric threshold')
+        else:
+            comparison = {'eq': lambda: left == right, 'lt': lambda: left < right,
+                          'lte': lambda: left <= right, 'gt': lambda: left > right, 'gte': lambda: left >= right}[op]()
+            if (metric['status'] == 'pass') != comparison:
+                errors.append('/status: disagrees with threshold comparison')
+    if timeline is None:
+        return errors
+    timeline_issues = timeline_errors(timeline)
+    if timeline_issues:
+        return errors + ['Referenced timeline is invalid: ' + message for message in timeline_issues]
+    if any(metric[key] != timeline[key] for key in ('run_id', 'case_id', 'execution_kind')):
+        errors.append('/: metric and timeline run/case/execution_kind disagree')
+    evidence = {item['evidence_id']: item for item in timeline['evidence']}
+    events = {item['event_id']: item for item in timeline['events']}
+    if any(key not in evidence for key in metric['evidence_ids']):
+        errors.append('/evidence_ids: unknown timeline evidence')
+    if any(key not in events for key in metric['event_ids']):
+        errors.append('/event_ids: unknown timeline event')
+    decided = metric['status'] not in ('insufficient_evidence', 'not_applicable')
+    refs = [evidence[key] for key in metric['evidence_ids'] if key in evidence]
+    if decided and metric['measurement_scope'] in ('white_box', 'hybrid') and not any(item['source'] == 'device_log' for item in refs):
+        errors.append('/measurement_scope: internal measurement requires device log evidence')
+    if decided and metric['unit'] == 'ms':
+        tracks = {track['track_id']: track for track in timeline['tracks']}
+        clocks = {tracks[item['track_id']]['clock_id'] for item in refs if item['track_id'] in tracks}
+        if len(clocks) > 1 and any(tracks[item['track_id']]['sync']['status'] == 'uncalibrated' for item in refs if item['track_id'] in tracks):
+            errors.append('/evidence_ids: uncalibrated cross-clock timing is insufficient evidence')
+    for key in metric['event_ids']:
+        if key in events and not set(events[key]['evidence_ids']).intersection(metric['evidence_ids']):
+            errors.append('/event_ids: event evidence must be included in metric evidence_ids')
+    return errors

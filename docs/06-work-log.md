@@ -22,3 +22,16 @@
 - Updated the VAD synthetic fixture to include both sides of the exact 800 ms pause, added a full old/new-response barge-in fixture and empty blocked capture fixture. These are synthetic illustrations; artifact hashes/paths are placeholders.
 - Validation: `.venv/Scripts/python.exe -m unittest discover -s tests -v` — 48 tests passed. `.venv/Scripts/python.exe -m aivoicebench validate --kind timeline examples/timeline.example.json examples/timelines/barge-in.json examples/timelines/blocked.json` — all three passed contract validation.
 - Hardware/provider limitations unchanged. Next: synchronize Issue #2 PR, then #3 formulas/MetricResult and #4 Finding integration.
+
+### Issue #2 synchronization
+
+- Commit `2476a0479f96487d92f4a3bdeed3108ca748ee37` pushed to `origin/issue-2-event-timeline` after approved SSH access.
+- PR https://github.com/lybym/AIVoiceBench/pull/13 — open, not merged, base Issue #1 branch / PR #12.
+
+## 2026-09-06 — Issue #3 Metrics and formulas
+
+- Branch `issue-3-metric-contract` based on Issue #2. MetricResult 2.0.0 adds status/value/threshold consistency, execution provenance, reference links, count accounting and scope/method constraints. Device ASR CER and internal timings require device-log Evidence; uncalibrated cross-clock timings cannot be treated as observed.
+- Formalized Phase 1 metrics, semantic Judge requirements, white-box reservations, R7 percentiles, eligible rates, micro CER and missing/ineligible handling in `03-metric-definition.md`. Added deterministic reference formulas for latency, overlap unions, CER, rates and barge-in components. These arithmetic functions do not perform hardware measurement or replace #8 event selection.
+- Validation: `.venv/Scripts/python.exe -m unittest discover -s tests -q` and metric CLI on the observed synthetic/blocked examples; final test count and sync result appended after completion.
+- Hardware/online adapters/packaging untested. Next: finalize #3 PR, then #4 Finding/Evidence lifecycle and regression candidates.
+- Final validation: 69 tests passed; both synthetic observed and blocked MetricResult examples validate with their respective Timelines. A trailing blank-line warning from `git diff --check` was corrected before commit.
