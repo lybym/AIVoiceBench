@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from .validation import case_errors, load_document, timeline_errors, metric_errors
+from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors
 
 
 def main(argv=None):
@@ -12,15 +12,21 @@ def main(argv=None):
     subparsers = parser.add_subparsers(dest='command', required=True)
     validate = subparsers.add_parser('validate', help='Validate TestCase JSON/YAML without hardware or network')
     validate.add_argument('paths', nargs='+', type=Path)
-    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric'], default='test-case')
+    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding'], default='test-case')
     validate.add_argument('--timeline', type=Path, help='Required context for metric references')
+    validate.add_argument('--metrics', nargs='*', type=Path, default=[], help='MetricResult files referenced by a finding')
+    validate.add_argument('--regression-case', type=Path, help='Linked TestCase for a frozen regression candidate')
     args = parser.parse_args(argv)
-    if args.kind == 'metric' and args.timeline is None:
-        parser.error('--kind metric requires --timeline')
+    if args.kind in ('metric', 'finding') and args.timeline is None:
+        parser.error('--kind metric/finding requires --timeline')
     failures = 0
     for path in args.paths:
         try:
-            if args.kind == 'metric':
+            if args.kind == 'finding':
+                errors = finding_errors(load_document(path), load_document(args.timeline),
+                                        [load_document(item) for item in args.metrics],
+                                        load_document(args.regression_case) if args.regression_case else None)
+            elif args.kind == 'metric':
                 errors = metric_errors(load_document(path), load_document(args.timeline))
             else:
                 checker = case_errors if args.kind == 'test-case' else timeline_errors

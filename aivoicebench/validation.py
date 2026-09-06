@@ -2,13 +2,29 @@
 
 import json
 import math
+import re
+from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
 ROOT = Path(__file__).resolve().parents[1]
+FORMAT_CHECKER = FormatChecker()
+
+
+@FORMAT_CHECKER.checks('date-time')
+def _timestamp(value):
+    # jsonschema's optional RFC3339 dependency is not required by this project.
+    if not isinstance(value, str):
+        return True
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})', value):
+        return False
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00')).tzinfo is not None
+    except ValueError:
+        return False
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -47,7 +63,7 @@ def schema_errors(document, schema_name='test-case'):
         contract = json.loads(path.read_text(encoding='utf-8-sig'))
         resources.append((contract['$id'], Resource.from_contents(contract)))
     registry = Registry().with_resources(resources)
-    errors = sorted(Draft202012Validator(schema, registry=registry).iter_errors(document), key=lambda e: str(list(e.absolute_path)))
+    errors = sorted(Draft202012Validator(schema, registry=registry, format_checker=FORMAT_CHECKER).iter_errors(document), key=lambda e: str(list(e.absolute_path)))
     messages = []
     for error in errors:
         path = '/' + '/'.join(str(p) for p in error.absolute_path)
@@ -256,4 +272,55 @@ def metric_errors(metric, timeline=None):
     for key in metric['event_ids']:
         if key in events and not set(events[key]['evidence_ids']).intersection(metric['evidence_ids']):
             errors.append('/event_ids: event evidence must be included in metric evidence_ids')
+    return errors
+
+
+def finding_errors(finding, timeline, metrics=(), regression_case=None):
+    errors = schema_errors(finding, 'finding')
+    if errors:
+        return errors
+    timeline_issues = timeline_errors(timeline)
+    if timeline_issues:
+        return ['Referenced timeline is invalid: ' + message for message in timeline_issues]
+    if any(finding[key] != timeline[key] for key in ('run_id', 'case_id', 'execution_kind')):
+        errors.append('/: finding and timeline run/case/execution_kind disagree')
+    evidence = {item['evidence_id']: item for item in timeline['evidence']}
+    events = {item['event_id']: item for item in timeline['events']}
+    if any(key not in evidence for key in finding['evidence_ids']):
+        errors.append('/evidence_ids: unknown timeline evidence')
+    for key in finding['event_ids']:
+        if key not in events:
+            errors.append('/event_ids: unknown timeline event')
+        elif not set(events[key]['evidence_ids']).intersection(finding['evidence_ids']):
+            errors.append('/event_ids: event evidence must be included in finding evidence_ids')
+    refs = [evidence[key] for key in finding['evidence_ids'] if key in evidence]
+    if finding['kind'] == 'defect' and finding['status'] in ('confirmed', 'fixed'):
+        if not any(item['end_ms'] > item['start_ms'] for item in refs):
+            errors.append('/evidence_ids: confirmed defect requires a nonempty evidence snippet')
+    if finding['attribution_status'] == 'verified':
+        if not any(item['source'] == 'device_log' for item in refs):
+            errors.append('/attribution_status: verified cause requires device log evidence')
+        if finding['human_review']['status'] != 'approved':
+            errors.append('/attribution_status: verified cause requires human review')
+    metric_map = {metric['metric_id']: metric for metric in metrics if isinstance(metric, dict) and 'metric_id' in metric}
+    if len(metric_map) != len(metrics):
+        errors.append('/metric_ids: supplied metrics require unique metric_id')
+    for key in finding['metric_ids']:
+        if key not in metric_map:
+            errors.append('/metric_ids: unknown supplied metric')
+        else:
+            errors.extend('Referenced metric is invalid: ' + message for message in metric_errors(metric_map[key], timeline))
+    if finding.get('regression', {}).get('state') == 'frozen':
+        if regression_case is None:
+            errors.append('/regression: frozen candidate requires the linked TestCase')
+        else:
+            errors.extend('Regression case is invalid: ' + message for message in case_errors(regression_case))
+            regression = finding['regression']
+            if any(regression.get(key) != regression_case.get(key) for key in ('case_id', 'case_version')):
+                errors.append('/regression: Case identity/version mismatch')
+            golden = regression_case.get('golden_set', {})
+            if golden.get('set_id') != regression['golden_set_id'] or golden.get('version') != regression['golden_set_version']:
+                errors.append('/regression: Golden Set identity/version mismatch')
+            if regression_case.get('mode') == 'exploratory_agent':
+                errors.append('/regression: frozen case must use deterministic assets')
     return errors

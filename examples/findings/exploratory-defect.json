@@ -1,0 +1,48 @@
+{
+  "schema_version": "2.0.0",
+  "finding_id": "FIND-DEFECT-FIXTURE",
+  "run_id": "RUN-DEFECT-FIXTURE",
+  "case_id": "VAD-PAUSE-800",
+  "execution_kind": "synthetic",
+  "kind": "defect",
+  "title": "Synthetic example: device starts during planned pause",
+  "severity": "P2",
+  "status": "confirmed",
+  "description": "Synthetic failure illustration; endpoint attribution remains a hypothesis.",
+  "expected_behavior": "Device waits for resumed tester utterance after planned pause.",
+  "actual_behavior": "Synthetic device start 2200 ms falls inside [2000,2800) pause.",
+  "confidence": 0.9,
+  "attribution_status": "suspected",
+  "attribution_confidence": 0.4,
+  "suspected_layers": [
+    "endpoint"
+  ],
+  "requires_log_verification": true,
+  "evidence_ids": [
+    "EVD-OBSERVATION",
+    "EVD-EVT-003",
+    "EVD-EVT-004",
+    "EVD-EVT-009"
+  ],
+  "event_ids": [
+    "EVT-003",
+    "EVT-004",
+    "EVT-009"
+  ],
+  "metric_ids": [],
+  "human_review": {
+    "status": "not_required",
+    "reviewer": null,
+    "reviewed_at": null
+  },
+  "origin": "exploratory",
+  "regression_case_candidate": true,
+  "regression": {
+    "state": "candidate",
+    "minimal_reproduction": "Freeze prompt A, 12800 zero samples at 16kHz, prompt B; repeat on the target device before accepting Golden assets.",
+    "case_id": null,
+    "case_version": null,
+    "golden_set_id": null,
+    "golden_set_version": null
+  }
+}

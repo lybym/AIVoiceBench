@@ -35,3 +35,16 @@
 - Validation: `.venv/Scripts/python.exe -m unittest discover -s tests -q` and metric CLI on the observed synthetic/blocked examples; final test count and sync result appended after completion.
 - Hardware/online adapters/packaging untested. Next: finalize #3 PR, then #4 Finding/Evidence lifecycle and regression candidates.
 - Final validation: 69 tests passed; both synthetic observed and blocked MetricResult examples validate with their respective Timelines. A trailing blank-line warning from `git diff --check` was corrected before commit.
+
+### Issue #3 synchronization
+
+- Commit `8a716fff0cedd8b093074ad8bb5b304eb884b766` pushed successfully to `origin/issue-3-metric-contract`.
+- PR https://github.com/lybym/AIVoiceBench/pull/14 — open, not merged, stacked on PR #13.
+
+## 2026-09-06 — Issue #4 Finding and Evidence
+
+- Branch `issue-4-finding-evidence` based on Issue #3. Finding 2.0.0 distinguishes normal observations from defects; separate observed/attribution confidence, unknown/suspected/verified causes, log verification, human safety review and regression candidate lifecycle. Evidence references resolve to timestamped snippets/artifacts/events; supplied metric references and frozen Case/Golden versions are checked.
+- Added synthetic exploratory defect/Timeline and migrated the seed passing observation. No physical device defect is claimed. Added severity and regression guidance in `08-findings-and-evidence.md`.
+- Validation: `.venv/Scripts/python.exe -m unittest discover -s tests -q` — 86 tests passed. Both finding CLI examples in `08-findings-and-evidence.md` validated. A negative test exposed optional date-time validation being skipped by jsonschema without an optional dependency; fixed with an explicit timezone/date parser and reran all tests.
+- All P0 Issue #1–#4 implementations now have local schema/fixture/reference validation. PR review/merge is still outstanding; no PR was merged. Hardware, audio asset QA, provider calls, Windows packaging and real HIL remain untested.
+- Next: sync #4 PR, inspect actual Issue #5 acceptance, build bounded local runner/dry-run without claiming hardware measurement.
