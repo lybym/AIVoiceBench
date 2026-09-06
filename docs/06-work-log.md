@@ -48,3 +48,17 @@
 - Validation: `.venv/Scripts/python.exe -m unittest discover -s tests -q` — 86 tests passed. Both finding CLI examples in `08-findings-and-evidence.md` validated. A negative test exposed optional date-time validation being skipped by jsonschema without an optional dependency; fixed with an explicit timezone/date parser and reran all tests.
 - All P0 Issue #1–#4 implementations now have local schema/fixture/reference validation. PR review/merge is still outstanding; no PR was merged. Hardware, audio asset QA, provider calls, Windows packaging and real HIL remain untested.
 - Next: sync #4 PR, inspect actual Issue #5 acceptance, build bounded local runner/dry-run without claiming hardware measurement.
+
+### Issue #4 synchronization
+
+- Commit `d2a9a3666aea1595efbff1e849116405478dba16` pushed successfully to `origin/issue-4-finding-evidence`.
+- PR https://github.com/lybym/AIVoiceBench/pull/15 — open, not merged, stacked on PR #14. GitHub Contract validation run `34043917782` completed successfully.
+
+## 2026-09-07 — Issue #5 local preparation runner
+
+- Branch `issue-5-local-runner` based on Issue #4. Implemented `python -m aivoicebench run <case-or-suite>`, per-attempt Run directories, fixed-audio hash/format/QA checks and sample-precise composition, version/profile snapshots, BUILD_INFO and artifact manifests. Added RunManifest/TestSuite schemas and local usage instructions.
+- Outputs use canonical dry-run Timeline and insufficient-evidence metrics, with no invented findings or captured events. Missing files, hash mismatch, unsupported modes and missing hardware station remain explicit blockers. Bounded in-memory preparation supports cases up to 10 minutes; streaming endurance work remains later.
+- Validation: `.venv/Scripts/python.exe -m unittest discover -s tests -q` — 101 tests passed. Temporary synthetic PCM validates 12,800 exact silence samples, preserved sources, hashes, CLI exit 0/2, repeated-run isolation and error paths.
+- Actual CLI: `.venv/Scripts/python.exe -m aivoicebench run examples/suite.example.json --dry-run --output artifacts/runs` produced five blocked Runs with normalized artifacts. Run IDs: `RUN-5ae92c01ffde4420abdb266016504086`, `RUN-f1abd8e1835e46999aa76c9910d650c7`, `RUN-b365bdb146fe486db221f65b75c20de0`, `RUN-6f8898e85b50458d868ea150eebc6a67`, `RUN-ee872901828b4337980be763a64dc3f7`. These are blocker demonstrations, not measured HIL results. Artifacts remain local/ignored.
+- Blockers: example frozen WAVs are not built; #6 audio station and calibration not integrated; user device/audio routing details requested asynchronously. ASR/TTS/Judge providers and credentials not configured or invoked. Windows executable/installer not built.
+- Issue #5 is a partial implementation pending physical fixed-audio execution through #6; do not close it or claim final end-to-end acceptance. Next: synchronize draft PR, implement #6 with software checks while awaiting hardware details, then integrate real capture when configured.

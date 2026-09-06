@@ -34,6 +34,6 @@ See `docs/` for architecture and roadmap, and `schemas/` for the canonical contr
 
 ## Local Windows delivery
 
-The final deliverable is a Windows executable or installer for the full local testing and analysis workflow, with local setup and usage instructions. Online ASR/TTS/LLM providers may be configured; local execution does not promise offline operation. A cloud service cluster is not required. The present implementation validates contracts only; it is not yet a hardware runner or packaged application.
+The final deliverable is a Windows executable or installer for the full local testing and analysis workflow, with local setup and usage instructions. Online ASR/TTS/LLM providers may be configured; local execution does not promise offline operation. A cloud service cluster is not required. The current CLI validates contracts and prepares local Run/audio artifacts with explicit measurement blockers; it is not yet a hardware runner or packaged application. See [local runner instructions](docs/09-local-runner.md).
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) for offline validation commands, [project context](docs/05-project-context.md) for the complete delivery agreement, [contract versions](docs/07-contract-versions.md) for migration and trigger semantics, and [work log](docs/06-work-log.md) for actual progress and untested dependencies.
