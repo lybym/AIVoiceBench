@@ -116,3 +116,8 @@
 - Validation: 19 new import tests passed (43.167 s), then all 151 tests passed (63.442 s). Actual codecs covered WAV/MP3/M4A, 44.1kHz stereo → 16kHz mono, same-rate sample preservation, 20-minute conversion/ASR preparation, source immutability, malformed/truncated audio, missing executables, ASR failure/secret-safe diagnostics, path/ref/hash validation and repeat isolation. Fixtures are explicitly synthetic signals, not real devices. `compileall` and `git diff --check` passed.
 - Actual generated-speech import with Vosk: `RUN-2647cb2c3794430b98f19aedfeba7f38`, analysis `ANALYSIS-09783285d7a04db6bb0faf642a36fdb0`, local ignored `artifacts/import-smoke/`. Ingestion, normalization, QA, ASR and report complete; acoustic/diarization/fusion/turns/timeline/metrics/Judge/findings pending. Source is the earlier 7.13-second generated Chinese test WAV. No target-recording acceptance claimed.
 - Current deliverable is a verified ingestion milestone with recoverable partial outputs, not the full automatic-analysis MVP or Windows executable. Real 5–20 minute recording path requested asynchronously; independent work does not depend on it. Next highest priority: #22/#23, early #26 model, then #24 automatic events. Keep online API verification current; do not infer tester/device roles from ASR labels.
+
+### Issue #21 synchronization
+
+- Implementation commit `5f077b288bd71c469c5dd2117ad07a7ab2126d52` successfully pushed to `origin/issue-21-recording-import`.
+- PR https://github.com/lybym/AIVoiceBench/pull/29 — open for review, unmerged, targets the same fixed integration baseline as architecture PR #28. Main was not changed. Local tests: 151 passed; remote CI recorded separately after completion.
