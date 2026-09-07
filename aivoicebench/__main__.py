@@ -15,6 +15,12 @@ def main(argv=None):
             stream.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(prog='aivoicebench')
     subparsers = parser.add_subparsers(dest='command', required=True)
+    analyze = subparsers.add_parser('analyze', help='Evaluate canonical events with deterministic metrics')
+    analyze.add_argument('case', type=Path)
+    analyze.add_argument('--timeline', type=Path, required=True)
+    analyze.add_argument('--artifact-root', type=Path)
+    analyze.add_argument('--turn-id')
+    analyze.add_argument('--output', type=Path, default=Path('artifacts/analysis'))
     asr = subparsers.add_parser('asr', help='Transcribe a local WAV with explicit provider/model selection')
     asr.add_argument('source', type=Path)
     asr.add_argument('--provider', choices=['vosk'], required=True)
@@ -53,6 +59,29 @@ def main(argv=None):
     validate.add_argument('--metrics', nargs='*', type=Path, default=[], help='MetricResult files referenced by a finding')
     validate.add_argument('--regression-case', type=Path, help='Linked TestCase for a frozen regression candidate')
     args = parser.parse_args(argv)
+    if args.command == 'analyze':
+        import uuid
+        import yaml
+        from .engine import evaluate
+        from .runner import write_json, digest
+        try:
+            case, timeline = load_document(args.case), load_document(args.timeline)
+            metrics = evaluate(case, timeline, args.artifact_root, args.turn_id)
+            directory = args.output / ('ANALYSIS-' + uuid.uuid4().hex)
+            directory.mkdir(parents=True, exist_ok=False)
+            write_json(directory / 'case.json', case)
+            write_json(directory / 'timeline.json', timeline)
+            write_json(directory / 'metrics.json', metrics)
+            write_json(directory / 'analysis.json', {'execution_kind': timeline['execution_kind'],
+                'case_sha256': digest(directory / 'case.json'), 'timeline_sha256': digest(directory / 'timeline.json'),
+                'metrics_sha256': digest(directory / 'metrics.json'),
+                'artifact_root': str(args.artifact_root.resolve()) if args.artifact_root else None,
+                'note': 'Canonical event evaluation; no new recording or internal-root-cause inference'})
+            print(f'ANALYZED {directory} ({timeline["execution_kind"]})')
+            return 0
+        except (OSError, ValueError, yaml.YAMLError) as error:
+            print(f'ANALYSIS ERROR: {error}', file=sys.stderr)
+            return 1
     if args.command == 'asr':
         from .asr import VoskProvider, transcribe_file
         try:

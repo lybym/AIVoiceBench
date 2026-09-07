@@ -91,3 +91,16 @@
 - Executed `.venv/Scripts/python.exe -m aivoicebench asr artifacts/asr-smoke/source-generated.wav --provider vosk --model-dir .cache/models/vosk-model-small-cn-0.22 --model-version 0.22 --source-role stimulus --output artifacts/asr-smoke/results` — COMPLETE. Output `ASR-698cedf924574e249a73025762abb35c`: 7130 ms source, one timestamped segment, expected words recognized; validated with `validate --kind transcript`. Source hash `8e66659b7f5a8558325827ad8a2d21880aec22d132ab921eb42858a7e7aee203`. This is generated-file ASR verification, not target hardware measurement.
 - User permits Volcano API TTS; persisted preference. Read-only, allowlisted inspection of existing Golden project found V3 SSE configuration, resource seed-tts-2.0, voice zh_female_vv_uranus_bigtts and 16 kHz PCM target. These are reuse clues, not current API availability/acceptance proofs. No credential values were printed/copied. Current official API overview was checked; detailed V3 page redirected and requires follow-up before integration in #9.
 - Remaining: target-recording/provider validation and Run-clock alignment; online adapters optional. Next: sync #7, deterministic event/metric engine #8, then current Volcano TTS Golden builder #9. Full Windows packaged application remains unfinished.
+
+### Issue #7 synchronization
+
+- Commit `21dee2ef0697d1a1448e440cab07af7e5f7f2672` pushed to `origin/issue-7-timestamped-asr`.
+- Draft PR https://github.com/lybym/AIVoiceBench/pull/18 — stacked on #17, not merged. Generated-file provider path verified; actual target capture/clock integration pending.
+
+## 2026-09-07 — Issue #8 deterministic event-consumer engine
+
+- Branch `issue-8-metric-engine` based on #7. Implemented canonical event selection for E2E, false endpoint, old-response barge stop, overlap, eligible timeout and device-log CER. Added Case-version threshold policy, uncertainty handling, file/hash verification for real/imported evidence, compatible repeated-sample R7 aggregation and analysis CLI output snapshots.
+- Validation: `.venv/Scripts/python.exe -m unittest discover -s tests -q` — 132 tests passed. Synthetic fixtures reproduce 1380 ms E2E and 200 ms barge stop; missing coverage, unknown synchronization, external ASR timing, duplicate aggregates and partial inputs do not create passed measurements.
+- Actual CLI `python -m aivoicebench analyze examples/test-case.example.yaml --timeline examples/timeline.example.json` wrote ignored `artifacts/analysis/ANALYSIS-d891177f899143859f87bf72817cc73e` with execution_kind=synthetic. No new recording or real performance result.
+- Raw-audio speech detector and live response/turn association not implemented yet; #8 remains partial. Existing ASR timing is deliberately not used as acoustic ground truth. Details in `12-deterministic-engine.md`.
+- Next: sync #8 draft and implement #9 frozen Golden asset build with current Volcano API verification/configuration, preserving exact sample pauses and current scope constraints.
