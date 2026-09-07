@@ -41,6 +41,8 @@ Attribution taxonomy: Wake Word, VAD, Endpoint, ASR, AEC, Network, LLM, Prompt, 
 
 ## Golden and exploratory assets
 
+2026-09-07 clarification: Chinese speech synthesis may use Volcano/火山 API; local synthesis is not required. Implement a configurable official Volcano TTS path for frozen Golden assets. A local SAPI voice used for ASR smoke validation is not a final provider restriction.
+
 - Regression uses fixed, versioned WAV / frozen TTS Golden Sets. ChatGPT / Doubao S2S are for exploration. Confirm exploratory bugs, minimize the reproducer, then add a versioned Golden Case.
 - Recommended/initial supported audio: WAV, PCM signed 16-bit little-endian, 16 kHz, mono. Insert VAD pauses at sample precision, not through natural TTS pauses.
 - Interactive Barge-in/AEC uses separate prompt and interruption assets, a controller state machine, explicit timeouts and timestamps, and an offset after device speech start. No pre-concatenated timing approximation.

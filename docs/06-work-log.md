@@ -76,3 +76,18 @@
 - Actual read-only enumeration returned 39 endpoint entries (duplicates across host APIs, not 39 physical devices), including Realtek microphone/speaker entries. Saved local output in ignored `artifacts/audio/devices.json`. Fixed redirected Windows CLI text/JSON to UTF-8.
 - No playback, microphone stream, calibration probe, ASR/TTS/Judge call or target device test performed. #6 hardware acceptance and #5 Run/capture integration pending; keep draft. Digital stimulus reference is not acoustic capture.
 - Next: sync #6 draft, implement timestamped ASR/provider boundaries and Run/capture/Timeline integration. Final Windows executable/installer remains outstanding.
+
+### Issue #6 synchronization
+
+- Commit `a4272e5fb3e63822e8379c3a9eaf3a9c9ddfcc05` pushed to `origin/issue-6-audio-station`.
+- Draft PR https://github.com/lybym/AIVoiceBench/pull/17 — stacked on PR #16, not merged; explicitly records missing physical acceptance and Run integration.
+
+## 2026-09-07 — Issue #7 timestamped ASR
+
+- Branch `issue-7-timestamped-asr` based on Issue #6. Added provider Protocol/native-response audit boundary, optional Vosk adapter, Transcript 1.0.0, source/channel preservation, model/file fingerprints and shared timestamp/reference validation. External ASR remains distinct from device ASR truth and acoustic Timeline events.
+- Validation: `.venv/Scripts/python.exe -m unittest discover -s tests -q` — 120 tests passed. Tests cover raw response retention, timestamp/recognition confidence separation, missing timings, invalid provider data, stereo selection, run association and failure audits.
+- Downloaded official small Chinese model (about 42 MB) into ignored .cache/models; validated archive extraction containment. Installed Vosk 0.3.45 in project venv. License/source/hashes documented in `11-timestamped-asr.md`.
+- Actual provider smoke: generated the fixed phrase “你好，这是语音测试。请告诉我，为什么天空是蓝色的。” to a 16 kHz PCM16 WAV through local Microsoft Huihui Desktop. Initial sandbox voice access failed; approved outside-sandbox file synthesis succeeded without playback/recording. Corrected CLI handling of empty/invalid WAV errors exposed by that attempt.
+- Executed `.venv/Scripts/python.exe -m aivoicebench asr artifacts/asr-smoke/source-generated.wav --provider vosk --model-dir .cache/models/vosk-model-small-cn-0.22 --model-version 0.22 --source-role stimulus --output artifacts/asr-smoke/results` — COMPLETE. Output `ASR-698cedf924574e249a73025762abb35c`: 7130 ms source, one timestamped segment, expected words recognized; validated with `validate --kind transcript`. Source hash `8e66659b7f5a8558325827ad8a2d21880aec22d132ab921eb42858a7e7aee203`. This is generated-file ASR verification, not target hardware measurement.
+- User permits Volcano API TTS; persisted preference. Read-only, allowlisted inspection of existing Golden project found V3 SSE configuration, resource seed-tts-2.0, voice zh_female_vv_uranus_bigtts and 16 kHz PCM target. These are reuse clues, not current API availability/acceptance proofs. No credential values were printed/copied. Current official API overview was checked; detailed V3 page redirected and requires follow-up before integration in #9.
+- Remaining: target-recording/provider validation and Run-clock alignment; online adapters optional. Next: sync #7, deterministic event/metric engine #8, then current Volcano TTS Golden builder #9. Full Windows packaged application remains unfinished.

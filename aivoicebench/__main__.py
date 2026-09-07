@@ -3,8 +3,9 @@
 import argparse
 from pathlib import Path
 import sys
+import wave
 
-from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors
+from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors, transcript_errors
 
 
 def main(argv=None):
@@ -14,6 +15,16 @@ def main(argv=None):
             stream.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(prog='aivoicebench')
     subparsers = parser.add_subparsers(dest='command', required=True)
+    asr = subparsers.add_parser('asr', help='Transcribe a local WAV with explicit provider/model selection')
+    asr.add_argument('source', type=Path)
+    asr.add_argument('--provider', choices=['vosk'], required=True)
+    asr.add_argument('--model-dir', type=Path, required=True)
+    asr.add_argument('--model-version', required=True)
+    asr.add_argument('--source-role', choices=['stimulus', 'device_output', 'room_mix', 'unknown'], default='unknown')
+    asr.add_argument('--channel', type=int, choices=[1, 2])
+    asr.add_argument('--run-id')
+    asr.add_argument('--case-id')
+    asr.add_argument('--output', type=Path, default=Path('artifacts/asr'))
     audio = subparsers.add_parser('audio', help='Optional explicit audio station commands')
     audio_commands = audio.add_subparsers(dest='audio_command', required=True)
     audio_commands.add_parser('devices', help='List devices without opening a recording stream')
@@ -37,11 +48,22 @@ def main(argv=None):
     run.add_argument('--dry-run', action='store_true', help='Only prepare assets/contracts, never capture hardware')
     validate = subparsers.add_parser('validate', help='Validate TestCase JSON/YAML without hardware or network')
     validate.add_argument('paths', nargs='+', type=Path)
-    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding'], default='test-case')
+    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding', 'transcript'], default='test-case')
     validate.add_argument('--timeline', type=Path, help='Required context for metric references')
     validate.add_argument('--metrics', nargs='*', type=Path, default=[], help='MetricResult files referenced by a finding')
     validate.add_argument('--regression-case', type=Path, help='Linked TestCase for a frozen regression candidate')
     args = parser.parse_args(argv)
+    if args.command == 'asr':
+        from .asr import VoskProvider, transcribe_file
+        try:
+            provider = VoskProvider(args.model_dir, args.model_version)
+            directory, transcript = transcribe_file(args.source, provider, args.output, args.source_role,
+                                                    args.channel, args.run_id, args.case_id)
+            print(f'{transcript["status"].upper()} {directory} (external ASR; provider-estimated audio-relative timestamps)')
+            return 0 if transcript['status'] == 'complete' else 2
+        except (OSError, ValueError, EOFError, wave.Error) as error:
+            print(f'ASR ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
+            return 1
     if args.command == 'audio':
         import json
         from .station import capture_fixed, calibrate_loopback, list_devices
@@ -57,8 +79,8 @@ def main(argv=None):
             directory, result = calibrate_loopback(args.output, args.input_device, args.output_device, args.repetitions)
             print(f'{result["status"].upper()} {directory} (no correction applied)')
             return 0 if result['status'] == 'observed' else 2
-        except (OSError, ValueError) as error:
-            print(f'AUDIO ERROR: {error}', file=sys.stderr)
+        except (OSError, ValueError, EOFError, wave.Error) as error:
+            print(f'AUDIO ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
             return 1
     if args.command == 'run':
         from .runner import run_input
@@ -79,7 +101,9 @@ def main(argv=None):
     failures = 0
     for path in args.paths:
         try:
-            if args.kind == 'finding':
+            if args.kind == 'transcript':
+                errors = transcript_errors(load_document(path))
+            elif args.kind == 'finding':
                 errors = finding_errors(load_document(path), load_document(args.timeline),
                                         [load_document(item) for item in args.metrics],
                                         load_document(args.regression_case) if args.regression_case else None)

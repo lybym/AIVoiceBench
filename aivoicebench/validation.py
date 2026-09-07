@@ -324,3 +324,24 @@ def finding_errors(finding, timeline, metrics=(), regression_case=None):
             if regression_case.get('mode') == 'exploratory_agent':
                 errors.append('/regression: frozen case must use deterministic assets')
     return errors
+
+
+def transcript_errors(transcript):
+    errors = schema_errors(transcript, 'transcript')
+    if errors:
+        return errors
+    ids = [segment['segment_id'] for segment in transcript['segments']]
+    if len(ids) != len(set(ids)):
+        errors.append('/segments: segment_id must be unique')
+    previous_end = 0
+    duration = transcript['source']['duration_ms']
+    for index, segment in enumerate(transcript['segments']):
+        if segment['start_ms'] < previous_end - 0.001 or segment['end_ms'] < segment['start_ms'] or segment['end_ms'] > duration + 0.001:
+            errors.append(f'/segments/{index}: timing out of source bounds or order')
+        word_end = segment['start_ms']
+        for word in segment['words']:
+            if word['start_ms'] < word_end - 0.001 or word['end_ms'] < word['start_ms'] or word['end_ms'] > segment['end_ms'] + 0.001:
+                errors.append(f'/segments/{index}/words: timing out of segment bounds or order')
+            word_end = word['end_ms']
+        previous_end = segment['end_ms']
+    return errors
