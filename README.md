@@ -6,7 +6,7 @@ A hardware-in-the-loop benchmark, regression, and exploratory testing platform f
 
 AIVoiceBench turns AI voice-device evaluation from ad-hoc conversations into a reproducible engineering workflow:
 
-**TestCase -> Stimulus -> Recording -> Event Timeline -> Metrics/Judgement -> Evidence -> Finding -> Regression**
+**External Recording -> Import -> Normalize -> ASR/Diarization -> Automatic Events/Turns -> Metrics/Semantic Evaluation -> Findings/Evidence -> Human Verification -> Report/Regression**
 
 The platform is designed for AI toys, companion devices, speakers, cameras, and other conversational voice terminals.
 
@@ -28,7 +28,7 @@ Phase 0 defines the four data contracts that all later components depend on:
 - `MetricResult`
 - `Finding`
 
-Phase 1 will build a local Python runner capable of executing a small Golden Set, recording audio, producing timestamped ASR, extracting events, computing deterministic metrics, invoking an LLM judge, and generating an evidence-linked report.
+The highest-priority MVP imports an existing 5–20 minute WAV/MP3/M4A conversation recording and automatically produces a trustworthy, evidence-linked report. Existing TestCase, Timeline, Evidence, metrics, findings, Runner, ASR/Vosk and deterministic engine are retained. Audio Station/HIL becomes a later automation extension. See [migration and repository audit](docs/13-import-first-migration.md).
 
 See `docs/` for architecture and roadmap, and `schemas/` for the canonical contracts.
 

@@ -104,3 +104,16 @@
 - Actual CLI `python -m aivoicebench analyze examples/test-case.example.yaml --timeline examples/timeline.example.json` wrote ignored `artifacts/analysis/ANALYSIS-d891177f899143859f87bf72817cc73e` with execution_kind=synthetic. No new recording or real performance result.
 - Raw-audio speech detector and live response/turn association not implemented yet; #8 remains partial. Existing ASR timing is deliberately not used as acoustic ground truth. Details in `12-deterministic-engine.md`.
 - Next: sync #8 draft and implement #9 frozen Golden asset build with current Volcano API verification/configuration, preserving exact sample pauses and current scope constraints.
+
+### Issue #8 synchronization
+
+- Commit `167e5ccec51518f83f129949d37d428d29373ea9` pushed to `origin/issue-8-metric-engine`; draft PR https://github.com/lybym/AIVoiceBench/pull/19. No merge. CI run `34072446336` succeeded.
+
+## 2026-09-07 — Import-first product migration (#20)
+
+- User reprioritized the primary MVP to existing mixed recordings → automatic analysis/report. Retained all completed code and paused physical HIL/TTS work. The untested local TTS draft is preserved in stash `ad7f35350df8dba1afc0c3c858c40c90a4a6eac9` on its original branch; it is not part of the new implementation.
+- Audited refreshed remote refs, all Issues #1–#11 and PR metadata/CI for #12–#19. All Issues open; all PRs unmerged and CI success. Main remains `47a1865`. Re-ran baseline: 132 tests passed. Audit/merge recommendation in `13-import-first-migration.md`.
+- Created #20–#27 for migration, import, providers, acoustic segmentation, source/turn/event fusion, latency expansion, revisions and integrated acceptance. Updated #5–#11 titles and appended migration instructions while preserving original bodies. No Issue falsely closed as complete.
+- Updated architecture, context, roadmap, methodology and README. Added fixed integration snapshot branch at `167e5cc`; new branches are siblings, not further serial stack members. No PR was merged or retargeted.
+- Verified specified official Volcano product-update page through the browser and followed current recording-recognition API navigation (page updated 2026-09-04). Recorded transport/model/format caveats in the migration document. No provider call or recording upload.
+- Confirmed local FFmpeg/FFprobe executables are available. Next: #21 recording ingestion, canonical conversion, provenance and isolated stage failure outputs. Real-recording/semantic MVP and Windows packaging remain future acceptance.
