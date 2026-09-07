@@ -83,7 +83,9 @@ class VoskProvider:
         return normalize_vosk(messages, duration_ms)
 
 
-def prepare_channel(source, destination, channel=None):
+def prepare_channel(source, destination, channel=None, max_duration_ms=600000):
+    if type(max_duration_ms) is not int or not 1 <= max_duration_ms <= 1800000:
+        raise ValueError('ASR duration limit must be within 1–1800000 ms')
     with wave.open(str(source), 'rb') as audio:
         channels = audio.getnchannels()
         if audio.getsampwidth() != 2 or audio.getframerate() != 16000 or audio.getcomptype() != 'NONE' or channels not in (1, 2):
@@ -95,8 +97,8 @@ def prepare_channel(source, destination, channel=None):
         if type(channel) is not int or not 1 <= channel <= channels:
             raise ValueError('Requested channel is outside source audio')
         frames = audio.getnframes()
-        if not 0 < frames <= 16000 * 600:
-            raise ValueError('ASR MVP accepts nonempty audio up to 10 minutes')
+        if not 0 < frames <= 16 * max_duration_ms:
+            raise ValueError('ASR audio is empty or exceeds the configured duration limit')
         raw = audio.readframes(frames)
         if len(raw) != frames * channels * 2:
             raise ValueError('Truncated source WAV')
@@ -148,7 +150,8 @@ def normalize_vosk(messages, duration_ms):
     return segments, gaps
 
 
-def transcribe_file(source, provider, output_root, source_role='unknown', channel=None, run_id=None, case_id=None):
+def transcribe_file(source, provider, output_root, source_role='unknown', channel=None, run_id=None, case_id=None,
+                    max_duration_ms=600000):
     if source_role not in ('stimulus', 'device_output', 'room_mix', 'unknown'):
         raise ValueError('Unknown source role')
     if (run_id is None) != (case_id is None):
@@ -158,7 +161,7 @@ def transcribe_file(source, provider, output_root, source_role='unknown', channe
     try:
         # Keep a local source snapshot so future references do not depend on changed inputs.
         shutil.copyfile(source, output / 'source.wav')
-        duration, selected_channel = prepare_channel(output / 'source.wav', output / 'input-mono.wav', channel)
+        duration, selected_channel = prepare_channel(output / 'source.wav', output / 'input-mono.wav', channel, max_duration_ms)
         result = provider.transcribe(output / 'input-mono.wav')
         raw_path = output / 'raw-provider.json'
         # Native strings preserved exactly, including fields unused by normalization.
@@ -178,6 +181,6 @@ def transcribe_file(source, provider, output_root, source_role='unknown', channe
         write_json(output / 'transcript.json', transcript)
         return output, transcript
     except Exception as error:
-        write_json(output / 'error.json', {'status': 'blocked', 'reason': str(error) or type(error).__name__,
+        write_json(output / 'error.json', {'status': 'blocked', 'reason': 'ASR processing failed', 'error_type': type(error).__name__,
                                          'note': 'No successful normalized transcript is claimed; retained local inputs/raw response if available'})
         raise

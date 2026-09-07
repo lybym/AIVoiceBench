@@ -1,0 +1,10 @@
+{
+  "device": null,
+  "hardware": null,
+  "firmware": null,
+  "model": null,
+  "prompt": null,
+  "supplier": null,
+  "environment": null,
+  "notes": "填写录音的设备和测试条件；未知版本保留 null。"
+}
