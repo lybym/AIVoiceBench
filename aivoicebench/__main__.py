@@ -8,8 +8,27 @@ from .validation import case_errors, load_document, timeline_errors, metric_erro
 
 
 def main(argv=None):
+    # Keep redirected Windows CLI JSON/text readable across shell code pages.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(prog='aivoicebench')
     subparsers = parser.add_subparsers(dest='command', required=True)
+    audio = subparsers.add_parser('audio', help='Optional explicit audio station commands')
+    audio_commands = audio.add_subparsers(dest='audio_command', required=True)
+    audio_commands.add_parser('devices', help='List devices without opening a recording stream')
+    capture = audio_commands.add_parser('capture', help='Play WAV and record the explicitly selected input')
+    capture.add_argument('stimulus', type=Path)
+    calibration = audio_commands.add_parser('calibrate', help='Play probe and record a physically connected loopback path')
+    for command in (capture, calibration):
+        command.add_argument('--input-device', type=int, required=True)
+        command.add_argument('--output-device', type=int, required=True)
+        command.add_argument('--output', type=Path, default=Path('artifacts/audio'))
+    capture.add_argument('--input-channels', type=int, choices=[1, 2], default=1)
+    capture.add_argument('--output-channels', type=int, choices=[1, 2], default=1)
+    capture.add_argument('--pre-roll-ms', type=int, default=500)
+    capture.add_argument('--tail-ms', type=int, default=5000)
+    calibration.add_argument('--repetitions', type=int, default=3)
     run = subparsers.add_parser('run', help='Prepare one Case or suite; no hardware adapter yet')
     run.add_argument('path', type=Path)
     run.add_argument('--output', type=Path, default=Path('artifacts/runs'))
@@ -23,6 +42,24 @@ def main(argv=None):
     validate.add_argument('--metrics', nargs='*', type=Path, default=[], help='MetricResult files referenced by a finding')
     validate.add_argument('--regression-case', type=Path, help='Linked TestCase for a frozen regression candidate')
     args = parser.parse_args(argv)
+    if args.command == 'audio':
+        import json
+        from .station import capture_fixed, calibrate_loopback, list_devices
+        try:
+            if args.audio_command == 'devices':
+                print(json.dumps(list_devices(), ensure_ascii=False, indent=2))
+                return 0
+            if args.audio_command == 'capture':
+                directory, metadata = capture_fixed(args.stimulus, args.output, args.input_device, args.output_device,
+                    args.input_channels, args.output_channels, args.pre_roll_ms, args.tail_ms)
+                print(f'{metadata["status"].upper()} {directory}')
+                return 0 if metadata['status'] == 'captured' else 2
+            directory, result = calibrate_loopback(args.output, args.input_device, args.output_device, args.repetitions)
+            print(f'{result["status"].upper()} {directory} (no correction applied)')
+            return 0 if result['status'] == 'observed' else 2
+        except (OSError, ValueError) as error:
+            print(f'AUDIO ERROR: {error}', file=sys.stderr)
+            return 1
     if args.command == 'run':
         from .runner import run_input
         import yaml

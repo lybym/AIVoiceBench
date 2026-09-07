@@ -62,3 +62,17 @@
 - Actual CLI: `.venv/Scripts/python.exe -m aivoicebench run examples/suite.example.json --dry-run --output artifacts/runs` produced five blocked Runs with normalized artifacts. Run IDs: `RUN-5ae92c01ffde4420abdb266016504086`, `RUN-f1abd8e1835e46999aa76c9910d650c7`, `RUN-b365bdb146fe486db221f65b75c20de0`, `RUN-6f8898e85b50458d868ea150eebc6a67`, `RUN-ee872901828b4337980be763a64dc3f7`. These are blocker demonstrations, not measured HIL results. Artifacts remain local/ignored.
 - Blockers: example frozen WAVs are not built; #6 audio station and calibration not integrated; user device/audio routing details requested asynchronously. ASR/TTS/Judge providers and credentials not configured or invoked. Windows executable/installer not built.
 - Issue #5 is a partial implementation pending physical fixed-audio execution through #6; do not close it or claim final end-to-end acceptance. Next: synchronize draft PR, implement #6 with software checks while awaiting hardware details, then integrate real capture when configured.
+
+### Issue #5 synchronization
+
+- Commit `689d8a6b09c81796ae13e10b680c40666fa2b7a3` pushed to `origin/issue-5-local-runner`.
+- Draft PR https://github.com/lybym/AIVoiceBench/pull/16 — stacked on PR #15, not merged, explicitly partial physical-execution acceptance.
+
+## 2026-09-07 — Issue #6 audio station
+
+- User clarified: no target prepared yet; generic conversational terminal with built-in speaker/microphone. Persisted in project context. Continue independent software work without repeated hardware questions.
+- Branch `issue-6-audio-station`, based on Issue #5. Optional audio dependencies, read-only enumeration, explicit mono/stereo duplex capture, bounded buffers, raw driver monotonic timestamps, hash/format metadata, partial-failure handling and loopback correlation implemented. No silent delay correction. Official API references and usage in `10-audio-station.md`.
+- Installed NumPy 2.5.3, sounddevice 0.5.6 and cffi 2.1.1 in project venv only. `.venv/Scripts/python.exe -m unittest discover -s tests -q` — 110 tests passed, including software-only callback and known-delay/noise/polarity fixtures. No mock input is presented as a physical capture.
+- Actual read-only enumeration returned 39 endpoint entries (duplicates across host APIs, not 39 physical devices), including Realtek microphone/speaker entries. Saved local output in ignored `artifacts/audio/devices.json`. Fixed redirected Windows CLI text/JSON to UTF-8.
+- No playback, microphone stream, calibration probe, ASR/TTS/Judge call or target device test performed. #6 hardware acceptance and #5 Run/capture integration pending; keep draft. Digital stimulus reference is not acoustic capture.
+- Next: sync #6 draft, implement timestamped ASR/provider boundaries and Run/capture/Timeline integration. Final Windows executable/installer remains outstanding.

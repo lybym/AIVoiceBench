@@ -12,6 +12,8 @@ Updated 2026-09-06. This document preserves the user-authorized scope for future
 
 ## Final product acceptance
 
+Hardware clarification (2026-09-07): target hardware is not prepared yet. Its form is a voice-conversation terminal with built-in speaker and microphone. Continue generic/offline implementation; actual terminal testing and station routing/calibration remain pending. Do not assume a specific model or report device performance from computer endpoint enumeration.
+
 Deliver a compiled/packaged Windows executable or installer that starts locally and completes Case management/execution, audio playback and recording, timestamped ASR, Timeline, deterministic metrics, structured Judge, Evidence, Findings, reports and regression. Supply local configuration, startup and user instructions. Code, documentation, isolated scripts or a cloud-only service are not final delivery.
 
 Local execution does not mean fully offline. ASR, TTS and LLM providers may require configured online services and credentials; document those dependencies. Verify packaging dependencies, external binaries, Windows startup and an end-to-end run on the user's machine at the relevant phase. Record exactly which hardware and scenarios were actually tested, and which remain untested. Central Control Plane / Edge is the modular expansion architecture; cloud deployment, PostgreSQL/Redis clusters and separate servers must not be mandatory for local use.

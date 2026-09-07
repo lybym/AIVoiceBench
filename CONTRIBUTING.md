@@ -4,6 +4,8 @@ Read `docs/05-project-context.md`, the relevant Issue and `docs/06-work-log.md` 
 
 Python 3.12 is the initial validated environment. In PowerShell:
 
+For the optional audio tests, install `requirements-audio.txt` instead of `requirements-dev.txt`; CI includes these software checks. Live audio commands require explicitly configured hardware and are never run by CI.
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
