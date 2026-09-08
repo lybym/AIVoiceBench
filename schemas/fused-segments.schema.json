@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/fused-segments.schema.json",
+  "title": "FusedSegments 1.0.0",
+  "description": "Unified speech segments with speaker role attribution. Fuses acoustic + ASR timing. Speaker roles are hypotheses, not ground truth, unless verified by human review.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "document_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "acoustic_document_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
+        "transcript_document_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
+        "audio_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "duration_ms": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "acoustic_document_id",
+        "transcript_document_id",
+        "audio_sha256",
+        "duration_ms"
+      ],
+      "additionalProperties": false
+    },
+    "attribution": {
+      "type": "object",
+      "properties": {
+        "strategy": {
+          "enum": ["alternating_heuristic", "diarization_provider", "llm_assisted", "manual", "none"]
+        },
+        "provider": {
+          "type": ["string", "null"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["strategy", "provider", "confidence", "note"],
+      "additionalProperties": false
+    },
+    "status": {
+      "enum": ["complete", "partial", "insufficient_evidence"]
+    },
+    "reason": {
+      "type": ["string", "null"]
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "segment_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_ms": {
+            "type": "number",
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "number",
+            "minimum": 0
+          },
+          "speaker_role": {
+            "enum": ["tester", "device", "unknown"]
+          },
+          "speaker_confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "speaker_source": {
+            "enum": ["acoustic", "diarization", "heuristic", "llm", "manual"]
+          },
+          "timing_source": {
+            "enum": ["acoustic", "asr", "fused"]
+          },
+          "text": {
+            "type": ["string", "null"]
+          },
+          "acoustic_segment_id": {
+            "type": ["string", "null"]
+          },
+          "asr_segment_id": {
+            "type": ["string", "null"]
+          }
+        },
+        "required": [
+          "segment_id",
+          "start_ms",
+          "end_ms",
+          "speaker_role",
+          "speaker_confidence",
+          "speaker_source",
+          "timing_source",
+          "text",
+          "acoustic_segment_id",
+          "asr_segment_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "document_id",
+    "source",
+    "attribution",
+    "status",
+    "reason",
+    "segments"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": ["insufficient_evidence"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "segments": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ]
+}

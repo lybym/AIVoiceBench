@@ -173,7 +173,8 @@ def timeline_errors(timeline):
     previous_time = -math.inf
     active = {}
     pairs = {'tester_speech_end': 'tester_speech_start', 'device_speech_end': 'device_speech_start',
-             'interrupt_end': 'interrupt_start', 'planned_pause_end': 'planned_pause_start', 'overlap_end': 'overlap_start'}
+             'interrupt_end': 'interrupt_start', 'planned_pause_end': 'planned_pause_start',
+             'overlap_end': 'overlap_start', 'response_end': 'response_start'}
     for event in timeline['events']:
         location = f'/events/{event["event_id"]}'
         if event['run_id'] != timeline['run_id'] or event['case_id'] != timeline['case_id']:
@@ -183,7 +184,7 @@ def timeline_errors(timeline):
         previous_time = event['start_ms']
         if event['end_ms'] < event['start_ms']:
             errors.append(f'{location}: end_ms precedes start_ms')
-        if event['type'] not in ('asr_segment', 'custom') and event['end_ms'] != event['start_ms']:
+        if event['type'] not in ('asr_segment', 'custom', 'silence') and event['end_ms'] != event['start_ms']:
             errors.append(f'{location}: boundary event must be a point')
         refs = [evidence.get(key) for key in event['evidence_ids']]
         if any(item is None for item in refs):
@@ -376,4 +377,49 @@ def acoustic_errors(document):
             errors.append(f'{location}: method must match processor method')
     if document['status'] == 'insufficient_evidence' and document['segments']:
         errors.append('/segments: insufficient_evidence status requires no segments')
+    return errors
+
+
+def fused_errors(document):
+    """Validate fused segments with speaker attribution."""
+    errors = schema_errors(document, 'fused-segments')
+    if errors:
+        return errors
+    ids = [seg['segment_id'] for seg in document['segments']]
+    if len(ids) != len(set(ids)):
+        errors.append('/segments: segment_id must be unique')
+    duration = document['source']['duration_ms']
+    previous_end = 0.0
+    for index, segment in enumerate(document['segments']):
+        location = f'/segments/{index}'
+        if segment['start_ms'] < 0:
+            errors.append(f'{location}: start_ms must be non-negative')
+        if segment['end_ms'] < segment['start_ms']:
+            errors.append(f'{location}: end_ms precedes start_ms')
+        if segment['end_ms'] > duration + 0.001:
+            errors.append(f'{location}: end_ms exceeds source duration')
+        if segment['start_ms'] < previous_end - 0.001:
+            errors.append(f'{location}: segments must be in nondecreasing start_ms order')
+        previous_end = max(previous_end, segment['end_ms'])
+    if document['status'] == 'insufficient_evidence' and document['segments']:
+        errors.append('/segments: insufficient_evidence status requires no segments')
+    return errors
+
+
+def turns_errors(document):
+    """Validate conversational turns built from fused segments."""
+    errors = schema_errors(document, 'turns')
+    if errors:
+        return errors
+    ids = [t['turn_id'] for t in document['turns']]
+    if len(ids) != len(set(ids)):
+        errors.append('/turns: turn_id must be unique')
+    for index, turn in enumerate(document['turns']):
+        location = f'/turns/{index}'
+        if turn['end_ms'] < turn['start_ms']:
+            errors.append(f'{location}: end_ms precedes start_ms')
+        if not turn['tester_segment_ids'] and not turn['device_segment_ids']:
+            errors.append(f'{location}: turn must have at least one segment')
+    if document['status'] == 'insufficient_evidence' and document['turns']:
+        errors.append('/turns: insufficient_evidence status requires no turns')
     return errors
