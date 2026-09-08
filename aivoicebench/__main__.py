@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import wave
 
-from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors, transcript_errors
+from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors, transcript_errors, acoustic_errors
 
 
 def main(argv=None):
@@ -31,6 +31,17 @@ def main(argv=None):
     asr.add_argument('--run-id')
     asr.add_argument('--case-id')
     asr.add_argument('--output', type=Path, default=Path('artifacts/asr'))
+    acoustic = subparsers.add_parser('acoustic', help='Detect speech segments from a canonical WAV using energy VAD')
+    acoustic.add_argument('source', type=Path)
+    acoustic.add_argument('--output', type=Path, default=Path('artifacts/acoustic'))
+    acoustic.add_argument('--frame-ms', type=float, default=30.0)
+    acoustic.add_argument('--hop-ms', type=float, default=10.0)
+    acoustic.add_argument('--threshold-factor', type=float, default=0.15)
+    acoustic.add_argument('--min-speech-ms', type=float, default=100.0)
+    acoustic.add_argument('--min-silence-ms', type=float, default=200.0)
+    acoustic.add_argument('--merge-gap-ms', type=float, default=80.0)
+    acoustic.add_argument('--pre-roll-ms', type=float, default=0.0)
+    acoustic.add_argument('--post-roll-ms', type=float, default=0.0)
     audio = subparsers.add_parser('audio', help='Optional explicit audio station commands')
     audio_commands = audio.add_subparsers(dest='audio_command', required=True)
     audio_commands.add_parser('devices', help='List devices without opening a recording stream')
@@ -54,7 +65,7 @@ def main(argv=None):
     run.add_argument('--dry-run', action='store_true', help='Only prepare assets/contracts, never capture hardware')
     validate = subparsers.add_parser('validate', help='Validate TestCase JSON/YAML without hardware or network')
     validate.add_argument('paths', nargs='+', type=Path)
-    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding', 'transcript'], default='test-case')
+    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding', 'transcript', 'acoustic-segments'], default='test-case')
     validate.add_argument('--timeline', type=Path, help='Required context for metric references')
     validate.add_argument('--metrics', nargs='*', type=Path, default=[], help='MetricResult files referenced by a finding')
     validate.add_argument('--regression-case', type=Path, help='Linked TestCase for a frozen regression candidate')
@@ -92,6 +103,23 @@ def main(argv=None):
             return 0 if transcript['status'] == 'complete' else 2
         except (OSError, ValueError, EOFError, wave.Error) as error:
             print(f'ASR ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
+            return 1
+    if args.command == 'acoustic':
+        from .acoustic import EnergyVadSegmenter, segment_audio
+        try:
+            segmenter = EnergyVadSegmenter(
+                frame_ms=args.frame_ms, hop_ms=args.hop_ms,
+                threshold_factor=args.threshold_factor,
+                min_speech_ms=args.min_speech_ms,
+                min_silence_ms=args.min_silence_ms,
+                merge_gap_ms=args.merge_gap_ms,
+                pre_roll_ms=args.pre_roll_ms,
+                post_roll_ms=args.post_roll_ms)
+            document, out_path = segment_audio(args.source, args.output / ('ACOUSTIC-' + __import__('uuid').uuid4().hex + '.json'), segmenter)
+            print(f'{document["status"].upper()} {out_path} ({len(document["segments"])} acoustic segment(s); signal timing, no speaker role)')
+            return 0 if document['status'] == 'complete' else 2
+        except (OSError, ValueError, wave.Error) as error:
+            print(f'ACOUSTIC ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
             return 1
     if args.command == 'audio':
         import json
@@ -132,6 +160,8 @@ def main(argv=None):
         try:
             if args.kind == 'transcript':
                 errors = transcript_errors(load_document(path))
+            elif args.kind == 'acoustic-segments':
+                errors = acoustic_errors(load_document(path))
             elif args.kind == 'finding':
                 errors = finding_errors(load_document(path), load_document(args.timeline),
                                         [load_document(item) for item in args.metrics],

@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/acoustic-segments.schema.json",
+  "title": "AcousticSegments 1.0.0",
+  "description": "Speech segment candidates from signal processing. Acoustic timing is distinct from ASR, diarization, or LLM-inferred timing. Segments have no speaker role.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "document_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "duration_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sample_rate_hz": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "channels": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "encoding": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "duration_ms",
+        "sample_rate_hz",
+        "channels",
+        "encoding"
+      ],
+      "additionalProperties": false
+    },
+    "processor": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processor_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "frame_ms": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "hop_ms": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "energy_metric": {
+              "type": "string",
+              "minLength": 1
+            },
+            "threshold_factor": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "threshold_mode": {
+              "type": "string",
+              "minLength": 1
+            },
+            "min_speech_ms": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_silence_ms": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "merge_gap_ms": {
+              "type": "number",
+              "minimum": 0
+            },
+            "pre_roll_ms": {
+              "type": "number",
+              "minimum": 0
+            },
+            "post_roll_ms": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "frame_ms",
+            "hop_ms",
+            "energy_metric",
+            "threshold_factor",
+            "threshold_mode",
+            "min_speech_ms",
+            "min_silence_ms"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "method",
+        "processor_version",
+        "parameters"
+      ],
+      "additionalProperties": false
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "partial",
+        "insufficient_evidence"
+      ]
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "segment_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_ms": {
+            "type": "number",
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "number",
+            "minimum": 0
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "source": {
+            "const": "acoustic"
+          },
+          "method": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uncertainty_ms": {
+            "type": "number",
+            "minimum": 0
+          },
+          "frame_stats": {
+            "type": "object",
+            "properties": {
+              "peak_rms": {
+                "type": "number",
+                "minimum": 0
+              },
+              "mean_rms": {
+                "type": "number",
+                "minimum": 0
+              },
+              "threshold_rms": {
+                "type": "number",
+                "minimum": 0
+              },
+              "frame_count": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "peak_rms",
+              "mean_rms",
+              "threshold_rms",
+              "frame_count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "segment_id",
+          "start_ms",
+          "end_ms",
+          "confidence",
+          "source",
+          "method",
+          "uncertainty_ms",
+          "frame_stats"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "document_id",
+    "source",
+    "processor",
+    "status",
+    "reason",
+    "segments"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "insufficient_evidence"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "segments": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "complete",
+              "partial"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

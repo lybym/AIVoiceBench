@@ -345,3 +345,35 @@ def transcript_errors(transcript):
             word_end = word['end_ms']
         previous_end = segment['end_ms']
     return errors
+
+
+def acoustic_errors(document):
+    """Validate acoustic segment candidates without manufacturing events."""
+    errors = schema_errors(document, 'acoustic-segments')
+    if errors:
+        return errors
+    ids = [seg['segment_id'] for seg in document['segments']]
+    if len(ids) != len(set(ids)):
+        errors.append('/segments: segment_id must be unique')
+    duration = document['source']['duration_ms']
+    previous_end = 0.0
+    for index, segment in enumerate(document['segments']):
+        location = f'/segments/{index}'
+        if segment['start_ms'] < 0:
+            errors.append(f'{location}: start_ms must be non-negative')
+        if segment['end_ms'] < segment['start_ms']:
+            errors.append(f'{location}: end_ms precedes start_ms')
+        if segment['end_ms'] > duration + 0.001:
+            errors.append(f'{location}: end_ms exceeds source duration')
+        if segment['start_ms'] < previous_end - 0.001:
+            errors.append(f'{location}: segments must be in nondecreasing start_ms order')
+        if segment['start_ms'] < previous_end - 0.001 and segment['start_ms'] < previous_end:
+            errors.append(f'{location}: segments must not overlap')
+        previous_end = max(previous_end, segment['end_ms'])
+        if segment['source'] != 'acoustic':
+            errors.append(f'{location}: acoustic segments must have source=acoustic')
+        if segment['method'] != document['processor']['method']:
+            errors.append(f'{location}: method must match processor method')
+    if document['status'] == 'insufficient_evidence' and document['segments']:
+        errors.append('/segments: insufficient_evidence status requires no segments')
+    return errors
