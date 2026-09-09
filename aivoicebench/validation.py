@@ -423,3 +423,35 @@ def turns_errors(document):
     if document['status'] == 'insufficient_evidence' and document['turns']:
         errors.append('/turns: insufficient_evidence status requires no turns')
     return errors
+
+
+def judge_result_errors(document):
+    """Validate a JudgeResult 1.0.0 structured LLM output."""
+    errors = schema_errors(document, 'judge-result')
+    if errors:
+        return errors
+    dim = document['dimension']
+    if dim == 'meaningful_response' and document.get('meaningful_response_start_ms') is None:
+        if document['status'] == 'observed':
+            errors.append('/meaningful_response_start_ms: required for observed meaningful_response')
+    if dim == 'feedback_detection' and document['status'] == 'observed':
+        if document.get('feedback_type') is None:
+            errors.append('/feedback_type: required for observed feedback_detection')
+        if document.get('feedback_start_ms') is None:
+            errors.append('/feedback_start_ms: required for observed feedback_detection')
+        if document.get('feedback_end_ms') is None:
+            errors.append('/feedback_end_ms: required for observed feedback_detection')
+    if dim == 'intent' and document['status'] == 'observed':
+        if document.get('intent_label') is None:
+            errors.append('/intent_label: required for observed intent')
+    if dim == 'finding_candidate' and document['status'] == 'observed':
+        if document.get('finding_severity') is None:
+            errors.append('/finding_severity: required for observed finding_candidate')
+        if document.get('suspected_layer') is None:
+            errors.append('/suspected_layer: required for observed finding_candidate')
+    if document.get('suspected_layer') is not None:
+        if not document.get('requires_log_verification'):
+            errors.append('/requires_log_verification: suspected_layer requires log verification')
+        if document.get('attribution_confidence') is None:
+            errors.append('/attribution_confidence: suspected_layer requires attribution_confidence')
+    return errors
