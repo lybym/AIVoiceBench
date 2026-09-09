@@ -1,96 +1,69 @@
-# System Architecture
+# System Architecture — Recording Import and Automatic Analysis
 
-## Target architecture
+The primary Windows product is an evaluation harness for externally recorded tester + AI terminal conversations. Recording may be performed by a phone, recorder or computer; tester speech can be spontaneous, driven by frozen audio or by a future agent. The import pipeline does not require a sound card, a live device or a TestCase. Existing HIL and Case infrastructure remains available as a later input path.
 
-Local Windows execution is the default deployment. Package the controller, station, local storage and user-facing management into a locally startable program. The diagram describes logical modules and later distributed expansion; it does not require cloud services or a service cluster for local use. Add online provider adapters through local configuration. Packaging choice and external binaries must be verified at the delivery phase.
-
-```text
-Web Control Plane
-  Projects / Devices / Versions / Cases / Suites / Runs / Reports
-                |
-                v
-          Test Orchestrator
-                |
-      +---------+----------+
-      |         |          |
- Fixed/Interactive Audio  Multi-turn  Exploratory Agent
-      |         |          |
-      +---------+----------+
-                v
-        Edge Test Station Agent
-      Playback / Recording / Triggers
-                |
-                v
-          Physical AI Device
-                |
-                v
-          Multi-track Evidence
-                |
-                v
-       Event Timeline Engine
-                |
-      +---------+----------+
-      |                    |
-Deterministic Metrics    ASR / Logs
-      |                    |
-      +---------+----------+
-                v
-         Evaluation Engine
-      Rule Engine + LLM Judge
-                |
-                v
-      Metrics / Findings / Evidence
-                |
-                v
- Dashboard / Regression / Release Gate
+```mermaid
+flowchart TD
+  R[External WAV / MP3 / M4A] --> I[Artifact ingestion: preserve original and hash]
+  I --> N[Normalization and QA: canonical audio plus provenance]
+  N --> A[Acoustic segmentation]
+  N --> S[ASR and diarization providers]
+  A --> F[Segment fusion and source attribution]
+  S --> F
+  H[Immutable human annotations] --> F
+  F --> T[Turn and response builder]
+  T --> E[Automatic events and canonical Timeline]
+  E --> D[Deterministic metric engine]
+  E --> L[Structured LLM Harness]
+  S --> L
+  D --> O[Findings / Evidence / Report]
+  L --> O
+  O --> V[Human verification / versioned reanalysis]
+  V --> H
+  V --> G[Regression and comparison]
+  X[Future Audio Station / HIL / Agent] -. feeds recordings .-> I
 ```
 
-## Control Plane
+## Processor boundaries
 
-Later phases will expose project, device, version, suite, run, metrics, findings, and report management through FastAPI + PostgreSQL with a React/Next.js UI.
+Every processor consumes artifact/revision references and an explicit versioned configuration, and emits immutable outputs plus a stage record. The orchestrator owns scheduling, failure isolation and dependency eligibility. It does not contain signal algorithms or semantic rule forests. The initial implementation uses local files and a CLI/internal API; a Windows UI and executable follow. No distributed Control Plane, database cluster or remote Station is required.
 
-## Edge Test Station
+| Processor | Input → output | Responsibility |
+| --- | --- | --- |
+| Artifact ingestion | file → OriginalArtifact, hash, import Run | copy without overwriting, size/format preflight |
+| Audio processing provider | original → canonical WAV, metadata, derivation record | decode/resample/downmix, preserve original timing and parameters |
+| Audio QA | canonical → measurements/warnings | duration, sample count, peak, RMS, DC, clipping; no invented acceptance limits |
+| Acoustic segmentation | waveform → boundary/interval candidates | signal-based timing, confidence and uncertainty; silence/noise/cue distinctions |
+| ASR provider | audio → raw response + Transcript | estimated text/word timing, never device-internal ASR |
+| Diarization/source attribution | waveform/reference/model outputs → speaker clusters/roles | tester/device/unknown, provenance and alternatives; first speaker is not automatically tester |
+| Segment fusion | acoustic + ASR + diarization + annotations → evidence-bearing segments | keep disagreements and uncertainty; never clone mix into isolated tracks |
+| Turn/response builder | segments + semantic decisions → associations | chronological candidates, interruption continuation/new intent, unresolved associations |
+| Event detector | segments/associations → EventTimeline | speech/response/interruption start/end, silence, overlap, timeout, possible false endpoint |
+| Deterministic engine | eligible events → MetricResult | calculations, denominator, thresholds and uncertainty |
+| LLM Harness | bounded evidence context → schema-constrained decisions | intent, effective answer selection, semantic quality and candidate findings |
+| Finding/report | validated metrics/decisions → Findings and JSON/Markdown | evidence references, confidence, review state, audio navigation |
+| Revision manager | corrections → append-only Annotation + new AnalysisRevision | retain original machine output and reproducible effective views |
 
-Runs next to the physical device. Responsibilities:
+## Run and artifact identity
 
-- download test definition/assets
-- play deterministic stimulus audio
-- record device response
-- trigger interactive events such as barge-in relative to detected device speech
-- capture timestamps and calibration metadata
-- upload artifacts/results
+A Run snapshots Device, Hardware, Firmware, AI Model, Prompt Version, Supplier, Environment and Notes. Unknown labels remain null. A scripted TestCase is optional; unscripted imports use a versioned evaluation profile, not fabricated test audio or expected answers. OriginalArtifact has its own hash/container/metadata and never gets overwritten. NormalizedAudio references its parent original plus the exact converter/tool version and conversion parameters. Preserve native channels and compressed source; mono is a working derivative, not proof of isolated sources.
 
-## Evidence model
+Analysis revisions preserve Run ID, original hash, input artifact IDs, processor/config fingerprint, invocation IDs and annotation IDs. Re-running with a new model or manual corrections creates a new revision. Distinguish identical imported file content from identical model output: hosted models may change or be nondeterministic. All outputs are local by default; private recordings and personal reports are ignored by Git.
 
-The platform should support at least:
+Every stage records pending/running/complete/partial/insufficient_evidence/failed as appropriate. Processor failure leaves previous artifacts intact and produces a stage failure record. Downstream unavailable outputs use explicit envelopes, not malformed canonical objects or invented empty successes. A basic report is always attempted and shows gaps; a report file alone does not certify the full analysis succeeded.
 
-- stimulus/source audio track
-- device/room recording track
-- optional room reference track
-- timestamped ASR
-- device logs when available
+## Timing and source contracts
 
-Single mixed recordings are supported as an MVP input but should be marked as lower-confidence evidence for attribution.
+The source recording is the imported session clock, starting at the decoder's first retained audio sample. Preserve original presentation start time and conversion mapping. Codec delay/edit lists/resampling/downmix can affect alignment: record what the decoder handled and expose residual uncertainty rather than claiming original sample-level equivalence. Canonical sample-to-time mapping is exact inside its own waveform; audible onset and role are estimates.
 
-## Evaluation split
+Each boundary carries time basis, source, method, confidence, uncertainty and evidence. Acoustic, ASR estimated, diarization, semantic selection and manually corrected timing are distinct. LLMs select existing segment/word/boundary references; they cannot author acoustic timestamps. Manual corrections add a new evidence/annotation layer. Mixed-channel overlap often needs diarization/separation evidence and may remain unknown. A possible false endpoint is a candidate until intended continuation is supported. A timeout requires a configured expectation and a complete observation window; file end alone is not device timeout.
 
-### Code-computed
+## Deterministic Engine plus LLM Harness
 
-Latency, overlap, stop latency, speech duration, CER/WER where ground truth exists, success/failure counts, timeout rate, percentiles.
+Deterministic code owns hashes, media I/O, metadata, signal measurements, arithmetic, CER/WER when a legitimate reference exists, interval unions, percentiles, thresholds and validation. LLMProvider, ASRProvider, TTSProvider, AudioProcessingProvider and DiarizationProvider share versioned invocation records: provider/model/API/config/prompt version/timestamp/input-output refs/latency/status. Credentials belong in environment, local secret configuration or OS store, never profiles or Git.
 
-### LLM-judged
+The Harness follows Context → Model → Structured Decision → allowed deterministic tool → Observation → Model → validated result. Calls are bounded and decisions schema-constrained. JudgeResult retains decision/score/confidence/reason/evidence_refs/turn_refs/model/prompt_version. Decision retains selected_action/confidence/rationale/required_tools/expected_evidence. Validate tool allowlists and reference existence before execution. Record raw model output separately from validated output. Insufficient or low-confidence semantics stays needs_review. Candidate findings cannot claim internal VAD/ASR/LLM/TTS delays or proven root causes; suspected layers need attribution confidence and log verification.
 
-Intent understanding, context, memory, reasoning quality, instruction following, persona, emotion, hallucination, and safety.
+## Windows delivery and later extensions
 
-LLM results must be structured and evidence-linked; they are not allowed to fabricate precise technical timing.
-
-## Core contracts
-
-All major components exchange four canonical objects:
-
-1. TestCase
-2. Event
-3. MetricResult
-4. Finding
-
-Schema evolution must be versioned and backward-compatible where practical.
+Home/Runs → Import → Analyze → Analysis with waveform, speaker segments, transcript, turns, events, metrics and findings. Clicking a finding navigates to its evidence time range. Human edits are explicit revisions. First executable/installer must be tested on Windows with real 5–20 minute recordings and configured providers. Version/supplier Compare, Golden replay, multi-turn/exploratory agents follow. Audio Station, loopback, automatic physical HIL and remote Station remain P3 extensions with existing code preserved.

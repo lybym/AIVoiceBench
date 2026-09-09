@@ -1,105 +1,41 @@
-# Development Roadmap
+# Development Roadmap — Import-first MVP
 
-Final acceptance: Windows executable or installer, verified local startup and complete test/analysis workflow with configuration and usage instructions. Local execution may call configured online providers; no cloud cluster is mandatory. Continuously push source, tests, schemas, build configuration and docs through Issue PRs without automatic merge. CLI MVP is an intermediate milestone. Detailed scope: `05-project-context.md`; actual progress: `06-work-log.md`.
+Updated 2026-09-07 by explicit product direction. Primary workflow: External Recording → Import → Normalize/QA → Acoustic + ASR/Diarization → Attribution/Fusion → Turns/Events/Timeline → Metrics → LLM Harness → Findings/Evidence → Human Verification → Report/Regression. Preserve the existing contracts, Runner, ASR/Vosk, deterministic engine and Audio Station. See `13-import-first-migration.md` for audited refs and Issue migration.
 
-## Phase 0 - Contracts and methodology
+## P0 — establish the import path
 
-Goal: stabilize the vocabulary and data contracts before building UI or infrastructure.
+1. #20 architecture, repository/PR audit and migration governance.
+2. #21 immutable WAV/MP3/M4A import, canonical normalization, provenance, versioned stage ledger and recoverable partial Run; basic JSON/Markdown status report.
+3. #22 unified invocation/provider layer plus current cloud ASR/diarization, preserving Vosk fallback. #23 independent acoustic segmentation with explicit uncertainty.
+4. Define #26 annotation/revision contract early; #24 consumes it with ASR/acoustic evidence to create role assignments, turns/responses and events automatically.
+5. #25 expand metrics without changing legacy meanings: feedback, first speech, meaningful response, turn gap, barge-in stop/new intent/composite success, false endpoint and overlap duration/ratio.
+6. #27 integrate the complete pipeline and verify real-recording acceptance. #10 and #11 below are dependencies for full semantic/report acceptance; unavailable stages may be partial during intermediate milestones.
 
-Deliverables:
+## P1 — semantic judgement and review
 
-- TestCase schema
-- Event schema
-- MetricResult schema
-- Finding schema
-- initial metric definitions
-- example objects
-- project charter and architecture
+- #10 structured, provider-independent Harness/Judge: intent/turn relations, meaningful answer position, context/memory/instructions, reasoning/hallucination, persona/emotion/proactivity/safety, candidate findings. No invented timing/evidence/internal causes.
+- #26 append-only text/speaker/boundary/association/finding corrections, effective views and reanalysis. Preserve original machine outputs and reviewer provenance.
+- #11 complete evidence-linked JSON/Markdown report, clear machine/semantic/human status and audio ranges. No invented scores/release gates. The thin #21 report is a checkpoint, not full report acceptance.
 
-Exit criteria:
+## P2 — test generation and comparison
 
-A minimal VAD, latency, barge-in, ASR, and context test can be represented end-to-end without ad-hoc fields.
+- #9 mature API TTS → frozen Golden assets with source/model/voice/config/hash and sample-exact inserted pauses. Currently paused draft retained.
+- Scripted multi-turn controller, exploratory voice agent, minimized regression Cases.
+- Version/device/supplier comparison, known-policy release gates and population/denominator-aware statistics.
 
-## Phase 1 - Local Runner MVP
+## P3 — physical automation
 
-Goal: one workstation can execute tests against one physical AI voice device.
+- #6 integrated Audio Station, device playback/capture and loopback calibration; existing code/tests retained.
+- Automatic HIL and remote Station. These do not block imported-recording analysis.
 
-Planned capabilities:
+## Real MVP acceptance and Windows application
 
-1. Load and validate TestCase definitions.
-2. Play fixed WAV stimuli.
-3. Record device/room audio.
-4. Integrate timestamped ASR.
-5. Detect speech events and build Event Timeline.
-6. Compute deterministic metrics.
-7. Invoke structured LLM judgement for semantic dimensions.
-8. Produce JSON + Markdown reports with evidence references.
-9. Support a small Golden Set covering VAD, ASR, latency, barge-in, and context.
+Give the program one real 5–20 minute tester + terminal recording. It must preserve/hash the source; standardize audio; transcribe with timestamps; automatically identify tester/device/unknown speech; build turns/events; compute eligible latency, interruption and overlap measurements; evaluate semantics; emit findings and JSON/Markdown; resolve every important conclusion to Run/Turn/Event/audio interval/Transcript/Evidence/processor or model version; allow human corrections; reproduce or explain differences between analysis revisions.
 
-Exit criteria:
+Confidence/uncertainty must remain honest. Unknown speaker is not forced into a role, ASR timestamps are not acoustic ground truth, silence at EOF is not automatically timeout, and unavailable semantic checks do not pass barge-in success. Synthetic codec/fixture tests and generated speech smoke tests are labeled separately from real acceptance. No actual user recording is available yet.
 
-A small versioned set covering VAD, ASR, latency, barge-in and context runs through the chain. Record actual hardware coverage and missing provider/hardware inputs; synthetic dry-run is separate. The historical 20-30 count is a planning reference, not an approved minimum. Two-version comparisons are verified when both versions are available.
+Ship a Windows executable/installer with Runs, Import (device/hardware/firmware/model/prompt/supplier/environment/notes), Analyze, waveform/transcript/turns/events/metrics/findings, evidence navigation and human review. Verify local launch and dependencies. Code, standalone commands and a placeholder report do not satisfy packaged MVP acceptance. Cloud providers may be configured; no server cluster is mandatory.
 
-## Phase 2 - Local application and Control Plane
+## Integration policy
 
-Goal: persist and manage tests through a complete locally usable Windows program. Provide Case/run management, local configuration, reports/evidence browsing and documented startup. Choose and verify a Windows packaging approach, dependencies and external tools; produce an executable or installer and test local startup/full workflow. Keep central/Edge deployment optional.
-
-Suggested stack:
-
-- FastAPI
-- PostgreSQL
-- React/Next.js
-- local filesystem initially, S3/MinIO later
-
-These are expansion choices, not mandatory local services. Introduce dependencies only when the current stage requires them; a lightweight local persistence option should support the packaged product.
-
-Core entities:
-
-- Project
-- DeviceModel / DeviceInstance
-- FirmwareVersion / AIConfigVersion
-- TestCase / TestCaseVersion
-- TestSuite
-- TestRun / TestRunCase
-- Artifact / Transcript / Event
-- MetricResult / JudgeResult
-- Finding / Evidence
-- Baseline / ReleaseGate
-
-## Phase 3 - Remote Test Station
-
-Goal: separate the physical lab executor from the central platform.
-
-Capabilities:
-
-- station registration and health
-- WebSocket command channel
-- asset download/upload
-- audio playback and multi-track recording
-- calibration
-- interactive triggers such as barge-in
-- environment metadata capture
-
-## Phase 4 - Automated Regression
-
-Goal: turn Golden Sets into release qualification.
-
-Capabilities:
-
-- Golden Set versioning
-- baseline comparison
-- P50/P90/P95/P99 trends
-- supplier comparison
-- release gates
-- defect-to-regression-case workflow
-
-## Phase 5 - Exploratory Voice Agent
-
-Goal: use a realtime voice model as a fuzz/exploratory tester rather than as the benchmark itself.
-
-Principles:
-
-- external controller owns coverage, topic rotation, and state
-- realtime voice model executes natural speech behavior
-- confirmed failures are minimized into deterministic regression cases
-- exploratory results never silently overwrite Golden Set results
+PRs #12–#19 remain unmerged; CI succeeds but main is still the initial repository. Recommend owner-authorized review/integration of #12–#15 first, then scoped #16–#19. Never merge automatically. New architecture/import branches share fixed `integration/import-analysis-foundation` at `167e5cc` rather than extending the serial PR stack. After approved foundation integration, retarget to main and rerun relevant validation. Keep every logical work unit in its own Issue/branch/PR and record actual test, commit, push and PR evidence in the work log.

@@ -1,6 +1,24 @@
 # Persistent project context and delivery agreement
 
-Updated 2026-09-06. This document preserves the user-authorized scope for future sessions. Read alongside the charter, architecture, roadmap and work log. Historical examples are design references, never approved acceptance thresholds.
+Updated 2026-09-07. This document preserves the user-authorized scope for future sessions. Read alongside the charter, architecture, roadmap and work log. Historical examples are design references, never approved acceptance thresholds.
+
+## Primary workflow — import-first MVP (highest-priority user direction)
+
+External Recording → Artifact Import → Audio Normalization/QA → Acoustic Segmentation → ASR/Diarization → Speaker Attribution/Fusion → Turn/Response Builder → Automatic Events/Timeline → Deterministic Metrics → Structured LLM Harness/Judge → Findings/Evidence → Human Verification → Report/Regression.
+
+The first MVP analyzes an existing 5–20 minute real conversation recorded by a phone, recorder or computer, usually single-channel mixed tester + device sound. Accept WAV/MP3/M4A. Preserve original and derived files, hashes, processor/model/config versions and their provenance. A failed stage must not destroy the Run; pending/partial/failed/insufficient evidence are valid outputs. Repeated analyses and human corrections are separate immutable revisions.
+
+Retain TestCase, EventTimeline, Evidence, MetricResult, Finding, Runner, ASR/Vosk, deterministic engine, validators and tests. Extend/adapt/integrate them. A recording without a scripted Case must still be importable. Do not invent a TestCase or expected answer for an unscripted conversation. Keep existing Audio Station; HIL playback/recording/loopback/remote station are P3 and are not acceptance dependencies for imports. Golden TTS is P2, not the next mechanical Issue.
+
+Mixed-audio diarization IDs are not tester/device roles. Roles may be unknown and require confidence, provider/model/source/evidence. Acoustic timing, ASR estimates, diarization timing, LLM semantic selection and manual corrections remain distinct; uncertain boundaries never become acoustic ground truth. Candidate overlap/interruption/false endpoint must not automatically become a confirmed defect. Preserve machine outputs plus human revision annotations for text, speakers, boundaries, associations and findings.
+
+Deterministic processors own file handling/hash/metadata/signal timing/arithmetic/CER-WER/thresholds/validation. The schema-constrained LLM Harness owns semantic decisions, context/memory/intent, meaningful response, conversation quality and finding candidates. Models select existing evidence/boundary IDs; they cannot invent times, internal delays or verified causes. Record invocation provider/model/API/config/prompt version/input-output refs/latency/status without secrets. Prefer effective mature cloud audio APIs when configured; Vosk is an optional fallback, not a required default.
+
+Expand latency into feedback (typed), first speech, meaningful response, turn gap, barge-in stop and new-intent response. Barge-in success additionally needs semantic acceptance/new-intent answer/no return to the old response. Include overlap duration/ratio and explicit denominator. Keep original metric definitions compatible and version extensions. Missing evidence stays null/insufficient/needs_review.
+
+Windows first UI: Runs, Import with device/hardware/firmware/AI model/prompt/supplier/environment/notes, Analysis with waveform/speaker/transcript/turn/event/metric/finding navigation, and timestamp-linked evidence. Version/supplier comparison follows. No complex cloud Control Plane is required.
+
+Current governance/migration: #20 architecture, #21 import/normalization, #22 providers/cloud ASR/diarization, #23 acoustic candidates, #26 revision contract, #24 fusion/turns/events, #25 latency, #10 Harness/Judge, #11 reports, #27 integration/real-recording/Windows acceptance. See `13-import-first-migration.md`. New branches share `integration/import-analysis-foundation` at `167e5cc`; this preserves unmerged work and is not a merged main or owner approval. Do not extend the serial PR chain; restore main only after explicit merge authorization and review.
 
 ## Workspace, ownership and source
 
@@ -14,7 +32,7 @@ Updated 2026-09-06. This document preserves the user-authorized scope for future
 
 Hardware clarification (2026-09-07): target hardware is not prepared yet. Its form is a voice-conversation terminal with built-in speaker and microphone. Continue generic/offline implementation; actual terminal testing and station routing/calibration remain pending. Do not assume a specific model or report device performance from computer endpoint enumeration.
 
-Deliver a compiled/packaged Windows executable or installer that starts locally and completes Case management/execution, audio playback and recording, timestamped ASR, Timeline, deterministic metrics, structured Judge, Evidence, Findings, reports and regression. Supply local configuration, startup and user instructions. Code, documentation, isolated scripts or a cloud-only service are not final delivery.
+Deliver a compiled/packaged Windows executable or installer centered on recording import and analysis, timestamped ASR, speaker/turn/event reconstruction, deterministic metrics, structured Judge, Evidence, Findings, human revision and reports. Supply local configuration, startup and user instructions. Code, documentation, isolated scripts or a cloud-only service are not final delivery. Case execution/audio station/regression automation remain supported expansion goals, not the first MVP gate.
 
 Local execution does not mean fully offline. ASR, TTS and LLM providers may require configured online services and credentials; document those dependencies. Verify packaging dependencies, external binaries, Windows startup and an end-to-end run on the user's machine at the relevant phase. Record exactly which hardware and scenarios were actually tested, and which remain untested. Central Control Plane / Edge is the modular expansion architecture; cloud deployment, PostgreSQL/Redis clusters and separate servers must not be mandatory for local use.
 
@@ -22,7 +40,7 @@ Continuously synchronize source, schemas, tests, build/packaging configuration a
 
 ## Complete evaluation loop
 
-Test audio or agent -> conversation with physical toy -> full multitrack recording -> timestamped ASR -> Event Timeline -> deterministic metrics -> LLM Judge -> Evidence -> Finding -> report/regression. Support version qualification, supplier comparison and development regression. Every Run must snapshot device instance/model, hardware, firmware, model, Prompt, environment and test-asset versions.
+Recording / Test → Evidence → Events → Metrics → Semantic Evaluation → Findings → Human Verification → Regression. The primary entry point is externally recorded mixed audio; scripted or agent-driven HIL may later feed the same pipeline. Support version qualification, supplier comparison and development regression. Every Run snapshots device instance/model, hardware, firmware, model, Prompt, supplier, environment, notes and known test-asset versions; unknown values remain unknown.
 
 The platform controls, captures, calculates and regresses. Models generate suitable exploratory stimuli and evaluate semantics. Rule Engine and Judge stay separate. Evidence is a first-class object with artifact, track, timestamp basis, source, confidence and resolvable references. Missing evidence yields insufficient evidence / blocked, never invented timing, failures, passes or internal causes. Subjective experience needs human sampling and serious safety issues need human review.
 
@@ -62,6 +80,6 @@ Reports order: Release Gate -> KPI Dashboard -> composite score. Gate rules must
 
 ## Sequencing and continuation
 
-First read actual Issue acceptance criteria and verify existing work. P0 Issues #1 TestCase, #2 Timeline, #3 Metric/formulas, #4 Finding/Evidence precede #5 local runner, #6 playback/recording/calibration, #7 timestamped ASR, #8 timeline/metric engine, #9 Doubao TTS Golden Stimulus, #10 structured Judge, #11 evidence-linked reports. Separate Issue branches and PRs; dependent PRs may be stacked with explicit base/dependencies, without merging.
+The import-first priority and Issue mapping above supersede the historical #1→#11 serial execution plan. Preserve all earlier work, but do not mechanically continue #9 or hardware tasks. Review current Issue acceptance and reuse existing modules. Separate Issue branches/PRs on one reviewed or explicitly provisional baseline, without automatic merge.
 
 Keep full context here and append execution evidence to `06-work-log.md`: phase/Issue, artifacts, commits/PRs, actual commands/results, blockers, next action. When hardware, microphone, provider credentials or GitHub access is unavailable, record the exact dependency and continue independent contract/fixture/offline/dry-run work. Never call mock evidence real HIL. Continue toward the packaged local product after CLI MVP.
