@@ -44,3 +44,7 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md) for offline validation commands, [
 ### Web release v0.1.2
 
 The browser workspace supports WAV, MP3 and M4A imports, persistent original and normalized evidence, consistent history/detail status, audio playback and Markdown report download. Docker includes FFmpeg. Health and OpenAPI read the same application version. Release publication checks the tag against that version and smoke-tests the built container with synthetic recordings in all three formats. Speaker attribution and semantic conclusions still abstain when evidence is unavailable; this is not real-device MVP acceptance.
+
+### Model management v0.1.3
+
+Use the browser Model Management page to register provider/model profiles and select defaults for result analysis or future speech capabilities. Existing compatible Chat Completions result analysis is wired; speech adapters are explicitly pending integration. Keys are write-only, configuration revisions prevent stale writes and each Web Run keeps a non-secret snapshot. See [model management](docs/16-model-management.md) for persistence, credential handling and deployment scope.

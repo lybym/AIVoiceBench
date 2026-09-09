@@ -20,6 +20,19 @@ else:
     raise RuntimeError('Container did not become healthy')
 assert health.json()['version']==VERSION
 assert requests.get(base+'/openapi.json',timeout=5).json()['info']['version']==VERSION
+settings=requests.get(base+'/api/models',timeout=5).json()
+profile={'id':'smoke','name':'Synthetic configuration','provider':'test','protocol':'openai_chat',
+    'model':'synthetic','base_url':'https://example.com/v1','credential_env':'',
+    'enabled':False,'capabilities':['judge'],'parameters':{}}
+payload={'expected_revision':settings['revision'],'profiles':[profile],
+    'routes':dict.fromkeys(['tts','asr','diarization','judge']), 'secrets':{'smoke':'synthetic-secret-canary'}}
+response=requests.post(base+'/api/models',json=payload,timeout=5)
+response.raise_for_status()
+assert 'synthetic-secret-canary' not in response.text
+assert response.json()['profiles'][0]['credential_configured']
+response=requests.post(base+'/api/models',json={'expected_revision':response.json()['revision'],
+    'profiles':[],'routes':payload['routes']},timeout=5)
+response.raise_for_status()
 with tempfile.TemporaryDirectory() as tmp:
     source=Path(tmp)/'synthetic.wav'
     with wave.open(str(source),'wb') as f:

@@ -17,7 +17,7 @@ services:
     # build: .
     container_name: aivoicebench
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./data/recordings:/data/recordings:ro
       - ./data/output:/data/output

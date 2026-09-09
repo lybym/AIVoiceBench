@@ -28,3 +28,7 @@ reports/generated/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local model configuration and credential databases
+.model-settings/
+credentials.sqlite3*

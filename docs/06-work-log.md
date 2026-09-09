@@ -139,3 +139,13 @@
 - Added FFmpeg to Docker; redesigned browser UI with restrained green/neutral styling, responsive sidebar, upload form, status/history, audio playback, segment seek controls, metrics/findings tabs and report download. User-controlled text is escaped. Removed misleading no-findings assertion of acceptable metrics.
 - Validation: 269 tests passed locally, including real codec conversion of synthetic silence (WAV/MP3/M4A), corrupt upload retention, legacy status and version equality. Browser inspection confirmed import layout, version, history partial status, detail player and report tab. No real user recording/cloud call/device test. Release workflow now smoke-tests built Docker image for those three formats, version/status and audio responses before publishing.
 - User requested Docker Release delivery; planned v0.1.2 via GitHub Actions after checks. No Windows installer. Real mixed-recording accuracy and semantic attribution remain unverified.
+
+
+## 2026-09-09 — Model management follow-up (#44)
+
+- v0.1.2 Docker Release workflow 34362745578 succeeded, including actual container smoke for version, WAV/MP3/M4A, history/detail and audio. PR #43 checks succeeded; release tag pins d8bf909. PR remains unmerged under existing governance.
+- User added model configuration management inspired by DeepSeek Harness. Read local provider-profile/configuration and redacted settings contracts. Implemented original Python model registry, per-capability routes, transactional optimistic revisions, write-only local keys/env references, safe validation and next-Run configuration capture.
+- Browser model manager supports add/edit/remove, enable/disable, default routing, provider/model/endpoint and purpose-specific parameters. Existing result Judge consumes selected OpenAI-compatible profile. Speech provider configurations remain explicitly not_integrated until adapter work; no cloud endpoints/models are guessed and no provider request is made on save.
+- Every new Web Run captures/registers a SHA256-backed secret-free configuration snapshot. SQLite stores local credentials under persistent output; Compose defaults to localhost. Added redaction, concurrency, route/parameter validation, env precedence and Run-freeze tests. Browser verified model creation and default selection without secrets or network calls.
+- Final validation: full 278 tests passed in 36.680 s, including 9 model settings tests. v0.1.3 Docker release verification follows. No real recording or cloud/device validation.
+- Branch feature-model-management is one bounded follow-up to #43, not a growing feature stack. Publish via explicit source ref; keep PRs available for user-authorized integration.
