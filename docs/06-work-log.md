@@ -129,3 +129,13 @@
 - Validation: full unittest discovery — 264 tests passed (30.568 s); whitespace diff check passed. Tests include provider failure, malformed JSON, invented timestamps, unknown-role abstention and revision preservation. No real provider call, user recording, or physical device test occurred.
 - Docker client is present but Docker engine is unavailable (docker_engine named pipe missing). Image startup, persistent-volume recovery and browser acceptance remain unverified. Existing Docker service serves API and static frontend together; no Windows installer is required.
 - Remaining P0: shared Web/CLI import orchestration (including MP3/M4A), audited ASR/diarization integration, canonical timeline/metric validation and correct event/latency semantics. Structured semantic anchoring, complete evidence playback/revision flows and labeled real-recording acceptance remain open. This patch restores a conservative baseline; it does not complete the MVP. No automatic merge.
+
+
+## 2026-09-09 — Web release corrections and minimal workspace (#42)
+
+- Based on main `19d3a07` after authorized #41 merge/v0.1.1 publication. Branch `fix-web-release-v012`; original checkout/rebase preserved.
+- Unified health/OpenAPI version as 0.1.2; release workflow checks requested tag against source version. History and detail share report-first status resolution, including legacy silent Runs without a timeline file.
+- Web WAV/MP3/M4A now reuse the existing immutable recording import/normalization pipeline, including originals, hashes, conversion metadata and parent references. Derived Web analysis uses a separate directory and never replaces registered import outputs. Failed conversion/analysis retains the Run; deep per-stage analysis integration remains future work.
+- Added FFmpeg to Docker; redesigned browser UI with restrained green/neutral styling, responsive sidebar, upload form, status/history, audio playback, segment seek controls, metrics/findings tabs and report download. User-controlled text is escaped. Removed misleading no-findings assertion of acceptable metrics.
+- Validation: 269 tests passed locally, including real codec conversion of synthetic silence (WAV/MP3/M4A), corrupt upload retention, legacy status and version equality. Browser inspection confirmed import layout, version, history partial status, detail player and report tab. No real user recording/cloud call/device test. Release workflow now smoke-tests built Docker image for those three formats, version/status and audio responses before publishing.
+- User requested Docker Release delivery; planned v0.1.2 via GitHub Actions after checks. No Windows installer. Real mixed-recording accuracy and semantic attribution remain unverified.

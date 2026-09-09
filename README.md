@@ -39,3 +39,8 @@ The final deliverable is a Docker-deployed backend and frontend, accessed throug
 The import-first milestone now also provides `python -m aivoicebench import recording.wav` (WAV/MP3/M4A), source preservation, canonical conversion/QA, optional Vosk ASR and recoverable stage-status reports. Automatic speaker/turn/event/semantic analysis is still pending. See [recording import instructions](docs/14-recording-import.md) and the [primary-workflow migration PR](https://github.com/lybym/AIVoiceBench/pull/28).
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) for offline validation commands, [project context](docs/05-project-context.md) for the complete delivery agreement, [contract versions](docs/07-contract-versions.md) for migration and trigger semantics, and [work log](docs/06-work-log.md) for actual progress and untested dependencies.
+
+
+### Web release v0.1.2
+
+The browser workspace supports WAV, MP3 and M4A imports, persistent original and normalized evidence, consistent history/detail status, audio playback and Markdown report download. Docker includes FFmpeg. Health and OpenAPI read the same application version. Release publication checks the tag against that version and smoke-tests the built container with synthetic recordings in all three formats. Speaker attribution and semantic conclusions still abstain when evidence is unavailable; this is not real-device MVP acceptance.
