@@ -1,10 +1,20 @@
 # AIVoiceBench — Docker Compose
-# Usage: docker-compose up
-# Then: open http://localhost:8000 (Web UI) or http://localhost:8000/docs (API)
+# 
+# 方式 1: 使用预构建镜像 (推荐)
+#   1. docker login ghcr.io -u lybym -p YOUR_GITHUB_TOKEN
+#   2. docker-compose up
+#   3. 打开 http://localhost:8000
+#
+# 方式 2: 本地构建
+#   1. 将下方 image 注释, 取消 build 注释
+#   2. docker-compose up --build
 
 services:
   aivoicebench:
-    build: .
+    # 预构建镜像 (GitHub Actions 自动构建)
+    image: ghcr.io/lybym/aivoicebench:latest
+    # 本地构建 (取消注释以下行, 注释上方 image 行)
+    # build: .
     container_name: aivoicebench
     ports:
       - "8000:8000"
@@ -13,18 +23,16 @@ services:
       - ./data/output:/data/output
       - ./data/cache:/data/cache
       - ./config:/app/config:ro
-      # Optional: mount FFmpeg binary
-      # - /usr/bin/ffmpeg:/usr/local/bin/ffmpeg:ro
     environment:
       - AIVOICEBENCH_OUTPUT=/data/output
       - AIVOICEBENCH_CACHE=/data/cache
       # === LLM Provider ===
-      # "mock" = no API key (default), "volcengine" = 火山引擎豆包, "openai" = OpenAI
+      # "mock" = 无需 API Key (默认), "volcengine" = 火山引擎豆包, "openai" = OpenAI
       - AIVOICEBENCH_LLM_PROVIDER=mock
       # --- 火山引擎豆包 ---
-      # Set ARK_API_KEY in .env file (never commit to git!)
+      # 在 .env 文件中设置 (不要提交到 Git!)
       # - ARK_API_KEY=your_key_here
-      # - AIVOICEBENCH_LLM_MODEL=ep-xxxxxxxx  # your endpoint ID
+      # - AIVOICEBENCH_LLM_MODEL=ep-xxxxxxxx  # 你的 endpoint ID
       # --- OpenAI ---
       # - OPENAI_API_KEY=your_key_here
       # - AIVOICEBENCH_LLM_MODEL=gpt-4o
