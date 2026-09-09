@@ -117,3 +117,15 @@
 - Updated architecture, context, roadmap, methodology and README. Added fixed integration snapshot branch at `167e5cc`; new branches are siblings, not further serial stack members. No PR was merged or retargeted.
 - Verified specified official Volcano product-update page through the browser and followed current recording-recognition API navigation (page updated 2026-09-04). Recorded transport/model/format caveats in the migration document. No provider call or recording upload.
 - Confirmed local FFmpeg/FFprobe executables are available. Next: #21 recording ingestion, canonical conversion, provenance and isolated stage failure outputs. Real-recording/semantic MVP and Windows packaging remain future acceptance.
+
+
+## 2026-09-09 — Evidence-safe baseline and Docker/browser delivery (#40)
+
+- Audited main `4ee8594`: four regression failures, unsupported alternating speaker roles, and LLM failure/mock behavior prevented trustworthy MVP claims. Existing import/contracts/ASR/metric foundations and Audio Station are preserved.
+- User explicitly replaced native Windows packaging with Docker backend + frontend accessed from a Windows browser. Updated active architecture, context, roadmap, methodology and configuration; historical log entries remain historical.
+- Original checkout has an unfinished rebase. Created isolated sibling worktree `AIVoiceBench-issue40`, branch `issue-40-regression-docker`, from main without changing that rebase.
+- Fixed acoustic CLI file/directory output, empty canonical audio handling, and list-shaped human revisions. Default fusion preserves unknown roles and abstains from role-dependent events; attributed downstream fixtures remain explicitly synthetic.
+- Default semantic provider is unavailable, not mock. Provider errors and invalid/unreferenced decisions fail closed without exposing exception contents; unverified model timestamps cannot populate latency metrics. Mock remains available only through explicit test/CLI selection.
+- Validation: full unittest discovery — 264 tests passed (30.568 s); whitespace diff check passed. Tests include provider failure, malformed JSON, invented timestamps, unknown-role abstention and revision preservation. No real provider call, user recording, or physical device test occurred.
+- Docker client is present but Docker engine is unavailable (docker_engine named pipe missing). Image startup, persistent-volume recovery and browser acceptance remain unverified. Existing Docker service serves API and static frontend together; no Windows installer is required.
+- Remaining P0: shared Web/CLI import orchestration (including MP3/M4A), audited ASR/diarization integration, canonical timeline/metric validation and correct event/latency semantics. Structured semantic anchoring, complete evidence playback/revision flows and labeled real-recording acceptance remain open. This patch restores a conservative baseline; it does not complete the MVP. No automatic merge.

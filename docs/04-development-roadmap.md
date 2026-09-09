@@ -28,14 +28,22 @@ Updated 2026-09-07 by explicit product direction. Primary workflow: External Rec
 - #6 integrated Audio Station, device playback/capture and loopback calibration; existing code/tests retained.
 - Automatic HIL and remote Station. These do not block imported-recording analysis.
 
-## Real MVP acceptance and Windows application
+## Real MVP acceptance and Docker/Web UI delivery
 
 Give the program one real 5–20 minute tester + terminal recording. It must preserve/hash the source; standardize audio; transcribe with timestamps; automatically identify tester/device/unknown speech; build turns/events; compute eligible latency, interruption and overlap measurements; evaluate semantics; emit findings and JSON/Markdown; resolve every important conclusion to Run/Turn/Event/audio interval/Transcript/Evidence/processor or model version; allow human corrections; reproduce or explain differences between analysis revisions.
 
 Confidence/uncertainty must remain honest. Unknown speaker is not forced into a role, ASR timestamps are not acoustic ground truth, silence at EOF is not automatically timeout, and unavailable semantic checks do not pass barge-in success. Synthetic codec/fixture tests and generated speech smoke tests are labeled separately from real acceptance. No actual user recording is available yet.
 
-Ship a Windows executable/installer with Runs, Import (device/hardware/firmware/model/prompt/supplier/environment/notes), Analyze, waveform/transcript/turns/events/metrics/findings, evidence navigation and human review. Verify local launch and dependencies. Code, standalone commands and a placeholder report do not satisfy packaged MVP acceptance. Cloud providers may be configured; no server cluster is mandatory.
+Ship a Docker backend and frontend, usable through a Windows browser, with Runs, Import (device/hardware/firmware/model/prompt/supplier/environment/notes), Analyze, waveform/transcript/turns/events/metrics/findings, evidence navigation and human review. Verify container startup, persistent Run storage, restart recovery and browser workflows. A Windows executable/installer is not required. Code, standalone commands and a placeholder report do not satisfy MVP acceptance. Cloud providers may be configured; no server cluster is mandatory.
 
 ## Integration policy
 
-PRs #12–#19 remain unmerged; CI succeeds but main is still the initial repository. Recommend owner-authorized review/integration of #12–#15 first, then scoped #16–#19. Never merge automatically. New architecture/import branches share fixed `integration/import-analysis-foundation` at `167e5cc` rather than extending the serial PR stack. After approved foundation integration, retarget to main and rerun relevant validation. Keep every logical work unit in its own Issue/branch/PR and record actual test, commit, push and PR evidence in the work log.
+As of the 2026-09-09 audit, main at `4ee8594` contains the integrated foundation,
+import pipeline and later acoustic/fusion/metrics/LLM/revision/Web UI modules.
+The previous serial PRs are closed; closure alone is not proof of acceptance.
+New fixes branch from current main and receive independent Issues/PRs. Do not
+merge automatically. Issue #40 restores the regression baseline and Docker/Web UI
+acceptance; next fix unsupported speaker attribution, false LLM success, metric
+contracts, and shared Web/CLI import/evidence orchestration before real-recording
+acceptance. Cloud ASR/provider-audit work from #31/#32 still needs explicit
+integration accounting. Record actual tests and unverified limitations separately.

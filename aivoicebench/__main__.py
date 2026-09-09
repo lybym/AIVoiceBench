@@ -66,7 +66,7 @@ def main(argv=None):
     judge.add_argument('--turns', type=Path, required=True, help='Path to turns JSON')
     judge.add_argument('--metrics', type=Path, required=True, help='Path to metrics JSON')
     judge.add_argument('--output', type=Path, default=Path('artifacts/judge'))
-    judge.add_argument('--provider', choices=['mock'], default='mock', help='LLM provider (mock for testing)')
+    judge.add_argument('--provider', choices=['none', 'mock'], default='none', help='LLM provider (mock for testing)')
     audio = subparsers.add_parser('audio', help='Optional explicit audio station commands')
     audio_commands = audio.add_subparsers(dest='audio_command', required=True)
     audio_commands.add_parser('devices', help='List devices without opening a recording stream')
@@ -196,7 +196,10 @@ def main(argv=None):
                 merge_gap_ms=args.merge_gap_ms,
                 pre_roll_ms=args.pre_roll_ms,
                 post_roll_ms=args.post_roll_ms)
-            document, out_path = segment_audio(args.source, args.output / ('ACOUSTIC-' + __import__('uuid').uuid4().hex + '.json'), segmenter)
+            destination = args.output
+            if destination.suffix.lower() != '.json':
+                destination = destination / ('ACOUSTIC-' + __import__('uuid').uuid4().hex + '.json')
+            document, out_path = segment_audio(args.source, destination, segmenter)
             print(f'{document["status"].upper()} {out_path} ({len(document["segments"])} acoustic segment(s); signal timing, no speaker role)')
             return 0 if document['status'] == 'complete' else 2
         except (OSError, ValueError, wave.Error) as error:
@@ -238,9 +241,9 @@ def main(argv=None):
             print(f'METRICS ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
             return 1
     if args.command == 'judge':
-        from .llm import judge_pipeline, MockLLMProvider
+        from .llm import judge_pipeline, MockLLMProvider, UnavailableLLMProvider
         try:
-            provider = MockLLMProvider() if args.provider == 'mock' else MockLLMProvider()
+            provider = MockLLMProvider() if args.provider == 'mock' else UnavailableLLMProvider()
             results, invocations = judge_pipeline(
                 args.fused, args.turns, args.metrics, args.output, provider)
             observed = [r for r in results if r['status'] == 'observed']

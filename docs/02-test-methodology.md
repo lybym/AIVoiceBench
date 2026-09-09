@@ -38,3 +38,13 @@ Unscripted false endpoint requires evidence of intended continuation; possible_f
 ## Human revision and validation
 
 Keep original model text/segments/events/findings. Append text, role, boundary, association and finding corrections with author/reason/base revision/evidence targets. Produce a new analysis revision, never overwrite raw output. Evaluate automatic processing against labeled recordings, measuring timing error, uncertain roles and abstentions alongside coverage. Synthetic fixtures validate logic; real mixed tester/device recordings establish MVP performance.
+
+## Docker / browser delivery acceptance — 2026-09-09
+
+The user replaced Windows executable/installer delivery with Docker backend and
+frontend services accessed through a Windows browser. Native Windows packaging is
+not an acceptance requirement. Validate image build/startup, mounted persistent
+recordings and Run artifacts, restart recovery, and browser upload/analysis/history/
+evidence playback/human revision flows. Use actual WAV/MP3/M4A and a labeled real
+5–20 minute conversation for product acceptance. Local unit tests and a container
+health check alone do not certify analysis accuracy or complete Web UI delivery.

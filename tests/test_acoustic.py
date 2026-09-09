@@ -326,6 +326,17 @@ class AcousticCLITests(unittest.TestCase):
         exit_code = self.main(['acoustic', str(path), '--output', str(out)])
         self.assertEqual(exit_code, 2)
 
+    def test_cli_directory_output_creates_document(self):
+        path = Path(self.tmp.name) / 'silent-directory.wav'
+        write_wav(path, silence_samples(2000))
+        out = Path(self.tmp.name) / 'nested' / 'results'
+        exit_code = self.main(['acoustic', str(path), '--output', str(out)])
+        self.assertEqual(exit_code, 2)
+        documents = list(out.glob('ACOUSTIC-*.json'))
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(json.loads(documents[0].read_text(encoding='utf-8'))['status'],
+                         'insufficient_evidence')
+
     def test_validate_acoustic_segments(self):
         path = Path(self.tmp.name) / 'doc.json'
         doc = {

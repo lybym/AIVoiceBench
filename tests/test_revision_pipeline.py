@@ -90,11 +90,11 @@ class LLMIntegrationTests(unittest.TestCase):
         ]
         result = _integrate_llm_metrics(metrics, judge_results)
         mr = [m for m in result['metrics'] if m['name'] == 'meaningful_response_latency_ms'][0]
-        self.assertEqual(mr['status'], 'observed')
-        self.assertEqual(mr['_llm_meaningful_response_start_ms'], 2346)
+        self.assertEqual(mr['status'], 'insufficient_evidence')
+        self.assertIsNone(mr['value'])
         fb = [m for m in result['metrics'] if m['name'] == 'feedback_latency_ms'][0]
-        self.assertEqual(fb['status'], 'observed')
-        self.assertAlmostEqual(fb['value'], 846)
+        self.assertEqual(fb['status'], 'insufficient_evidence')
+        self.assertIsNone(fb['value'])
 
 
 if __name__ == '__main__':
