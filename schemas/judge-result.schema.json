@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/judge-result.schema.json",
+  "title": "JudgeResult 1.0.0",
+  "description": "Structured LLM evaluation result. Every judgment is evidence-linked and confidence-scored. LLM cannot invent timestamps, audio evidence, or device-internal latency.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "judge_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "run_id": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "dimension": {
+      "enum": [
+        "intent",
+        "meaningful_response",
+        "feedback_detection",
+        "conversation_quality",
+        "context_understanding",
+        "memory",
+        "instruction_following",
+        "reasoning_quality",
+        "hallucination",
+        "persona",
+        "emotion",
+        "proactivity",
+        "safety",
+        "finding_candidate"
+      ]
+    },
+    "turn_id": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "response_id": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "decision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "score": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "meaningful_response_start_ms": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "For meaningful_response dimension: timestamp of first information-bearing content"
+    },
+    "feedback_type": {
+      "type": ["string", "null"],
+      "description": "For feedback_detection: filler, ack, thinking_cue, non_speech_tone, other"
+    },
+    "feedback_start_ms": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "feedback_end_ms": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "intent_label": {
+      "type": ["string", "null"],
+      "description": "For intent dimension: classified user intent"
+    },
+    "suspected_layer": {
+      "type": ["string", "null"],
+      "enum": ["vad", "endpoint", "asr", "aec", "network", "llm", "prompt", "context", "memory", "agent", "tool", "tts", "safety", "persona", "unknown", null]
+    },
+    "attribution_confidence": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "requires_log_verification": {
+      "type": "boolean"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "event_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "finding_severity": {
+      "type": ["string", "null"],
+      "enum": ["info", "low", "medium", "high", "critical", null]
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prompt_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1
+    },
+    "invocation_id": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "latency_ms": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "status": {
+      "enum": ["observed", "insufficient_evidence", "low_confidence", "error"]
+    }
+  },
+  "required": [
+    "schema_version",
+    "judge_id",
+    "run_id",
+    "dimension",
+    "turn_id",
+    "response_id",
+    "decision",
+    "score",
+    "confidence",
+    "reason",
+    "requires_log_verification",
+    "evidence_refs",
+    "event_refs",
+    "model",
+    "prompt_version",
+    "provider",
+    "invocation_id",
+    "latency_ms",
+    "status"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "dimension": { "const": "meaningful_response" }
+        }
+      },
+      "then": {
+        "required": ["meaningful_response_start_ms"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dimension": { "const": "feedback_detection" }
+        }
+      },
+      "then": {
+        "required": ["feedback_type", "feedback_start_ms", "feedback_end_ms"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dimension": { "const": "intent" }
+        }
+      },
+      "then": {
+        "required": ["intent_label"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dimension": { "const": "finding_candidate" }
+        }
+      },
+      "then": {
+        "required": ["finding_severity", "suspected_layer"]
+      }
+    },
+    {
+      "if": {
+        "required": ["suspected_layer"],
+        "properties": {
+          "suspected_layer": { "type": "string" }
+        }
+      },
+      "then": {
+        "required": ["attribution_confidence", "requires_log_verification"],
+        "properties": {
+          "requires_log_verification": { "const": true }
+        }
+      }
+    }
+  ]
+}

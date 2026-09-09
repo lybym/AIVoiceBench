@@ -141,3 +141,11 @@
 - Installed FastAPI 0.141.1, uvicorn 0.52.4, python-multipart 0.0.32 in project venv.
 - Functional test: started uvicorn server, `GET /health` → `{"status":"ok","version":"0.1.0"}`. `POST /api/analyze` with 2500ms synthetic WAV → Run RUN-87229e842ef2, status=complete, 2 acoustic segments, 2 fused, 1 turn, 7 events, 3 metrics (first_speech_latency=460ms observed, feedback/meaningful response insufficient_evidence). `GET /api/runs` → listed the run with correct status and device. `GET /api/runs/{run_id}` → returned full analysis JSON. All endpoints verified.
 - Current limitations: no LLM evaluation, no Finding generation, no Markdown report, no Web UI (only API + Swagger docs at /docs).
+
+## 2026-09-10 — Issue #10 LLM Harness
+
+- User requested continuing with LLM Harness work. Created `issue-10-llm-harness` branch from `docker-packaging`.
+- Implemented `aivoicebench/llm.py` with: `LLMProvider` Protocol (unified interface), `MockLLMProvider` (deterministic heuristics for testing without API keys), `LLMInvocation` (immutable call record), and `LLMJudge` (harness that constructs prompts, calls provider, validates structured output, produces JudgeResult 1.0.0 documents).
+- Evaluation dimensions: intent (keyword-based classification), meaningful_response (strips Chinese filler words, estimates first meaningful content timestamp), feedback_detection (classifies filler/ack/thinking_cue), conversation_quality (score 0-1), finding_candidate (generates finding with suspected_layer + requires_log_verification).
+- Created `schemas/judge-result.schema.json` with dimension-specific allOf constraints. Added `judge_result_errors()` to validation.py. Extended CLI with `judge` subcommand. Added `docs/21-llm-harness.md`.
+- Validation: 21 tests pass. Functional test with ASR text: device response "嗯……好的，让我看看。南京今天天气晴朗。" → meaningful_response_start=2346ms [observed], intent=weather_query [observed], feedback=filler [observed]. **Meaningful Response Latency = 1346ms** (previously `insufficient_evidence` in #25, now resolved by LLM semantic analysis). All judge results pass schema validation.

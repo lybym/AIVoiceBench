@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import wave
 
-from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors, transcript_errors, acoustic_errors, fused_errors, turns_errors
+from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors, transcript_errors, acoustic_errors, fused_errors, turns_errors, judge_result_errors
 
 
 def main(argv=None):
@@ -51,6 +51,12 @@ def main(argv=None):
     metrics_cmd = subparsers.add_parser('metrics', help='Compute expanded latency metrics from a timeline')
     metrics_cmd.add_argument('timeline', type=Path, help='Path to EventTimeline JSON')
     metrics_cmd.add_argument('--output', type=Path)
+    judge = subparsers.add_parser('judge', help='Run LLM semantic evaluation on fusion output')
+    judge.add_argument('fused', type=Path, help='Path to fused-segments JSON')
+    judge.add_argument('--turns', type=Path, required=True, help='Path to turns JSON')
+    judge.add_argument('--metrics', type=Path, required=True, help='Path to metrics JSON')
+    judge.add_argument('--output', type=Path, default=Path('artifacts/judge'))
+    judge.add_argument('--provider', choices=['mock'], default='mock', help='LLM provider (mock for testing)')
     audio = subparsers.add_parser('audio', help='Optional explicit audio station commands')
     audio_commands = audio.add_subparsers(dest='audio_command', required=True)
     audio_commands.add_parser('devices', help='List devices without opening a recording stream')
@@ -74,7 +80,7 @@ def main(argv=None):
     run.add_argument('--dry-run', action='store_true', help='Only prepare assets/contracts, never capture hardware')
     validate = subparsers.add_parser('validate', help='Validate TestCase JSON/YAML without hardware or network')
     validate.add_argument('paths', nargs='+', type=Path)
-    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding', 'transcript', 'acoustic-segments', 'fused-segments', 'turns'], default='test-case')
+    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding', 'transcript', 'acoustic-segments', 'fused-segments', 'turns', 'judge-result'], default='test-case')
     validate.add_argument('--timeline', type=Path, help='Required context for metric references')
     validate.add_argument('--metrics', nargs='*', type=Path, default=[], help='MetricResult files referenced by a finding')
     validate.add_argument('--regression-case', type=Path, help='Linked TestCase for a frozen regression candidate')
@@ -165,6 +171,30 @@ def main(argv=None):
         except (OSError, ValueError) as error:
             print(f'METRICS ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
             return 1
+    if args.command == 'judge':
+        from .llm import judge_pipeline, MockLLMProvider
+        try:
+            provider = MockLLMProvider() if args.provider == 'mock' else MockLLMProvider()
+            results, invocations = judge_pipeline(
+                args.fused, args.turns, args.metrics, args.output, provider)
+            observed = [r for r in results if r['status'] == 'observed']
+            insufficient = [r for r in results if r['status'] == 'insufficient_evidence']
+            print(f'{len(results)} judge results ({len(observed)} observed, {len(insufficient)} insufficient)')
+            for r in results:
+                val = ''
+                if r.get('meaningful_response_start_ms') is not None:
+                    val = f' ms_start={r["meaningful_response_start_ms"]}'
+                elif r.get('score') is not None:
+                    val = f' score={r["score"]}'
+                elif r.get('intent_label'):
+                    val = f' label={r["intent_label"]}'
+                elif r.get('finding_severity'):
+                    val = f' severity={r["finding_severity"]} layer={r.get("suspected_layer")}'
+                print(f'  {r["dimension"]}: {r["decision"]} [{r["status"]}]{val} conf={r["confidence"]}')
+            return 0 if observed else 2
+        except (OSError, ValueError) as error:
+            print(f'JUDGE ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
+            return 1
     if args.command == 'audio':
         import json
         from .station import capture_fixed, calibrate_loopback, list_devices
@@ -210,6 +240,8 @@ def main(argv=None):
                 errors = fused_errors(load_document(path))
             elif args.kind == 'turns':
                 errors = turns_errors(load_document(path))
+            elif args.kind == 'judge-result':
+                errors = judge_result_errors(load_document(path))
             elif args.kind == 'finding':
                 errors = finding_errors(load_document(path), load_document(args.timeline),
                                         [load_document(item) for item in args.metrics],
