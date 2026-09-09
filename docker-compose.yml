@@ -1,0 +1,25 @@
+# AIVoiceBench — Docker Compose
+# Usage: docker-compose up
+# Then: open http://localhost:8000/docs
+
+services:
+  aivoicebench:
+    build: .
+    container_name: aivoicebench
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount your recordings here (read-only)
+      - ./data/recordings:/data/recordings:ro
+      # Analysis results persist here
+      - ./data/output:/data/output
+      # Optional: mount Vosk models here
+      - ./data/cache:/data/cache
+      # Optional: mount FFmpeg binary (if you need MP3/M4A support)
+      # - /usr/bin/ffmpeg:/usr/local/bin/ffmpeg:ro
+    environment:
+      - AIVOICEBENCH_OUTPUT=/data/output
+      - AIVOICEBENCH_CACHE=/data/cache
+      # Optional: set FFmpeg path if mounted
+      # - FFMPEG_PATH=/usr/local/bin/ffmpeg
+    restart: unless-stopped

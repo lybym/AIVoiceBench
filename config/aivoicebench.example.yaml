@@ -1,0 +1,37 @@
+# AIVoiceBench configuration
+# Mount this file or set environment variables
+
+# Output directory for analysis runs
+output: /data/output
+
+# Cache directory for models (Vosk, etc.)
+cache: /data/cache
+
+# Web API server
+api:
+  host: 0.0.0.0
+  port: 8000
+
+# Acoustic segmentation defaults
+acoustic:
+  frame_ms: 30
+  hop_ms: 10
+  threshold_factor: 0.15
+  min_speech_ms: 100
+  min_silence_ms: 200
+  merge_gap_ms: 80
+
+# Event detection defaults
+events:
+  timeout_ms: 5000
+  false_endpoint_ms: 300
+  overlap_min_ms: 50
+
+# Optional: FFmpeg path (for MP3/M4A conversion)
+# ffmpeg_path: /usr/local/bin/ffmpeg
+# ffprobe_path: /usr/local/bin/ffprobe
+
+# Optional: Vosk model
+# vosk:
+#   model_dir: /data/cache/models/vosk-model-small-cn-0.22
+#   model_version: "0.22"
