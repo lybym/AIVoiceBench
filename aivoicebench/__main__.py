@@ -15,6 +15,16 @@ def main(argv=None):
             stream.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(prog='aivoicebench')
     subparsers = parser.add_subparsers(dest='command', required=True)
+    importer = subparsers.add_parser('import', help='Import an existing WAV/MP3/M4A into a recoverable analysis Run')
+    importer.add_argument('source', type=Path)
+    importer.add_argument('--output', type=Path, default=Path('artifacts/imports'))
+    importer.add_argument('--profile', type=Path, help='Device/hardware/firmware/model/prompt/supplier/environment/notes JSON')
+    importer.add_argument('--ffmpeg', type=Path)
+    importer.add_argument('--ffprobe', type=Path)
+    importer.add_argument('--synthetic', action='store_true', help='Explicitly label generated/unit test audio')
+    importer.add_argument('--asr-provider', choices=['vosk'], help='Optional offline fallback; no cloud upload by default')
+    importer.add_argument('--model-dir', type=Path)
+    importer.add_argument('--model-version')
     analyze = subparsers.add_parser('analyze', help='Evaluate canonical events with deterministic metrics')
     analyze.add_argument('case', type=Path)
     analyze.add_argument('--timeline', type=Path, required=True)
@@ -59,6 +69,30 @@ def main(argv=None):
     validate.add_argument('--metrics', nargs='*', type=Path, default=[], help='MetricResult files referenced by a finding')
     validate.add_argument('--regression-case', type=Path, help='Linked TestCase for a frozen regression candidate')
     args = parser.parse_args(argv)
+    if args.command == 'import':
+        import yaml
+        from .audio_processing import FFmpegAudioProcessor
+        from .import_pipeline import import_recording
+        factory = None
+        if args.asr_provider == 'vosk':
+            def factory():
+                from .asr import VoskProvider
+                if args.model_dir is None or args.model_version is None:
+                    raise ValueError('Vosk requires model directory and version')
+                return VoskProvider(args.model_dir, args.model_version)
+        try:
+            directory, manifest = import_recording(args.source, args.output,
+                profile=load_document(args.profile) if args.profile else None,
+                audio_processor=FFmpegAudioProcessor(args.ffmpeg, args.ffprobe),
+                asr_provider_factory=factory, synthetic=args.synthetic)
+            print(f'{manifest["status"].upper()} {directory} ({manifest["execution_kind"]}; retained import Run)')
+            for name, stage in manifest['stages'].items():
+                print(f'  {name}: {stage["status"]}')
+            print(f'Report: {directory / "report.md"}')
+            return 1 if any(stage['status'] == 'failed' for stage in manifest['stages'].values()) else 2
+        except (OSError, ValueError, yaml.YAMLError) as error:
+            print(f'IMPORT ERROR: {error}', file=sys.stderr)
+            return 1
     if args.command == 'analyze':
         import uuid
         import yaml

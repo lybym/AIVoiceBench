@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/recording-run.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "workflow": {
+      "const": "recording_import"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "analysis_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "enum": [
+        "partial",
+        "complete",
+        "failed"
+      ]
+    },
+    "execution_kind": {
+      "enum": [
+        "synthetic",
+        "imported"
+      ]
+    },
+    "profile": {
+      "type": "object",
+      "properties": {
+        "device": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "hardware": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "firmware": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "supplier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "environment": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 4000
+        }
+      },
+      "required": [
+        "device",
+        "hardware",
+        "firmware",
+        "model",
+        "prompt",
+        "supplier",
+        "environment",
+        "notes"
+      ],
+      "additionalProperties": false
+    },
+    "case_ref": {
+      "type": "null"
+    },
+    "original_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "parent_artifact_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+            },
+            "uniqueItems": true
+          },
+          "processor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "path",
+          "kind",
+          "sha256",
+          "size_bytes",
+          "parent_artifact_ids",
+          "processor",
+          "created_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "stages": {
+      "type": "object",
+      "properties": {
+        "ingestion": {
+          "$ref": "#/$defs/stage"
+        },
+        "normalization": {
+          "$ref": "#/$defs/stage"
+        },
+        "audio_qa": {
+          "$ref": "#/$defs/stage"
+        },
+        "asr": {
+          "$ref": "#/$defs/stage"
+        },
+        "acoustic": {
+          "$ref": "#/$defs/stage"
+        },
+        "diarization": {
+          "$ref": "#/$defs/stage"
+        },
+        "fusion": {
+          "$ref": "#/$defs/stage"
+        },
+        "turns": {
+          "$ref": "#/$defs/stage"
+        },
+        "timeline": {
+          "$ref": "#/$defs/stage"
+        },
+        "metrics": {
+          "$ref": "#/$defs/stage"
+        },
+        "judge": {
+          "$ref": "#/$defs/stage"
+        },
+        "findings": {
+          "$ref": "#/$defs/stage"
+        },
+        "report": {
+          "$ref": "#/$defs/stage"
+        }
+      },
+      "required": [
+        "ingestion",
+        "normalization",
+        "audio_qa",
+        "asr",
+        "acoustic",
+        "diarization",
+        "fusion",
+        "turns",
+        "timeline",
+        "metrics",
+        "judge",
+        "findings",
+        "report"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "workflow",
+    "run_id",
+    "analysis_id",
+    "created_at",
+    "status",
+    "execution_kind",
+    "profile",
+    "case_ref",
+    "original_sha256",
+    "artifacts",
+    "stages"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "stage": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "pending",
+            "running",
+            "complete",
+            "partial",
+            "insufficient_evidence",
+            "failed"
+          ]
+        },
+        "processor": {
+          "type": "object"
+        },
+        "started_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "latency_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "input_artifact_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+          },
+          "uniqueItems": true
+        },
+        "output_artifact_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+          },
+          "uniqueItems": true
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "processor",
+        "started_at",
+        "finished_at",
+        "latency_ms",
+        "input_artifact_ids",
+        "output_artifact_ids",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

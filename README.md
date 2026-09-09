@@ -36,4 +36,6 @@ See `docs/` for architecture and roadmap, and `schemas/` for the canonical contr
 
 The final deliverable is a Windows executable or installer for the full local testing and analysis workflow, with local setup and usage instructions. Online ASR/TTS/LLM providers may be configured; local execution does not promise offline operation. A cloud service cluster is not required. The current CLI validates contracts and prepares local Run/audio artifacts with explicit measurement blockers; it is not yet a hardware runner or packaged application. See [local runner instructions](docs/09-local-runner.md).
 
+The import-first milestone now also provides `python -m aivoicebench import recording.wav` (WAV/MP3/M4A), source preservation, canonical conversion/QA, optional Vosk ASR and recoverable stage-status reports. Automatic speaker/turn/event/semantic analysis is still pending. See [recording import instructions](docs/14-recording-import.md) and the [primary-workflow migration PR](https://github.com/lybym/AIVoiceBench/pull/28).
+
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) for offline validation commands, [project context](docs/05-project-context.md) for the complete delivery agreement, [contract versions](docs/07-contract-versions.md) for migration and trigger semantics, and [work log](docs/06-work-log.md) for actual progress and untested dependencies.
