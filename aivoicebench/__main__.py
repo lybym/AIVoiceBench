@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import wave
 
-from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors, transcript_errors, acoustic_errors
+from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors, transcript_errors, acoustic_errors, fused_errors, turns_errors
 
 
 def main(argv=None):
@@ -52,6 +52,12 @@ def main(argv=None):
     acoustic.add_argument('--merge-gap-ms', type=float, default=80.0)
     acoustic.add_argument('--pre-roll-ms', type=float, default=0.0)
     acoustic.add_argument('--post-roll-ms', type=float, default=0.0)
+    fusion = subparsers.add_parser('fusion', help='Fuse acoustic segments, build turns, detect events, generate timeline')
+    fusion.add_argument('acoustic', type=Path, help='Path to acoustic-segments JSON')
+    fusion.add_argument('--transcript', type=Path, help='Optional ASR transcript JSON')
+    fusion.add_argument('--output', type=Path, default=Path('artifacts/fusion'))
+    fusion.add_argument('--timeout-ms', type=float, default=5000.0)
+    fusion.add_argument('--false-endpoint-ms', type=float, default=300.0)
     audio = subparsers.add_parser('audio', help='Optional explicit audio station commands')
     audio_commands = audio.add_subparsers(dest='audio_command', required=True)
     audio_commands.add_parser('devices', help='List devices without opening a recording stream')
@@ -75,7 +81,7 @@ def main(argv=None):
     run.add_argument('--dry-run', action='store_true', help='Only prepare assets/contracts, never capture hardware')
     validate = subparsers.add_parser('validate', help='Validate TestCase JSON/YAML without hardware or network')
     validate.add_argument('paths', nargs='+', type=Path)
-    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding', 'transcript', 'acoustic-segments'], default='test-case')
+    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding', 'transcript', 'acoustic-segments', 'fused-segments', 'turns'], default='test-case')
     validate.add_argument('--timeline', type=Path, help='Required context for metric references')
     validate.add_argument('--metrics', nargs='*', type=Path, default=[], help='MetricResult files referenced by a finding')
     validate.add_argument('--regression-case', type=Path, help='Linked TestCase for a frozen regression candidate')
@@ -155,6 +161,20 @@ def main(argv=None):
         except (OSError, ValueError, wave.Error) as error:
             print(f'ACOUSTIC ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
             return 1
+    if args.command == 'fusion':
+        from .fusion import analyze_segments
+        try:
+            fused, turns, timeline = analyze_segments(
+                args.acoustic, args.transcript, args.output,
+                timeout_ms=args.timeout_ms, false_endpoint_ms=args.false_endpoint_ms)
+            n_segs = len(fused['segments'])
+            n_turns = len(turns['turns'])
+            n_events = len(timeline['events'])
+            print(f'{timeline["status"].upper()} {args.output} ({n_segs} fused, {n_turns} turns, {n_events} events)')
+            return 0 if timeline['status'] == 'complete' else 2
+        except (OSError, ValueError) as error:
+            print(f'FUSION ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
+            return 1
     if args.command == 'audio':
         import json
         from .station import capture_fixed, calibrate_loopback, list_devices
@@ -196,6 +216,10 @@ def main(argv=None):
                 errors = transcript_errors(load_document(path))
             elif args.kind == 'acoustic-segments':
                 errors = acoustic_errors(load_document(path))
+            elif args.kind == 'fused-segments':
+                errors = fused_errors(load_document(path))
+            elif args.kind == 'turns':
+                errors = turns_errors(load_document(path))
             elif args.kind == 'finding':
                 errors = finding_errors(load_document(path), load_document(args.timeline),
                                         [load_document(item) for item in args.metrics],
