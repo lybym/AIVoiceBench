@@ -1,45 +1,258 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aivoicebench.local/schemas/event.schema.json",
-  "title": "AIVoiceBench Event",
+  "title": "Event 2.0.0",
   "type": "object",
-  "required": ["schema_version", "event_id", "run_id", "case_id", "type", "start_ms", "source", "evidence"],
   "properties": {
-    "schema_version": {"type": "string", "const": "1.0.0"},
-    "event_id": {"type": "string"},
-    "run_id": {"type": "string"},
-    "case_id": {"type": "string"},
-    "turn_id": {"type": ["string", "null"]},
+    "schema_version": {
+      "const": "2.0.0"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "turn_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "response_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
     "type": {
       "enum": [
-        "tester_speech_start", "tester_speech_end",
-        "device_speech_start", "device_speech_end",
-        "interrupt_start", "interrupt_end",
-        "overlap_start", "overlap_end",
-        "timeout", "disconnect", "reconnect",
-        "asr_segment", "custom"
+        "tester_speech_start",
+        "tester_speech_end",
+        "device_speech_start",
+        "device_speech_end",
+        "planned_pause_start",
+        "planned_pause_end",
+        "interrupt_start",
+        "interrupt_end",
+        "overlap_start",
+        "overlap_end",
+        "timeout",
+        "disconnect",
+        "reconnect",
+        "asr_segment",
+        "custom"
       ]
     },
-    "start_ms": {"type": "number", "minimum": 0},
-    "end_ms": {"type": ["number", "null"], "minimum": 0},
-    "source": {"enum": ["audio_signal", "asr", "device_log", "manual_annotation", "derived"]},
-    "confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
-    "payload": {"type": "object", "additionalProperties": true},
-    "evidence": {
+    "start_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "end_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "source": {
+      "enum": [
+        "audio_signal",
+        "asr",
+        "device_log",
+        "manual_annotation",
+        "controller",
+        "derived"
+      ]
+    },
+    "observation_scope": {
+      "enum": [
+        "black_box",
+        "white_box"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "evidence_ids": {
       "type": "array",
-      "minItems": 1,
       "items": {
-        "type": "object",
-        "required": ["artifact_id"],
-        "properties": {
-          "artifact_id": {"type": "string"},
-          "track": {"type": ["string", "null"]},
-          "start_ms": {"type": ["number", "null"]},
-          "end_ms": {"type": ["number", "null"]}
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
         },
-        "additionalProperties": false
-      }
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "custom_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
+        "producer_profile": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
     }
   },
-  "additionalProperties": false
+  "required": [
+    "schema_version",
+    "event_id",
+    "run_id",
+    "case_id",
+    "turn_id",
+    "response_id",
+    "type",
+    "start_ms",
+    "end_ms",
+    "source",
+    "observation_scope",
+    "confidence",
+    "evidence_ids"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "const": "device_log"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "observation_scope": {
+            "const": "white_box"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "observation_scope": {
+            "const": "white_box"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "device_log"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "custom"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "required": [
+              "custom_name"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "asr_segment"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "required": [
+              "text",
+              "producer_profile"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "device_speech_start",
+              "device_speech_end"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "response_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+          },
+          "turn_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "tester_speech_start",
+              "tester_speech_end",
+              "interrupt_start",
+              "interrupt_end",
+              "planned_pause_start",
+              "planned_pause_end"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "turn_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+          }
+        }
+      }
+    }
+  ]
 }

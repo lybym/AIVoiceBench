@@ -1,0 +1,346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/transcript.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "transcript_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "case_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "measurement_scope": {
+      "const": "external_asr"
+    },
+    "time_base": {
+      "const": "audio_relative_ms"
+    },
+    "time_mapping": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "const": "unmapped"
+        },
+        "offset_ms": {
+          "type": "null"
+        },
+        "uncertainty_ms": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "status",
+        "offset_ms",
+        "uncertainty_ms"
+      ],
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "role": {
+          "enum": [
+            "stimulus",
+            "device_output",
+            "room_mix",
+            "unknown"
+          ]
+        },
+        "selected_channel": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "duration_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "provider_input_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_input_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "role",
+        "selected_channel",
+        "duration_ms",
+        "provider_input_path",
+        "provider_input_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "provider_profile": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "library_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "config": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "provider",
+        "library_version",
+        "model_id",
+        "model_version",
+        "model_sha256",
+        "config"
+      ],
+      "additionalProperties": false
+    },
+    "raw_response": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "partial"
+      ]
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "raw_message_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "raw_message_index",
+          "reason",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "segment_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_ms": {
+            "type": "number",
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "number",
+            "minimum": 0
+          },
+          "timestamp_source": {
+            "const": "asr_provider"
+          },
+          "timestamp_confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "speaker_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "raw_message_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "words": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "start_ms": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "end_ms": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "recognition_confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": [
+                "text",
+                "start_ms",
+                "end_ms",
+                "recognition_confidence"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "segment_id",
+          "text",
+          "start_ms",
+          "end_ms",
+          "timestamp_source",
+          "timestamp_confidence",
+          "speaker_id",
+          "raw_message_index",
+          "words"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "transcript_id",
+    "run_id",
+    "case_id",
+    "measurement_scope",
+    "time_base",
+    "time_mapping",
+    "source",
+    "provider_profile",
+    "raw_response",
+    "status",
+    "gaps",
+    "segments"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "partial"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "gaps": {
+            "minItems": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "gaps": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "run_id": {
+            "type": "null"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "case_id": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "suite_id": "SMOKE-FIXTURES",
+  "suite_version": "1.0.0",
+  "cases": [
+    "test-case.example.yaml",
+    "test-cases/asr.json",
+    "test-cases/latency.json",
+    "test-cases/barge-in.json",
+    "test-cases/context.json"
+  ]
+}

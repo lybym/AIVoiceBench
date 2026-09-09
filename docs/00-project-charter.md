@@ -8,6 +8,8 @@ AI voice terminals are commonly evaluated through ad-hoc manual conversations. T
 
 Build a hardware-in-the-loop testing platform that can execute repeatable voice tests against real devices, collect synchronized evidence, compute deterministic technical metrics, use structured LLM judging for semantic dimensions, and compare results across devices and versions.
 
+Final delivery is a locally runnable Windows executable or installer covering the complete test/analysis workflow, local configuration and usage instructions. ASR/TTS/LLM can use configured online providers; do not equate local with offline. Verify startup and full workflow on this workstation, record real hardware coverage and untested items. Source-only or cloud-only delivery does not meet acceptance. Keep code/build configuration/tests/docs synchronized to private GitHub Issue branches and PRs without automatically merging. See `05-project-context.md` for the complete agreement.
+
 ## Primary use cases
 
 - Supplier benchmark comparison

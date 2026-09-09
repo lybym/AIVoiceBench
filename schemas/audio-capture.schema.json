@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/audio-capture.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_kind": {
+      "const": "hardware"
+    },
+    "status": {
+      "enum": [
+        "captured",
+        "partial"
+      ]
+    },
+    "failure": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "started_monotonic_ns": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ended_monotonic_ns": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "input_device": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "output_device": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "input_device_info": {
+      "type": "object"
+    },
+    "output_device_info": {
+      "type": "object"
+    },
+    "driver_latency_seconds": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "number",
+        "minimum": 0
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "calibration_applied": {
+      "const": false
+    },
+    "track_roles": {
+      "type": "object",
+      "properties": {
+        "capture.wav": {
+          "const": "room_mix_unless_user_verifies_isolation"
+        },
+        "stimulus-reference.wav": {
+          "const": "digital_output_reference_not_acoustic_capture"
+        }
+      },
+      "required": [
+        "capture.wav",
+        "stimulus-reference.wav"
+      ],
+      "additionalProperties": false
+    },
+    "pre_roll_samples": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "stimulus_samples": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "source_qa": {
+      "type": "object",
+      "properties": {
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "duration_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "peak": {
+          "type": "number",
+          "minimum": 0
+        },
+        "rms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "dc_offset": {
+          "type": "number"
+        },
+        "clipped_samples": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "sample_count",
+        "duration_ms",
+        "peak",
+        "rms",
+        "dc_offset",
+        "clipped_samples"
+      ],
+      "additionalProperties": false
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "enum": [
+              "capture.wav",
+              "stimulus-reference.wav"
+            ]
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "sample_rate_hz": {
+            "const": 16000
+          },
+          "channels": {
+            "enum": [
+              1,
+              2
+            ]
+          },
+          "bit_depth": {
+            "const": 16
+          },
+          "sample_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "duration_ms": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "sample_rate_hz",
+          "channels",
+          "bit_depth",
+          "sample_count",
+          "duration_ms"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "timing_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "required": [
+    "schema_version",
+    "session_id",
+    "execution_kind",
+    "status",
+    "failure",
+    "started_monotonic_ns",
+    "ended_monotonic_ns",
+    "input_device",
+    "output_device",
+    "input_device_info",
+    "output_device_info",
+    "driver_latency_seconds",
+    "calibration_applied",
+    "track_roles",
+    "pre_roll_samples",
+    "stimulus_samples",
+    "source_sha256",
+    "source_qa",
+    "artifacts",
+    "timing_sha256"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "captured"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "failure": {
+            "type": "null"
+          },
+          "artifacts": {
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "failure": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  ]
+}

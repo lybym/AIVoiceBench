@@ -1,6 +1,6 @@
 {
   "schema_version": "2.0.0",
-  "run_id": "RUN-EXAMPLE-001",
+  "run_id": "RUN-DEFECT-FIXTURE",
   "case_id": "VAD-PAUSE-800",
   "case_version": "2.0.0",
   "attempt": 1,
@@ -172,13 +172,35 @@
       "end_ms": 7500,
       "source": "manual_annotation",
       "confidence": 0.9
+    },
+    {
+      "schema_version": "1.0.0",
+      "evidence_id": "EVD-EVT-009",
+      "artifact_id": "ART-device_output",
+      "track_id": "device_output",
+      "time_base": "run_monotonic_ms",
+      "start_ms": 2200,
+      "end_ms": 2200,
+      "source": "manual_annotation",
+      "confidence": 0.9
+    },
+    {
+      "schema_version": "1.0.0",
+      "evidence_id": "EVD-EVT-010",
+      "artifact_id": "ART-device_output",
+      "track_id": "device_output",
+      "time_base": "run_monotonic_ms",
+      "start_ms": 2600,
+      "end_ms": 2600,
+      "source": "manual_annotation",
+      "confidence": 0.9
     }
   ],
   "events": [
     {
       "schema_version": "2.0.0",
       "event_id": "EVT-001",
-      "run_id": "RUN-EXAMPLE-001",
+      "run_id": "RUN-DEFECT-FIXTURE",
       "case_id": "VAD-PAUSE-800",
       "turn_id": "turn_1",
       "response_id": null,
@@ -195,7 +217,7 @@
     {
       "schema_version": "2.0.0",
       "event_id": "EVT-002",
-      "run_id": "RUN-EXAMPLE-001",
+      "run_id": "RUN-DEFECT-FIXTURE",
       "case_id": "VAD-PAUSE-800",
       "turn_id": "turn_1",
       "response_id": null,
@@ -212,7 +234,7 @@
     {
       "schema_version": "2.0.0",
       "event_id": "EVT-003",
-      "run_id": "RUN-EXAMPLE-001",
+      "run_id": "RUN-DEFECT-FIXTURE",
       "case_id": "VAD-PAUSE-800",
       "turn_id": "turn_1",
       "response_id": null,
@@ -228,8 +250,42 @@
     },
     {
       "schema_version": "2.0.0",
+      "event_id": "EVT-009",
+      "run_id": "RUN-DEFECT-FIXTURE",
+      "case_id": "VAD-PAUSE-800",
+      "turn_id": "turn_1",
+      "response_id": "early",
+      "type": "device_speech_start",
+      "start_ms": 2200,
+      "end_ms": 2200,
+      "source": "manual_annotation",
+      "observation_scope": "black_box",
+      "confidence": 0.9,
+      "evidence_ids": [
+        "EVD-EVT-009"
+      ]
+    },
+    {
+      "schema_version": "2.0.0",
+      "event_id": "EVT-010",
+      "run_id": "RUN-DEFECT-FIXTURE",
+      "case_id": "VAD-PAUSE-800",
+      "turn_id": "turn_1",
+      "response_id": "early",
+      "type": "device_speech_end",
+      "start_ms": 2600,
+      "end_ms": 2600,
+      "source": "manual_annotation",
+      "observation_scope": "black_box",
+      "confidence": 0.9,
+      "evidence_ids": [
+        "EVD-EVT-010"
+      ]
+    },
+    {
+      "schema_version": "2.0.0",
       "event_id": "EVT-004",
-      "run_id": "RUN-EXAMPLE-001",
+      "run_id": "RUN-DEFECT-FIXTURE",
       "case_id": "VAD-PAUSE-800",
       "turn_id": "turn_1",
       "response_id": null,
@@ -246,7 +302,7 @@
     {
       "schema_version": "2.0.0",
       "event_id": "EVT-005",
-      "run_id": "RUN-EXAMPLE-001",
+      "run_id": "RUN-DEFECT-FIXTURE",
       "case_id": "VAD-PAUSE-800",
       "turn_id": "turn_1",
       "response_id": null,
@@ -263,7 +319,7 @@
     {
       "schema_version": "2.0.0",
       "event_id": "EVT-006",
-      "run_id": "RUN-EXAMPLE-001",
+      "run_id": "RUN-DEFECT-FIXTURE",
       "case_id": "VAD-PAUSE-800",
       "turn_id": "turn_1",
       "response_id": null,
@@ -280,7 +336,7 @@
     {
       "schema_version": "2.0.0",
       "event_id": "EVT-007",
-      "run_id": "RUN-EXAMPLE-001",
+      "run_id": "RUN-DEFECT-FIXTURE",
       "case_id": "VAD-PAUSE-800",
       "turn_id": "turn_1",
       "response_id": "response_1",
@@ -297,7 +353,7 @@
     {
       "schema_version": "2.0.0",
       "event_id": "EVT-008",
-      "run_id": "RUN-EXAMPLE-001",
+      "run_id": "RUN-DEFECT-FIXTURE",
       "case_id": "VAD-PAUSE-800",
       "turn_id": "turn_1",
       "response_id": "response_1",

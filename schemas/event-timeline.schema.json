@@ -1,0 +1,500 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/event-timeline.schema.json",
+  "title": "EventTimeline 2.0.0",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "2.0.0"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "case_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "execution_kind": {
+      "enum": [
+        "hardware",
+        "dry_run",
+        "synthetic",
+        "imported"
+      ]
+    },
+    "time_base": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "run_monotonic_ms"
+        },
+        "origin": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "kind",
+        "origin"
+      ],
+      "additionalProperties": false
+    },
+    "run_snapshot": {
+      "type": "object",
+      "properties": {
+        "device": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "hardware": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "firmware": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "environment": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "test_assets": {
+          "type": "object",
+          "properties": {
+            "golden_set_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "golden_set_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "case_sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "asset_sha256": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          },
+          "required": [
+            "golden_set_id",
+            "golden_set_version",
+            "case_sha256",
+            "asset_sha256"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "device",
+        "hardware",
+        "firmware",
+        "model",
+        "prompt",
+        "environment",
+        "test_assets"
+      ],
+      "additionalProperties": false
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "partial",
+        "blocked"
+      ]
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "required_evidence": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_ms": {
+            "type": "number",
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "reason",
+          "required_evidence",
+          "start_ms",
+          "end_ms"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "tracks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "track_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+          },
+          "role": {
+            "enum": [
+              "stimulus",
+              "device_output",
+              "room_reference",
+              "room_mix"
+            ]
+          },
+          "clock_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+          },
+          "sample_rate_hz": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sync": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "enum": [
+                  "measured",
+                  "uncalibrated",
+                  "synthetic"
+                ]
+              },
+              "offset_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "uncertainty_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "max_drift_ppm": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "calibration_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1
+              }
+            },
+            "required": [
+              "status",
+              "offset_ms",
+              "uncertainty_ms",
+              "max_drift_ppm",
+              "calibration_id"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "status": {
+                      "const": "uncalibrated"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "offset_ms": {
+                      "type": "null"
+                    },
+                    "uncertainty_ms": {
+                      "type": "null"
+                    },
+                    "max_drift_ppm": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "offset_ms": {
+                      "type": "number"
+                    },
+                    "uncertainty_ms": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "max_drift_ppm": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "calibration_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "required": [
+          "track_id",
+          "role",
+          "clock_id",
+          "sample_rate_hz",
+          "sync"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+          },
+          "kind": {
+            "enum": [
+              "audio",
+              "transcript",
+              "device_log",
+              "controller_log"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "origin": {
+            "enum": [
+              "recorded",
+              "generated",
+              "imported",
+              "synthetic"
+            ]
+          },
+          "track_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "duration_ms": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "artifact_id",
+          "kind",
+          "path",
+          "sha256",
+          "origin",
+          "track_id",
+          "duration_ms"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "https://aivoicebench.local/schemas/evidence.schema.json"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "https://aivoicebench.local/schemas/event.schema.json"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "case_id",
+    "case_version",
+    "attempt",
+    "execution_kind",
+    "time_base",
+    "run_snapshot",
+    "status",
+    "gaps",
+    "tracks",
+    "artifacts",
+    "evidence",
+    "events"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "partial",
+              "blocked"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "gaps": {
+            "minItems": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "gaps": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "execution_kind": {
+            "const": "hardware"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "tracks": {
+            "minItems": 2,
+            "allOf": [
+              {
+                "contains": {
+                  "properties": {
+                    "role": {
+                      "const": "stimulus"
+                    }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "role": {
+                      "const": "device_output"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "run_snapshot": {
+            "properties": {
+              "device": {
+                "type": "string",
+                "minLength": 1
+              },
+              "hardware": {
+                "type": "string",
+                "minLength": 1
+              },
+              "firmware": {
+                "type": "string",
+                "minLength": 1
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "prompt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "environment": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

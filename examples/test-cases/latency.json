@@ -1,0 +1,65 @@
+{
+  "schema_version": "2.0.0",
+  "case_id": "LAT-FIRST-001",
+  "case_version": "2.0.0",
+  "name": "LAT-FIRST-001 contract fixture",
+  "category": {
+    "level1": "L2",
+    "level2": "response_latency"
+  },
+  "capability_refs": [
+    "response_latency"
+  ],
+  "mode": "fixed_audio",
+  "stimulus": {
+    "assets": [
+      {
+        "asset_id": "lat_prompt",
+        "path": "assets/lat_prompt.wav",
+        "asset_version": "1.0.0",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "format": {
+          "container": "wav",
+          "encoding": "PCM_S16LE",
+          "sample_rate_hz": 16000,
+          "channels": 1
+        },
+        "provenance": {
+          "provider": "fixture-only",
+          "model": "not-generated",
+          "voice": "not-generated",
+          "config": {
+            "fixture": true
+          },
+          "generator_version": "1.0.0"
+        }
+      }
+    ],
+    "segments": [
+      {
+        "type": "audio_asset",
+        "asset_id": "lat_prompt"
+      }
+    ]
+  },
+  "expected": {
+    "assertions": [
+      {
+        "assertion_id": "A1",
+        "evaluator": "deterministic",
+        "metric_id": "e2e_first_audio_latency_ms",
+        "operator": "lte",
+        "value": 2000
+      }
+    ]
+  },
+  "metrics": [
+    "e2e_first_audio_latency_ms"
+  ],
+  "case_timeout_ms": 60000,
+  "tags": [
+    "synthetic",
+    "contract-fixture"
+  ],
+  "notes": "Synthetic contract example. Asset hashes are placeholders; no audio exists and no HIL result is claimed. The 2000 ms assertion is illustrative and not an approved release gate."
+}

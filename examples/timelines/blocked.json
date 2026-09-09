@@ -1,0 +1,39 @@
+{
+  "schema_version": "2.0.0",
+  "run_id": "RUN-BLOCKED-001",
+  "case_id": "LAT-FIRST-001",
+  "case_version": "2.0.0",
+  "attempt": 1,
+  "execution_kind": "synthetic",
+  "time_base": {
+    "kind": "run_monotonic_ms",
+    "origin": "Synthetic zero; not a wall clock or hardware capture"
+  },
+  "run_snapshot": {
+    "device": "fixture",
+    "hardware": "fixture",
+    "firmware": "fixture",
+    "model": "fixture",
+    "prompt": "fixture",
+    "environment": "fixture",
+    "test_assets": {
+      "golden_set_id": null,
+      "golden_set_version": null,
+      "case_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "asset_sha256": {}
+    }
+  },
+  "status": "blocked",
+  "gaps": [
+    {
+      "reason": "Device output channel unavailable",
+      "required_evidence": "Synchronized device output recording",
+      "start_ms": 0,
+      "end_ms": 0
+    }
+  ],
+  "tracks": [],
+  "artifacts": [],
+  "evidence": [],
+  "events": []
+}
