@@ -4,7 +4,7 @@
 FROM python:3.12-slim AS base
 
 LABEL maintainer="AIVoiceBench"
-LABEL description="AI Voice Terminal Evaluation — Recording Import & Analysis"
+LABEL description="AI Voice Terminal Evaluation — Recording Import, Analysis, LLM Judge, Findings, Report"
 
 # Install only system packages needed for Python audio (no FFmpeg)
 RUN apt-get update && apt-get install -y --no-install-recommends \

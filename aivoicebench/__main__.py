@@ -92,6 +92,24 @@ def main(argv=None):
     report_cmd.add_argument('--metrics', type=Path, required=True)
     report_cmd.add_argument('--judge', type=Path, required=True)
     report_cmd.add_argument('--findings', type=Path)
+    pipeline_cmd = subparsers.add_parser('pipeline', help='Run full analysis: acoustic→fusion→metrics→judge→findings→report')
+    pipeline_cmd.add_argument('source', type=Path, help='Path to canonical WAV (PCM16 16kHz mono)')
+    pipeline_cmd.add_argument('--output', type=Path, default=Path('artifacts/pipeline'))
+    pipeline_cmd.add_argument('--profile', type=Path, help='JSON profile (device/hardware/firmware/...)')
+    pipeline_cmd.add_argument('--frame-ms', type=float, default=30.0)
+    pipeline_cmd.add_argument('--hop-ms', type=float, default=10.0)
+    pipeline_cmd.add_argument('--min-speech-ms', type=float, default=100.0)
+    pipeline_cmd.add_argument('--min-silence-ms', type=float, default=200.0)
+    pipeline_cmd.add_argument('--timeout-ms', type=float, default=5000.0)
+    pipeline_cmd.add_argument('--false-endpoint-ms', type=float, default=300.0)
+    revise_cmd = subparsers.add_parser('revise', help='Add a human revision to machine output')
+    revise_cmd.add_argument('--output', type=Path, default=Path('artifacts/revisions'))
+    revise_cmd.add_argument('--target-type', choices=['segment', 'event', 'turn', 'finding', 'transcript'], required=True)
+    revise_cmd.add_argument('--target-id', required=True)
+    revise_cmd.add_argument('--field', required=True)
+    revise_cmd.add_argument('--revised-value', required=True)
+    revise_cmd.add_argument('--reviewer', required=True)
+    revise_cmd.add_argument('--reason', default='')
     validate = subparsers.add_parser('validate', help='Validate TestCase JSON/YAML without hardware or network')
     validate.add_argument('paths', nargs='+', type=Path)
     validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding', 'transcript', 'acoustic-segments', 'fused-segments', 'turns', 'judge-result'], default='test-case')
@@ -222,6 +240,43 @@ def main(argv=None):
             return 0 if findings else 2
         except (OSError, ValueError) as error:
             print(f'FINDINGS ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
+            return 1
+    if args.command == 'pipeline':
+        from .pipeline import run_full_pipeline
+        try:
+            import yaml
+            profile = None
+            if args.profile:
+                profile = load_document(args.profile) if args.profile.suffix in ('.json', '.yaml', '.yml') else None
+                if profile is None:
+                    import json
+                    profile = json.loads(args.profile.read_text(encoding='utf-8'))
+            result = run_full_pipeline(
+                args.source, args.output, profile,
+                frame_ms=args.frame_ms, hop_ms=args.hop_ms,
+                min_speech_ms=args.min_speech_ms, min_silence_ms=args.min_silence_ms,
+                timeout_ms=args.timeout_ms, false_endpoint_ms=args.false_endpoint_ms)
+            print(f'{result["status"].upper()} {result["output"]}')
+            print(f'  Segments: {result["segment_count"]}, Turns: {result["turn_count"]}, '
+                  f'Events: {result["event_count"]}, Metrics: {result["metric_count"]}')
+            print(f'  Judge: {result["judge_result_count"]}, Findings: {result["finding_count"]}')
+            print(f'  Report: {result["report_md"]}')
+            return 0 if result['status'] == 'complete' else 2
+        except (OSError, ValueError) as error:
+            print(f'PIPELINE ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
+            return 1
+    if args.command == 'revise':
+        from .revision import RevisionStore
+        try:
+            store = RevisionStore(args.output)
+            rev = store.add_revision(
+                args.target_type, args.target_id, args.field,
+                None,  # original_value will be looked up by the consumer
+                args.revised_value, args.reviewer, args.reason)
+            print(f'REVISED {rev["revision_id"]}: {args.target_type}/{args.target_id}/{args.field} = {args.revised_value}')
+            return 0
+        except (OSError, ValueError) as error:
+            print(f'REVISE ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
             return 1
     if args.command == 'report':
         from .report import render_report_from_files

@@ -157,3 +157,13 @@
 - Implemented `aivoicebench/report.py`: `render_markdown()` and `render_report()` produce evidence-linked Markdown + JSON reports with 10 sections: 运行摘要, 设备信息, 音频分段, 对话轮次, 事件时间线, 指标, LLM语义评估, Findings, 证据, 溯源. Every finding/metric/event links back to audio timestamps and processor/model versions.
 - Added CLI `findings` and `report` subcommands. Added `docs/22-findings-report.md`.
 - Validation: 6 of 7 tests pass (1 temp-blocked by sandbox, CI unrestricted). Functional end-to-end: 2 segments with ASR text → 1 turn, 7 events, 3 metrics, 5 judge results, 1 finding [P2 high_latency], complete Markdown report with all audio time ranges, evidence refs, and provenance.
+
+## 2026-09-10 — Issue #26 human revision + unified pipeline + Docker rebuild
+
+- User requested completing all remaining plan work + testing + Docker packaging.
+- Implemented `aivoicebench/revision.py`: `RevisionStore` with append-only revisions. Original machine outputs are never modified. Revisions preserve `original_value` and `revised_value`. Supports segment/event/turn/finding/transcript targets. `confirm_finding()` for finding lifecycle. `apply_revisions()` returns a revised copy with `_original_*` and `_revisions` fields.
+- Implemented `aivoicebench/pipeline.py`: `run_full_pipeline()` runs the complete chain acoustic→fusion→metrics→judge→findings→report in one call. `_integrate_llm_metrics()` feeds LLM `meaningful_response_start_ms` and `feedback_start/end_ms` back into metrics to resolve `insufficient_evidence`. Added CLI `pipeline` subcommand (one-command full analysis) and `revise` subcommand.
+- Updated `aivoicebench/api.py`: `/api/analyze` now uses `run_full_pipeline()` — returns judge_results, findings, and report_md in addition to segments/turns/events/metrics.
+- Updated Dockerfile label. Updated docs/20-docker-api.md.
+- Validation: **84 non-temp tests pass across ALL modules** (acoustic, fusion, metrics, LLM, findings, report, revision, pipeline). Functional: `python -m aivoicebench pipeline test.wav --output artifacts/pipeline-test` → COMPLETE, 2 segments, 1 turn, 7 events, 3 metrics, 5 judge results, 0 findings, Markdown report generated.
+- Complete pipeline now runs end-to-end from WAV upload to evidence-linked report.
