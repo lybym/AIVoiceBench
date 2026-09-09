@@ -9,8 +9,7 @@ Key principles (user directive section #3):
 - Speaker attribution is a hypothesis, not ground truth, unless human-verified.
 - Events carry source, confidence, and evidence references.
 - Insufficient evidence yields insufficient_evidence, never invented timing.
-- The alternating heuristic is a low-confidence starting point; future
-  diarization/LLM/manual sources can override it.
+- Acoustic ordering alone never assigns tester/device roles.
 """
 
 from dataclasses import dataclass, field
@@ -21,7 +20,6 @@ from .runner import write_json
 DEFAULT_TIMEOUT_MS = 5000.0
 DEFAULT_FALSE_ENDPOINT_MS = 300.0
 DEFAULT_OVERLAP_MIN_MS = 50.0
-ALTERNATING_CONFIDENCE = 0.5
 
 
 @dataclass
@@ -71,7 +69,7 @@ def fuse(acoustic_doc, transcript_doc=None):
     """Fuse acoustic segments with optional ASR transcript and attribute speakers.
 
     Returns a FusedSegments 1.0.0 document.
-    Uses the alternating heuristic for single-channel mixed recordings.
+    Retains unknown roles until a separate attribution processor supplies evidence.
     """
     acoustic_segments = acoustic_doc.get('segments', [])
     duration_ms = acoustic_doc.get('source', {}).get('duration_ms', 0)
@@ -125,8 +123,8 @@ def fuse(acoustic_doc, transcript_doc=None):
 
     fused = []
     for i, aseg in enumerate(acoustic_segments):
-        # Alternating heuristic: even indices = tester, odd = device
-        role = 'tester' if i % 2 == 0 else 'device'
+        # Acoustic segments alone do not identify tester/device roles.
+        role = 'unknown'
         a_start = aseg['start_ms']
         a_end = aseg['end_ms']
         asr = find_asr_overlap(a_start, a_end)
@@ -140,8 +138,8 @@ def fuse(acoustic_doc, transcript_doc=None):
         fused.append(FusedSegment(
             start_ms=a_start, end_ms=a_end,
             speaker_role=role,
-            speaker_confidence=ALTERNATING_CONFIDENCE,
-            speaker_source='heuristic',
+            speaker_confidence=0.0,
+            speaker_source='acoustic',
             timing_source=timing,
             text=text,
             acoustic_segment_id=aseg.get('segment_id'),
@@ -158,13 +156,13 @@ def fuse(acoustic_doc, transcript_doc=None):
             'duration_ms': round(duration_ms, 3),
         },
         'attribution': {
-            'strategy': 'alternating_heuristic',
+            'strategy': 'none',
             'provider': None,
-            'confidence': ALTERNATING_CONFIDENCE,
-            'note': 'Single-channel alternating heuristic; low confidence, requires human or diarization verification',
+            'confidence': 0.0,
+            'note': 'No role evidence; diarization or human attribution is required',
         },
-        'status': 'complete',
-        'reason': None,
+        'status': 'partial',
+        'reason': 'Speaker roles are unresolved',
         'segments': [seg.to_dict(f'FSEG-{i:04d}') for i, seg in enumerate(fused)],
     }
 
@@ -318,6 +316,9 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
 
     if not segments:
         return [], [], 'insufficient_evidence', 'No fused segments to detect events from'
+
+    if any(seg.get('speaker_role') == 'unknown' for seg in segments):
+        return [], [], 'insufficient_evidence', 'Speaker attribution is unresolved'
 
     events = []
     evidence = []

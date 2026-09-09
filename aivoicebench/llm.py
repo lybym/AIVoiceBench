@@ -83,6 +83,18 @@ class LLMProvider(Protocol):
         ...
 
 
+class UnavailableLLMProvider:
+    """Production default when no semantic provider is configured."""
+
+    def complete(self, system_prompt, user_prompt, dimension, context):
+        now = _utc_now()
+        invocation = LLMInvocation('CALL-' + uuid.uuid4().hex, 'unavailable', 'none',
+                                   PROMPT_VERSIONS.get(dimension, 'unknown-1.0.0'), now,
+                                   finished_at=now, latency_ms=0, status='not_configured')
+        return {'decision': 'unknown', 'score': None, 'confidence': 0.0,
+                'status': 'insufficient_evidence', 'reason': 'No semantic provider configured'}, invocation
+
+
 class MockLLMProvider:
     """Deterministic provider for testing without API keys.
 
@@ -421,7 +433,7 @@ class LLMJudge:
     """
 
     def __init__(self, provider=None):
-        self.provider = provider or MockLLMProvider()
+        self.provider = provider or UnavailableLLMProvider()
         self.invocations = []
 
     def _build_judge_result(self, raw_result, inv, dimension, turn_id,

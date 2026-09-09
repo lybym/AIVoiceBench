@@ -27,8 +27,8 @@ services:
       - AIVOICEBENCH_OUTPUT=/data/output
       - AIVOICEBENCH_CACHE=/data/cache
       # === LLM Provider ===
-      # "mock" = 无需 API Key (默认), "volcengine" = 火山引擎豆包, "openai" = OpenAI
-      - AIVOICEBENCH_LLM_PROVIDER=mock
+      # "none" = 未配置语义评估 (默认), "volcengine" = 火山引擎豆包, "openai" = OpenAI
+      - AIVOICEBENCH_LLM_PROVIDER=none
       # --- 火山引擎豆包 ---
       # 在 .env 文件中设置 (不要提交到 Git!)
       # - ARK_API_KEY=your_key_here

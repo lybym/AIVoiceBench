@@ -58,8 +58,7 @@ class OpenAICompatibleProvider:
     def complete(self, system_prompt, user_prompt, dimension, context):
         """Call the LLM API and return (structured_result, invocation_record).
 
-        Falls back to a simple heuristic if the API call fails — the result
-        is marked low_confidence and the error is recorded.
+        API or output-validation failures remain insufficient evidence; no mock fallback.
         """
         inv = LLMInvocation(
             invocation_id="CALL-" + uuid.uuid4().hex,
@@ -73,19 +72,16 @@ class OpenAICompatibleProvider:
             self._check_key()
             raw_text = self._call_api(system_prompt, user_prompt)
             result = self._parse_response(raw_text, dimension, context)
-        except Exception as exc:
-            # Fall back to heuristic on API failure
-            from .llm import MockLLMProvider
-            mock = MockLLMProvider()
-            mock_result, _ = mock.complete(system_prompt, user_prompt, dimension, context)
-            result = mock_result
-            result["status"] = "low_confidence" if mock_result.get("status") == "observed" else mock_result.get("status")
-            result["reason"] = (result.get("reason", "") +
-                                f" [LLM API fallback: {type(exc).__name__}: {str(exc)[:100]}]")
+        except Exception:
+            result = {'decision': 'unknown', 'score': None, 'confidence': 0.0,
+                      'status': 'insufficient_evidence',
+                      'reason': 'LLM call or structured output validation failed'}
+            inv.status = 'failed'
 
         inv.finished_at = _utc_now()
         inv.latency_ms = round((time.monotonic() - start_time) * 1000, 3)
-        inv.status = "success" if self.api_key else "no_api_key_fallback"
+        if inv.status != 'failed':
+            inv.status = 'success'
         inv.input_chars = len(user_prompt)
         inv.output_chars = len(json.dumps(result, ensure_ascii=False))
         return result, inv
@@ -121,36 +117,35 @@ class OpenAICompatibleProvider:
     def _parse_response(self, text, dimension, context):
         """Parse LLM response text into structured JudgeResult fields.
 
-        The LLM is prompted to return JSON. If parsing fails, fall back
-        to heuristic analysis of the text.
+        Malformed decisions, unreferenced claims, and invented timing
+        are rejected so the caller can preserve insufficient evidence.
         """
-        # Try to parse as JSON first
-        try:
-            # Strip markdown code fences if present
-            clean = text.strip()
-            if clean.startswith("```"):
-                clean = clean.split("\n", 1)[-1] if "\n" in clean else clean[3:]
-                if clean.endswith("```"):
-                    clean = clean[:-3]
-                clean = clean.strip()
-            parsed = json.loads(clean)
-            if isinstance(parsed, dict):
-                # Ensure required fields
-                parsed.setdefault("decision", "llm_response")
-                parsed.setdefault("confidence", 0.8)
-                parsed.setdefault("reason", text[:200])
-                parsed.setdefault("status", "observed")
-                return parsed
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        # Fall back: treat the text as the reason
-        return {
-            "decision": "llm_response",
-            "confidence": 0.7,
-            "reason": text[:500],
-            "status": "observed",
-        }
+        import math
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            raise ValueError('Structured decision must be an object')
+        if any(not isinstance(parsed.get(k), str) or not parsed[k].strip()
+               for k in ('decision', 'reason', 'status')):
+            raise ValueError('Missing decision fields')
+        confidence = parsed.get('confidence')
+        if type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+            raise ValueError('Invalid confidence')
+        if parsed['status'] not in ('observed', 'low_confidence', 'insufficient_evidence'):
+            raise ValueError('Invalid decision status')
+        if parsed.get('score') is not None and (type(parsed['score']) not in (int, float)
+                or not math.isfinite(parsed['score'])):
+            raise ValueError('Invalid score')
+        # The existing context does not supply validated timing anchor IDs yet.
+        # Model-authored times cannot become observable audio measurements.
+        if any(parsed.get(k) is not None for k in ('meaningful_response_start_ms',
+                'feedback_start_ms', 'feedback_end_ms')):
+            raise ValueError('Semantic timing requires verified anchor selection')
+        if parsed['status'] != 'insufficient_evidence':
+            refs = parsed.get('evidence_refs')
+            allowed = context.get('evidence_refs', [])
+            if not isinstance(refs, list) or not refs or any(not isinstance(r, str) or r not in allowed for r in refs):
+                raise ValueError('Decision lacks verified evidence references')
+        return parsed
 
 
 class VolcengineLLMProvider(OpenAICompatibleProvider):
@@ -200,12 +195,11 @@ class OpenAILLMProvider(OpenAICompatibleProvider):
 def create_provider_from_config(config):
     """Create an LLM provider from a config dict.
 
-    Supports 'mock', 'volcengine', 'openai'.
-    Returns MockLLMProvider as fallback.
+    Supports configured cloud providers or unavailable mode. No mock fallback.
     """
-    from .llm import MockLLMProvider
+    from .llm import UnavailableLLMProvider
 
-    provider_name = config.get("llm_provider", "mock")
+    provider_name = config.get("llm_provider", "none")
 
     if provider_name == "volcengine":
         vc = config.get("volcengine", {})
@@ -226,4 +220,4 @@ def create_provider_from_config(config):
             max_tokens=oc.get("max_tokens", 4096),
         )
     else:
-        return MockLLMProvider()
+        return UnavailableLLMProvider()

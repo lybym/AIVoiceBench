@@ -28,12 +28,12 @@ COPY config/ ./config/
 RUN mkdir -p /data/recordings /data/output /data/cache
 
 # Environment defaults
-# LLM provider: "mock" (default), "volcengine", or "openai"
+# LLM provider: "none" (default: semantic evaluation unavailable), "volcengine", or "openai"
 # For volcengine: set ARK_API_KEY and AIVOICEBENCH_LLM_MODEL=ep-xxx
 # For openai: set OPENAI_API_KEY and AIVOICEBENCH_LLM_MODEL=gpt-4o
 ENV AIVOICEBENCH_OUTPUT=/data/output \
     AIVOICEBENCH_CACHE=/data/cache \
-    AIVOICEBENCH_LLM_PROVIDER=mock \
+    AIVOICEBENCH_LLM_PROVIDER=none \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 

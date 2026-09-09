@@ -1,6 +1,6 @@
 # System Architecture — Recording Import and Automatic Analysis
 
-The primary Windows product is an evaluation harness for externally recorded tester + AI terminal conversations. Recording may be performed by a phone, recorder or computer; tester speech can be spontaneous, driven by frozen audio or by a future agent. The import pipeline does not require a sound card, a live device or a TestCase. Existing HIL and Case infrastructure remains available as a later input path.
+The primary Docker/Web UI product is an evaluation harness for externally recorded tester + AI terminal conversations. Recording may be performed by a phone, recorder or computer; tester speech can be spontaneous, driven by frozen audio or by a future agent. The import pipeline does not require a sound card, a live device or a TestCase. Existing HIL and Case infrastructure remains available as a later input path.
 
 ```mermaid
 flowchart TD
@@ -26,7 +26,7 @@ flowchart TD
 
 ## Processor boundaries
 
-Every processor consumes artifact/revision references and an explicit versioned configuration, and emits immutable outputs plus a stage record. The orchestrator owns scheduling, failure isolation and dependency eligibility. It does not contain signal algorithms or semantic rule forests. The initial implementation uses local files and a CLI/internal API; a Windows UI and executable follow. No distributed Control Plane, database cluster or remote Station is required.
+Every processor consumes artifact/revision references and an explicit versioned configuration, and emits immutable outputs plus a stage record. The orchestrator owns scheduling, failure isolation and dependency eligibility. It does not contain signal algorithms or semantic rule forests. The initial implementation uses local files and a CLI/internal API; a Docker backend and browser frontend are the delivery target. No distributed Control Plane, database cluster or remote Station is required.
 
 | Processor | Input → output | Responsibility |
 | --- | --- | --- |
@@ -64,6 +64,6 @@ Deterministic code owns hashes, media I/O, metadata, signal measurements, arithm
 
 The Harness follows Context → Model → Structured Decision → allowed deterministic tool → Observation → Model → validated result. Calls are bounded and decisions schema-constrained. JudgeResult retains decision/score/confidence/reason/evidence_refs/turn_refs/model/prompt_version. Decision retains selected_action/confidence/rationale/required_tools/expected_evidence. Validate tool allowlists and reference existence before execution. Record raw model output separately from validated output. Insufficient or low-confidence semantics stays needs_review. Candidate findings cannot claim internal VAD/ASR/LLM/TTS delays or proven root causes; suspected layers need attribution confidence and log verification.
 
-## Windows delivery and later extensions
+## Docker/Web UI delivery and later extensions
 
-Home/Runs → Import → Analyze → Analysis with waveform, speaker segments, transcript, turns, events, metrics and findings. Clicking a finding navigates to its evidence time range. Human edits are explicit revisions. First executable/installer must be tested on Windows with real 5–20 minute recordings and configured providers. Version/supplier Compare, Golden replay, multi-turn/exploratory agents follow. Audio Station, loopback, automatic physical HIL and remote Station remain P3 extensions with existing code preserved.
+Home/Runs → Import → Analyze → Analysis with waveform, speaker segments, transcript, turns, events, metrics and findings. Clicking a finding navigates to its evidence time range. Human edits are explicit revisions. Docker services and the Web UI must be tested from a Windows browser with real 5–20 minute recordings and configured providers. No native Windows executable/installer is required. Version/supplier Compare, Golden replay, multi-turn/exploratory agents follow. Audio Station, loopback, automatic physical HIL and remote Station remain P3 extensions with existing code preserved.

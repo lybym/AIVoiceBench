@@ -7,8 +7,8 @@ output: /data/output
 cache: /data/cache
 
 # === LLM Provider ===
-# Choose: "mock" (no API key needed), "volcengine", or "openai"
-llm_provider: mock
+# Choose: "none" (semantic evaluation unavailable), "volcengine", or "openai"
+llm_provider: none
 
 # --- 火山引擎 豆包 (Volcengine Doubao) ---
 # Setup steps:

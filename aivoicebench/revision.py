@@ -142,7 +142,10 @@ class RevisionStore:
                 else:
                     result = item_rev
 
-        result['_applied_revisions'] = applied
+        # Lists preserve their public shape; each changed item already contains
+        # its revision references. Document envelopes can carry an aggregate.
+        if isinstance(result, dict):
+            result['_applied_revisions'] = applied
         return result
 
     def confirm_finding(self, finding_id, reviewer, confirmed=True,

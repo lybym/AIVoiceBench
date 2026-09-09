@@ -115,8 +115,6 @@ def _read_canonical(path):
                     f'Acoustic segmentation requires WAV PCM16LE {CANONICAL_SAMPLE_RATE} Hz mono; '
                     f'got {channels}ch {sample_width * 8}-bit {rate} Hz {comptype}')
             frames = audio.getnframes()
-            if frames <= 0:
-                raise AcousticError('Decoded audio is empty')
             raw = audio.readframes(frames)
             if len(raw) != frames * CANONICAL_SAMPLE_WIDTH:
                 raise AcousticError('Truncated canonical WAV sample data')
@@ -367,5 +365,6 @@ def segment_audio(path, output=None, segmenter=None):
     out_path = None
     if output is not None:
         out_path = Path(output).resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         write_json(out_path, document)
     return document, out_path

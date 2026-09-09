@@ -12,7 +12,7 @@ from pathlib import Path
 from .acoustic import EnergyVadSegmenter
 from .fusion import fuse, build_turns, detect_events, generate_timeline
 from .metrics import compute_timeline_metrics
-from .llm import LLMJudge, MockLLMProvider
+from .llm import LLMJudge, MockLLMProvider, UnavailableLLMProvider
 from .findings import generate_findings
 from .report import render_report
 from .runner import write_json
@@ -28,7 +28,7 @@ def run_full_pipeline(source, output, profile=None, *, provider=None,
         source: path to a canonical WAV (PCM16 16kHz mono)
         output: output directory for all artifacts
         profile: dict with device/hardware/firmware/model/prompt/supplier/environment/notes
-        provider: LLM provider (defaults to MockLLMProvider)
+        provider: LLM provider (defaults to UnavailableLLMProvider)
 
     Returns dict with run_id, status, and artifact paths.
     """
@@ -73,14 +73,14 @@ def run_full_pipeline(source, output, profile=None, *, provider=None,
         write_json(out / 'metrics.json', metrics_result)
 
         # 4. LLM Judge
-        from .llm import LLMJudge, MockLLMProvider
+        from .llm import LLMJudge, MockLLMProvider, UnavailableLLMProvider
         from .llm_provider import create_provider_from_config
 
-        # Determine LLM provider: explicit > env config > mock
+        # Determine LLM provider: explicit > env config > unavailable
         if provider is not None:
             llm_provider = provider
         else:
-            provider_name = os.environ.get('AIVOICEBENCH_LLM_PROVIDER', 'mock')
+            provider_name = os.environ.get('AIVOICEBENCH_LLM_PROVIDER', 'none')
             if provider_name == 'volcengine':
                 llm_provider = create_provider_from_config({
                     'llm_provider': 'volcengine',
@@ -97,8 +97,10 @@ def run_full_pipeline(source, output, profile=None, *, provider=None,
                         'base_url': os.environ.get('AIVOICEBENCH_LLM_BASE_URL', 'https://api.openai.com/v1'),
                     }
                 })
+            elif provider_name == 'mock':
+                llm_provider = UnavailableLLMProvider()
             else:
-                llm_provider = MockLLMProvider()
+                llm_provider = UnavailableLLMProvider()
         judge = LLMJudge(llm_provider)
         judge_results, invocations = judge.evaluate_all(fused_doc, turns_doc, metrics_result)
         judge_data = {'results': judge_results, 'invocations': invocations}
@@ -141,44 +143,13 @@ def _integrate_llm_metrics(metrics_result, judge_results):
 
     Resolves insufficient_evidence metrics by using LLM semantic analysis.
     """
-    metrics = metrics_result.get('metrics', [])
-
-    # Find meaningful_response judge result
-    mr_judge = None
-    fb_judge = None
-    for r in judge_results:
-        if r.get('dimension') == 'meaningful_response' and r.get('status') == 'observed':
-            mr_judge = r
-        if r.get('dimension') == 'feedback_detection' and r.get('status') == 'observed':
-            fb_judge = r
-
-    for m in metrics:
-        if m.get('name') == 'meaningful_response_latency_ms' and mr_judge:
-            ms_start = mr_judge.get('meaningful_response_start_ms')
-            if ms_start is not None:
-                # Find the tester_speech_end from the same turn
-                turn_id = mr_judge.get('turn_id')
-                # Look for the turn's tester_speech_end in events
-                # For now, use the metric's turn_id to find the tester end
-                # This is a simplification — in full integration, we'd look up the timeline
-                m['value'] = None  # Will be set if we have tester_end
-                m['status'] = 'observed'
-                m['reason'] = f'LLM meaningful_response_start={ms_start}ms (confidence={mr_judge.get("confidence", 0.6)})'
-                m['evidence_ids'] = mr_judge.get('evidence_refs', [])
-                m['_llm_meaningful_response_start_ms'] = ms_start
-                m['_llm_confidence'] = mr_judge.get('confidence', 0.6)
-
-        if m.get('name') == 'feedback_latency_ms' and fb_judge:
-            fb_start = fb_judge.get('feedback_start_ms')
-            fb_end = fb_judge.get('feedback_end_ms')
-            if fb_start is not None and fb_end is not None:
-                m['value'] = round(fb_end - fb_start, 3)
-                m['status'] = 'observed'
-                m['unit'] = 'ms'
-                m['reason'] = f'LLM feedback_detection: {fb_judge.get("feedback_type")} at {fb_start}-{fb_end}ms'
-                m['_llm_feedback_type'] = fb_judge.get('feedback_type')
-
-    # Update overall status
-    observed = [m for m in metrics if m.get('status') == 'observed']
+    # Until validated per-turn semantic anchor IDs are wired, retain unknowns.
+    # A feedback interval is a duration, not tester-end-to-feedback latency.
+    for metric in metrics_result.get('metrics', []):
+        if metric.get('name') in ('meaningful_response_latency_ms', 'feedback_latency_ms'):
+            metric['value'] = None
+            metric['status'] = 'insufficient_evidence'
+            metric['reason'] = 'Verified per-turn semantic timing anchors are unavailable'
+    observed = [m for m in metrics_result.get('metrics', []) if m.get('status') == 'observed' and m.get('value') is not None]
     metrics_result['status'] = 'observed' if observed else 'insufficient_evidence'
     return metrics_result

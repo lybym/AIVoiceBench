@@ -44,18 +44,16 @@ def acoustic_doc(segments, duration_ms=None, sha='a' * 64):
 
 
 class FuseTests(unittest.TestCase):
-    def test_alternating_speaker_attribution(self):
+    def test_missing_speaker_evidence_remains_unknown(self):
         doc = acoustic_doc([(500, 1000), (1200, 2000), (2500, 3000), (3500, 4000)])
         fused = fuse(doc)
-        self.assertEqual(fused['status'], 'complete')
-        self.assertEqual(len(fused['segments']), 4)
-        self.assertEqual(fused['segments'][0]['speaker_role'], 'tester')
-        self.assertEqual(fused['segments'][1]['speaker_role'], 'device')
-        self.assertEqual(fused['segments'][2]['speaker_role'], 'tester')
-        self.assertEqual(fused['segments'][3]['speaker_role'], 'device')
-        self.assertEqual(fused['attribution']['strategy'], 'alternating_heuristic')
-        self.assertEqual(fused['segments'][0]['speaker_source'], 'heuristic')
-        self.assertAlmostEqual(fused['segments'][0]['speaker_confidence'], 0.5)
+        self.assertEqual(fused['status'], 'partial')
+        self.assertEqual([s['speaker_role'] for s in fused['segments']], ['unknown'] * 4)
+        self.assertEqual(fused['attribution']['strategy'], 'none')
+        self.assertEqual(build_turns(fused)['turns'], [])
+        events, _, status, _ = detect_events(fused, build_turns(fused))
+        self.assertEqual(events, [])
+        self.assertEqual(status, 'insufficient_evidence')
 
     def test_empty_acoustic_is_insufficient(self):
         doc = acoustic_doc([])
@@ -92,10 +90,18 @@ class FuseTests(unittest.TestCase):
         self.assertEqual(fused['segments'][0]['asr_segment_id'], 'ASR-0')
 
 
+def attributed_fixture(doc):
+    """Explicit synthetic roles for testing the downstream turn/event consumer."""
+    fused = fuse(doc)
+    for segment, role in zip(fused['segments'], ['tester', 'device'] * len(fused['segments'])):
+        segment.update(speaker_role=role, speaker_source='manual', speaker_confidence=1.0)
+    return fused
+
+
 class TurnBuilderTests(unittest.TestCase):
     def test_simple_turn_pair(self):
         doc = acoustic_doc([(500, 1000), (1200, 2000), (2500, 3000), (3500, 4000)])
-        fused = fuse(doc)
+        fused = attributed_fixture(doc)
         turns = build_turns(fused)
         self.assertEqual(turns['status'], 'complete')
         self.assertEqual(len(turns['turns']), 2)
@@ -111,7 +117,7 @@ class TurnBuilderTests(unittest.TestCase):
 
     def test_turns_document_validates(self):
         doc = acoustic_doc([(500, 1000), (1200, 2000)])
-        fused = fuse(doc)
+        fused = attributed_fixture(doc)
         turns = build_turns(fused)
         self.assertEqual(turns_errors(turns), [])
 
@@ -122,7 +128,7 @@ class TurnBuilderTests(unittest.TestCase):
 
     def test_device_without_tester_is_orphan(self):
         doc = acoustic_doc([(500, 1000)])  # Only one segment → tester
-        fused = fuse(doc)
+        fused = attributed_fixture(doc)
         turns = build_turns(fused)
         self.assertEqual(len(turns['turns']), 1)
         self.assertEqual(len(turns['turns'][0]['device_segment_ids']), 0)
@@ -131,7 +137,7 @@ class TurnBuilderTests(unittest.TestCase):
 class EventDetectionTests(unittest.TestCase):
     def test_detects_speech_boundaries(self):
         doc = acoustic_doc([(500, 1000), (1200, 2000)])
-        fused = fuse(doc)
+        fused = attributed_fixture(doc)
         turns = build_turns(fused)
         events, evidence, status, reason = detect_events(fused, turns)
         self.assertEqual(status, 'complete')
@@ -143,7 +149,7 @@ class EventDetectionTests(unittest.TestCase):
 
     def test_detects_silence_between_segments(self):
         doc = acoustic_doc([(500, 1000), (1500, 2000)])
-        fused = fuse(doc)
+        fused = attributed_fixture(doc)
         turns = build_turns(fused)
         events, evidence, status, reason = detect_events(fused, turns)
         silences = [e for e in events if e['type'] == 'silence']
@@ -153,7 +159,7 @@ class EventDetectionTests(unittest.TestCase):
 
     def test_detects_timeout_for_long_silence(self):
         doc = acoustic_doc([(500, 1000), (7000, 8000)])  # 6s gap
-        fused = fuse(doc)
+        fused = attributed_fixture(doc)
         turns = build_turns(fused)
         events, evidence, status, reason = detect_events(fused, turns, timeout_ms=5000)
         timeouts = [e for e in events if e['type'] == 'timeout']
@@ -161,7 +167,7 @@ class EventDetectionTests(unittest.TestCase):
 
     def test_detects_response_events(self):
         doc = acoustic_doc([(500, 1000), (1200, 2000)])
-        fused = fuse(doc)
+        fused = attributed_fixture(doc)
         turns = build_turns(fused)
         events, evidence, status, reason = detect_events(fused, turns)
         response_starts = [e for e in events if e['type'] == 'response_start']
@@ -172,7 +178,7 @@ class EventDetectionTests(unittest.TestCase):
     def test_detects_possible_false_endpoint(self):
         # Short tester segment (200ms) followed by immediate device response
         doc = acoustic_doc([(500, 700), (750, 1500), (2000, 3000), (3200, 4000)])
-        fused = fuse(doc)
+        fused = attributed_fixture(doc)
         turns = build_turns(fused)
         events, evidence, status, reason = detect_events(fused, turns, false_endpoint_ms=300)
         feps = [e for e in events if e['type'] == 'possible_false_endpoint']
@@ -180,7 +186,7 @@ class EventDetectionTests(unittest.TestCase):
 
     def test_events_have_evidence_refs(self):
         doc = acoustic_doc([(500, 1000), (1200, 2000)])
-        fused = fuse(doc)
+        fused = attributed_fixture(doc)
         turns = build_turns(fused)
         events, evidence, status, reason = detect_events(fused, turns)
         self.assertTrue(len(evidence) > 0)
@@ -190,7 +196,7 @@ class EventDetectionTests(unittest.TestCase):
 
     def test_events_sorted_by_time(self):
         doc = acoustic_doc([(500, 1000), (1200, 2000), (2500, 3000), (3500, 4000)])
-        fused = fuse(doc)
+        fused = attributed_fixture(doc)
         turns = build_turns(fused)
         events, _, _, _ = detect_events(fused, turns)
         for i in range(1, len(events)):
@@ -206,7 +212,7 @@ class EventDetectionTests(unittest.TestCase):
 class TimelineGenerationTests(unittest.TestCase):
     def test_timeline_validates(self):
         doc = acoustic_doc([(500, 1000), (1200, 2000)])
-        fused = fuse(doc)
+        fused = attributed_fixture(doc)
         turns = build_turns(fused)
         events, evidence, status, reason = detect_events(fused, turns)
         timeline = generate_timeline(fused, turns, events, evidence, status, reason)
@@ -237,13 +243,13 @@ class FusionCLITests(unittest.TestCase):
         write_json(acoustic_path, doc)
         out = Path(self.tmp.name) / 'out'
         exit_code = self.main(['fusion', str(acoustic_path), '--output', str(out)])
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(exit_code, 2)
         fused = json.loads((out / 'fused-segments.json').read_text(encoding='utf-8'))
         turns = json.loads((out / 'turns.json').read_text(encoding='utf-8'))
         timeline = json.loads((out / 'timeline.json').read_text(encoding='utf-8'))
-        self.assertEqual(fused['status'], 'complete')
-        self.assertEqual(len(turns['turns']), 2)
-        self.assertTrue(len(timeline['events']) > 0)
+        self.assertEqual(fused['status'], 'partial')
+        self.assertEqual(len(turns['turns']), 0)
+        self.assertEqual(timeline['events'], [])
 
 
 if __name__ == '__main__':
