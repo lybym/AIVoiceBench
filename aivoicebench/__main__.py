@@ -58,6 +58,9 @@ def main(argv=None):
     fusion.add_argument('--output', type=Path, default=Path('artifacts/fusion'))
     fusion.add_argument('--timeout-ms', type=float, default=5000.0)
     fusion.add_argument('--false-endpoint-ms', type=float, default=300.0)
+    metrics_cmd = subparsers.add_parser('metrics', help='Compute expanded latency metrics from a timeline')
+    metrics_cmd.add_argument('timeline', type=Path, help='Path to EventTimeline JSON')
+    metrics_cmd.add_argument('--output', type=Path)
     audio = subparsers.add_parser('audio', help='Optional explicit audio station commands')
     audio_commands = audio.add_subparsers(dest='audio_command', required=True)
     audio_commands.add_parser('devices', help='List devices without opening a recording stream')
@@ -174,6 +177,27 @@ def main(argv=None):
             return 0 if timeline['status'] == 'complete' else 2
         except (OSError, ValueError) as error:
             print(f'FUSION ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
+            return 1
+    if args.command == 'metrics':
+        from .metrics import compute_timeline_metrics
+        try:
+            import json
+            timeline = json.loads(args.timeline.read_text(encoding='utf-8'))
+            result = compute_timeline_metrics(timeline)
+            if args.output:
+                write_json_result = args.output
+                import uuid as _uuid
+                from .runner import write_json as _wj
+                _wj(write_json_result, result)
+            observed = [m for m in result['metrics'] if m['status'] == 'observed']
+            insufficient = [m for m in result['metrics'] if m['status'] == 'insufficient_evidence']
+            print(f'{result["status"].upper()} ({len(observed)} observed, {len(insufficient)} insufficient)')
+            for m in result['metrics']:
+                val = m['value'] if m['value'] is not None else 'N/A'
+                print(f'  {m["name"]}: {val} {m["unit"]} [{m["status"]}]')
+            return 0 if result['status'] == 'observed' else 2
+        except (OSError, ValueError) as error:
+            print(f'METRICS ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
             return 1
     if args.command == 'audio':
         import json

@@ -96,3 +96,72 @@ def barge_success(stop_success, new_response_success):
     if stop_success is None or new_response_success is None:
         return None
     return stop_success and new_response_success
+
+
+def turn_gap_ms(device_speech_end_ms, next_tester_speech_start_ms):
+    """Gap between the end of a device response and the start of the next tester speech."""
+    start, end = _finite(device_speech_end_ms), _finite(next_tester_speech_start_ms)
+    if start < 0 or end < 0:
+        raise ValueError('Turn gap requires nonnegative boundaries')
+    if end < start:
+        raise ValueError('Turn gap requires ordered boundaries; overlap is not a gap')
+    return end - start
+
+
+def barge_in_stop_latency_ms(interrupt_start_ms, device_speech_end_ms):
+    """Time from tester interruption start to device speech stop."""
+    start, end = _finite(interrupt_start_ms), _finite(device_speech_end_ms)
+    if start < 0 or end < 0:
+        raise ValueError('Barge-in stop latency requires nonnegative boundaries')
+    if end < start:
+        raise ValueError('Barge-in stop latency requires device end after interrupt start')
+    return end - start
+
+
+def overlap_duration_ms(overlap_start_ms, overlap_end_ms):
+    """Duration of a single overlap interval."""
+    start, end = _finite(overlap_start_ms), _finite(overlap_end_ms)
+    if start < 0 or end < start:
+        raise ValueError('Overlap duration requires valid ordered interval')
+    return end - start
+
+
+def overlap_ratio(overlap_duration_ms_val, device_speech_duration_ms):
+    """Fraction of device speech that overlaps with tester speech."""
+    overlap, total = _finite(overlap_duration_ms_val), _finite(device_speech_duration_ms)
+    if overlap < 0 or total <= 0:
+        raise ValueError('Overlap ratio requires nonnegative overlap and positive device duration')
+    if overlap > total:
+        raise ValueError('Overlap cannot exceed device speech duration')
+    return overlap / total
+
+
+def false_endpoint_detected(events):
+    """Boolean: did the timeline contain a possible_false_endpoint event?"""
+    if not isinstance(events, (list, tuple)):
+        raise ValueError('Events must be a list')
+    return any(isinstance(e, dict) and e.get('type') == 'possible_false_endpoint' for e in events)
+
+
+def feedback_latency_status():
+    """Feedback latency requires detecting non-speech feedback (filler, cue, tone).
+
+    Pure signal processing cannot reliably distinguish feedback from noise.
+    This metric needs acoustic pattern matching or LLM analysis.
+    Returns insufficient_evidence, not a guessed time.
+    """
+    return {'status': 'insufficient_evidence',
+            'reason': 'Feedback detection requires acoustic pattern matching or LLM analysis; '
+                       'pure signal timing cannot distinguish filler/cue from noise'}
+
+
+def meaningful_response_latency_status():
+    """Meaningful response latency requires semantic analysis to locate the first
+    information-bearing point in the device response.
+
+    This cannot be computed from timing alone; it needs ASR + LLM.
+    Returns insufficient_evidence, not a guessed time.
+    """
+    return {'status': 'insufficient_evidence',
+            'reason': 'Meaningful response boundary requires ASR + LLM semantic analysis; '
+                       'timing alone cannot identify the first information-bearing point'}
