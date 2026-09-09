@@ -1,0 +1,96 @@
+name: Publish Docker Image to Releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+env:
+  IMAGE_NAME: aivoicebench
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.event.inputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save image as tarball
+        run: |
+          docker save ${{ env.IMAGE_NAME }}:${{ github.event.inputs.tag }} | gzip > aivoicebench-${{ github.event.inputs.tag }}.tar.gz
+          ls -lh aivoicebench-*.tar.gz
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: AIVoiceBench ${{ github.event.inputs.tag }}
+          body: |
+            # AIVoiceBench ${{ github.event.inputs.tag }}
+
+            ## 下载与运行
+
+            ```bash
+            # 1. 下载 aivoicebench-${{ github.event.inputs.tag }}.tar.gz
+
+            # 2. 加载镜像
+            docker load < aivoicebench-${{ github.event.inputs.tag }}.tar.gz
+
+            # 3. 运行
+            docker run -d --name aivoicebench \
+              -p 8000:8000 \
+              -v ./data/recordings:/data/recordings:ro \
+              -v ./data/output:/data/output \
+              -v ./data/cache:/data/cache \
+              -e AIVOICEBENCH_LLM_PROVIDER=mock \
+              aivoicebench:${{ github.event.inputs.tag }}
+
+            # 4. 打开 http://localhost:8000
+            ```
+
+            ## 配置火山引擎 LLM
+
+            ```bash
+            docker run -d --name aivoicebench \
+              -p 8000:8000 \
+              -v ./data/recordings:/data/recordings:ro \
+              -v ./data/output:/data/output \
+              -e AIVOICEBENCH_LLM_PROVIDER=volcengine \
+              -e ARK_API_KEY=your_key \
+              -e AIVOICEBENCH_LLM_MODEL=ep-xxxxxxxx \
+              aivoicebench:${{ github.event.inputs.tag }}
+            ```
+
+            ## 包含的功能
+
+            - 声学分割 (能量 VAD)
+            - 段融合 + 说话人归因
+            - 轮次构建 + 事件检测
+            - 确定性时延指标
+            - LLM 语义评估 (Mock + 火山引擎/OpenAI Provider)
+            - Finding 生成
+            - Markdown + JSON 报告
+            - 人工修正契约
+            - Web UI (拖放上传 + 分析结果展示)
+          files: aivoicebench-*.tar.gz
+          draft: false
+          prerelease: false
