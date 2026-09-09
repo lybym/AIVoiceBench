@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AIVoiceBench — AI 语音分析</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:system-ui,-apple-system,sans-serif; background:#f5f5f5; color:#333; }
+.nav { background:#1a1a2e; padding:12px 24px; display:flex; gap:24px; align-items:center; }
+.nav a { color:#e0e0e0; text-decoration:none; font-size:14px; }
+.nav a:hover { color:#fff; }
+.nav .logo { font-size:18px; font-weight:bold; color:#fff; margin-right:auto; }
+.container { max-width:960px; margin:0 auto; padding:24px; }
+.card { background:#fff; border-radius:8px; padding:20px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.1); }
+h2 { font-size:18px; margin-bottom:12px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th,td { padding:8px 12px; text-align:left; border-bottom:1px solid #eee; }
+th { background:#fafafa; font-weight:600; }
+.badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+.badge-ok { background:#d4edda; color:#155724; }
+.badge-partial { background:#fff3cd; color:#856404; }
+.badge-insufficient { background:#f8d7da; color:#721c24; }
+.badge-info { background:#d1ecf1; color:#0c5460; }
+.btn { background:#1a1a2e; color:#fff; border:none; padding:10px 24px; border-radius:6px; cursor:pointer; font-size:14px; }
+.btn:hover { background:#2d2d4e; }
+input,select,textarea { width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; font-size:14px; }
+.form-row { margin-bottom:12px; }
+.form-row label { display:block; font-size:13px; margin-bottom:4px; font-weight:500; }
+.form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.drop { border:2px dashed #ccc; border-radius:8px; padding:40px; text-align:center; color:#666; cursor:pointer; }
+.drop:hover { border-color:#1a1a2e; }
+.drop.drag { border-color:#1a1a2e; background:#f0f0ff; }
+.hidden { display:none; }
+.loading { text-align:center; padding:40px; color:#666; }
+.loading::after { content:''; display:block; width:30px; height:30px; border:3px solid #ccc; border-top-color:#1a1a2e; border-radius:50%; margin:12px auto 0; animation:spin 1s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.p2 { color:#dc3545; } .p3 { color:#ffc107; } .obs { color:#28a745; }
+</style>
+</head>
+<body>
+<div class="nav">
+<span class="logo">🔊 AIVoiceBench</span>
+<a href="#" onclick="showHome();return false">历史记录</a>
+<a href="#" onclick="showImport();return false">导入分析</a>
+</div>
+<div class="container" id="app">
+
+<!-- HOME -->
+<div id="home">
+<h2>分析记录</h2>
+<div id="runs-list"><div class="loading">加载中...</div></div>
+</div>
+
+<!-- IMPORT -->
+<div id="import" class="hidden">
+<h2>导入录音分析</h2>
+<div class="card">
+<div class="drop" id="drop">
+<p>拖放 WAV 文件到此处，或点击选择</p>
+<input type="file" id="file-input" accept=".wav" style="display:none" onchange="handleFile(this.files[0])">
+</div>
+<div id="file-info" class="hidden" style="margin-top:12px;font-size:13px;color:#666"></div>
+</div>
+<div class="card">
+<h2 style="font-size:16px">设备信息 (可选)</h2>
+<div class="form-grid">
+<div class="form-row"><label>设备名称</label><input id="f_device" placeholder="如:AI语音终端A"></div>
+<div class="form-row"><label>硬件版本</label><input id="f_hardware" placeholder="如:v1.0"></div>
+<div class="form-row"><label>固件版本</label><input id="f_firmware" placeholder="如:FW-2024.01"></div>
+<div class="form-row"><label>AI模型</label><input id="f_model" placeholder="如:Doubao-Pro"></div>
+<div class="form-row"><label>Prompt版本</label><input id="f_prompt" placeholder="如:v2.1"></div>
+<div class="form-row"><label>供应商</label><input id="f_supplier" placeholder="如:供应商A"></div>
+<div class="form-row"><label>测试环境</label><input id="f_environment" placeholder="如:办公室"></div>
+<div class="form-row"><label>备注</label><input id="f_notes" placeholder="如:5分钟对话录音"></div>
+</div>
+</div>
+<button class="btn" id="analyze-btn" onclick="startAnalysis()" disabled>开始分析</button>
+</div>
+
+<!-- ANALYSIS -->
+<div id="analysis" class="hidden">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+<h2 id="run-title">分析结果</h2>
+<button class="btn" style="font-size:13px;padding:6px 16px" onclick="showHome()">← 返回</button>
+</div>
+<div id="analysis-content"></div>
+</div>
+
+</div>
+
+<script>
+const API = '';
+
+function showHome(){document.getElementById('home').classList.remove('hidden');document.getElementById('import').classList.add('hidden');document.getElementById('analysis').classList.add('hidden');loadRuns();}
+function showImport(){document.getElementById('home').classList.add('hidden');document.getElementById('import').classList.remove('hidden');document.getElementById('analysis').classList.add('hidden');}
+function showAnalysis(id){document.getElementById('home').classList.add('hidden');document.getElementById('import').classList.add('hidden');document.getElementById('analysis').classList.remove('hidden');loadAnalysis(id);}
+
+async function loadRuns(){
+const el=document.getElementById('runs-list');el.innerHTML='<div class="loading">加载中...</div>';
+try{const r=await fetch(API+'/api/runs');const d=await r.json();
+if(!d.runs||!d.runs.length){el.innerHTML='<div class="card"><p style="color:#999;text-align:center;padding:20px">暂无分析记录</p></div>';return;}
+el.innerHTML=d.runs.map(r=>`<div class="card" style="cursor:pointer" onclick="showAnalysis('${r.run_id}')">
+<div style="display:flex;justify-content:space-between"><strong>${r.device||r.run_id}</strong>
+<span class="badge ${r.status==='complete'?'badge-ok':r.status==='partial'?'badge-partial':'badge-insufficient'}">${r.status}</span></div>
+<div style="font-size:12px;color:#999;margin-top:4px">${r.run_id} · ${new Date(r.created*1000).toLocaleString('zh-CN')}</div>
+</div>`).join('');
+}catch(e){el.innerHTML='<div class="card"><p style="color:#dc3545">加载失败: '+e+'</p></div>';}
+}
+
+let selectedFile=null;
+const drop=document.getElementById('drop');
+drop.onclick=()=>document.getElementById('file-input').click();
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('drag');};
+drop.ondragleave=()=>drop.classList.remove('drag');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('drag');if(e.dataTransfer.files[0])handleFile(e.dataTransfer.files[0]);};
+
+function handleFile(f){if(!f)return;if(!f.name.endsWith('.wav')){alert('请上传 WAV 文件');return;}selectedFile=f;const fi=document.getElementById('file-info');fi.classList.remove('hidden');fi.textContent=`已选择: ${f.name} (${(f.size/1024).toFixed(0)} KB)`;document.getElementById('analyze-btn').disabled=false;}
+
+async function startAnalysis(){
+if(!selectedFile)return;
+const btn=document.getElementById('analyze-btn');btn.disabled=true;btn.textContent='分析中...';
+const fd=new FormData();fd.append('file',selectedFile);
+const fields=['device','hardware','firmware','model','prompt','supplier','environment','notes'];
+fields.forEach(f=>{const v=document.getElementById('f_'+f).value;if(v)fd.append(f,v);});
+try{
+const r=await fetch(API+'/api/analyze',{method:'POST',body:fd});
+const d=await r.json();
+showAnalysis(d.run_id);
+loadAnalysisData(d);
+}catch(e){alert('分析失败: '+e);btn.disabled=false;btn.textContent='开始分析';}
+}
+
+async function loadAnalysis(id){
+const el=document.getElementById('analysis-content');el.innerHTML='<div class="loading">加载中...</div>';
+try{const r=await fetch(API+'/api/runs/'+id);const d=await r.json();loadAnalysisData(d);}catch(e){el.innerHTML='<p style="color:#dc3545">加载失败</p>';}
+}
+
+function loadAnalysisData(d){
+document.getElementById('run-title').textContent=d.run_id||'分析结果';
+const metrics=d.metrics||[];const events=d.events||[];
+const findings=d.findings||[];const judge=d.judge_results||d.results||[];
+const segs=d.fused_segments||d.segments||[];const turns=d.turns||[];
+let html='<div class="card"><h2>摘要</h2><table><tr><td>状态</td><td><span class="badge '+(d.status==='complete'?'badge-ok':'badge-partial')+'">'+d.status+'</span></td></tr><tr><td>段数</td><td>'+segs.length+'</td></tr><tr><td>轮次</td><td>'+turns.length+'</td></tr><tr><td>事件</td><td>'+events.length+'</td></tr><tr><td>指标</td><td>'+metrics.length+'</td></tr><tr><td>评估</td><td>'+judge.length+'</td></tr><tr><td>Findings</td><td>'+findings.length+'</td></tr></table></div>';
+if(segs.length){html+='<div class="card"><h2>音频分段</h2><table><tr><th>段</th><th>开始</th><th>结束</th><th>说话人</th><th>文本</th></tr>'+segs.map(s=>`<tr><td>${s.segment_id}</td><td>${(s.start_ms/1000).toFixed(2)}s</td><td>${(s.end_ms/1000).toFixed(2)}s</td><td>${s.speaker_role||'?'}</td><td>${s.text||''}</td></tr>`).join('')+'</table></div>';}
+if(metrics.length){html+='<div class="card"><h2>指标</h2><table><tr><th>指标</th><th>值</th><th>状态</th></tr>'+metrics.map(m=>`<tr><td>${m.name}</td><td>${m.value!==null&&m.value!==undefined?(m.unit==='boolean'?(m.value?'是':'否'):(m.unit==='ratio'?(m.value*100).toFixed(0)+'%':m.value)):'N/A'}</td><td><span class="badge ${m.status==='observed'?'badge-ok':'badge-insufficient'}">${m.status}</span></td></tr>`).join('')+'</table></div>';}
+if(judge.length){html+='<div class="card"><h2>LLM 评估</h2><table><tr><th>维度</th><th>决策</th><th>置信度</th><th>状态</th></tr>'+judge.map(r=>`<tr><td>${r.dimension}</td><td>${r.decision}</td><td>${(r.confidence*100).toFixed(0)}%</td><td><span class="badge ${r.status==='observed'?'badge-ok':'badge-insufficient'}">${r.status}</span></td></tr>`).join('')+'</table></div>';}
+if(findings.length){html+='<div class="card"><h2>Findings</h2>'+findings.map(f=>`<div style="margin-bottom:12px;padding:8px;border-left:3px solid #dc3545"><strong>[${f.severity||'P?'}] ${f.title}</strong><br><span style="font-size:13px;color:#666">${f.description}</span><br><span style="font-size:12px">疑似: ${f.suspected_layers.join(', ')} | 置信度: ${(f.confidence*100).toFixed(0)}% | 状态: ${f.status}</span></div>`).join('')+'</div>';}
+if(!findings.length){html+='<div class="card"><p style="color:#999;text-align:center">未发现需要报告的问题</p></div>';}
+document.getElementById('analysis-content').innerHTML=html;
+}
+
+showHome();
+</script>
+</body>
+</html>

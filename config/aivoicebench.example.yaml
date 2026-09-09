@@ -1,18 +1,55 @@
-# AIVoiceBench configuration
-# Mount this file or set environment variables
+# AIVoiceBench Configuration
+# Copy this file to config/aivoicebench.yaml and fill in your API keys.
+# API keys can also be set via environment variables (recommended for Docker).
 
-# Output directory for analysis runs
+# === Output / Cache ===
 output: /data/output
-
-# Cache directory for models (Vosk, etc.)
 cache: /data/cache
 
-# Web API server
-api:
-  host: 0.0.0.0
-  port: 8000
+# === LLM Provider ===
+# Choose: "mock" (no API key needed), "volcengine", or "openai"
+llm_provider: mock
 
-# Acoustic segmentation defaults
+# --- 火山引擎 豆包 (Volcengine Doubao) ---
+# Setup steps:
+# 1. Register at https://console.volcengine.com/ark
+# 2. Complete real-name verification (实名认证)
+# 3. Create an inference endpoint (推理接入点) at:
+#    https://console.volcengine.com/ark/region:ark+cn-beijing/model
+# 4. Get your API key and endpoint ID from the console
+#
+# volcengine:
+#   api_key: "YOUR_ARK_API_KEY"              # or set env: ARK_API_KEY
+#   base_url: "https://ark.cn-beijing.volces.com/api/v3"
+#   model: "ep-xxxxxxxxxxxxxxxxx"             # your endpoint ID from console
+#   temperature: 0.3
+#   max_tokens: 4096
+
+# --- OpenAI ---
+# openai:
+#   api_key: "YOUR_OPENAI_API_KEY"            # or set env: OPENAI_API_KEY
+#   base_url: "https://api.openai.com/v1"
+#   model: "gpt-4o"
+#   temperature: 0.3
+#   max_tokens: 4096
+
+# === ASR Provider (optional) ===
+# Vosk for offline ASR (download model separately)
+# vosk:
+#   model_dir: /data/cache/models/vosk-model-small-cn-0.22
+#   model_version: "0.22"
+
+# Volcengine cloud ASR
+# volcengine_asr:
+#   api_key: "YOUR_ARK_API_KEY"               # or set env: ARK_API_KEY
+#   app_id: "YOUR_APP_ID"
+#   cluster: "volc/bigasr/auc_turbo"
+
+# === Audio Processing ===
+# ffmpeg_path: /usr/local/bin/ffmpeg
+# ffprobe_path: /usr/local/bin/ffprobe
+
+# === Analysis Defaults ===
 acoustic:
   frame_ms: 30
   hop_ms: 10
@@ -21,17 +58,12 @@ acoustic:
   min_silence_ms: 200
   merge_gap_ms: 80
 
-# Event detection defaults
 events:
   timeout_ms: 5000
   false_endpoint_ms: 300
   overlap_min_ms: 50
 
-# Optional: FFmpeg path (for MP3/M4A conversion)
-# ffmpeg_path: /usr/local/bin/ffmpeg
-# ffprobe_path: /usr/local/bin/ffprobe
-
-# Optional: Vosk model
-# vosk:
-#   model_dir: /data/cache/models/vosk-model-small-cn-0.22
-#   model_version: "0.22"
+# === Web API ===
+api:
+  host: 0.0.0.0
+  port: 8000

@@ -6,6 +6,7 @@ evidence-linked report in one command.
 """
 
 import json
+import os
 from pathlib import Path
 
 from .acoustic import EnergyVadSegmenter
@@ -72,7 +73,33 @@ def run_full_pipeline(source, output, profile=None, *, provider=None,
         write_json(out / 'metrics.json', metrics_result)
 
         # 4. LLM Judge
-        judge = LLMJudge(provider or MockLLMProvider())
+        from .llm import LLMJudge, MockLLMProvider
+        from .llm_provider import create_provider_from_config
+
+        # Determine LLM provider: explicit > env config > mock
+        if provider is not None:
+            llm_provider = provider
+        else:
+            provider_name = os.environ.get('AIVOICEBENCH_LLM_PROVIDER', 'mock')
+            if provider_name == 'volcengine':
+                llm_provider = create_provider_from_config({
+                    'llm_provider': 'volcengine',
+                    'volcengine': {
+                        'model': os.environ.get('AIVOICEBENCH_LLM_MODEL', ''),
+                        'base_url': os.environ.get('AIVOICEBENCH_LLM_BASE_URL', 'https://ark.cn-beijing.volces.com/api/v3'),
+                    }
+                })
+            elif provider_name == 'openai':
+                llm_provider = create_provider_from_config({
+                    'llm_provider': 'openai',
+                    'openai': {
+                        'model': os.environ.get('AIVOICEBENCH_LLM_MODEL', 'gpt-4o'),
+                        'base_url': os.environ.get('AIVOICEBENCH_LLM_BASE_URL', 'https://api.openai.com/v1'),
+                    }
+                })
+            else:
+                llm_provider = MockLLMProvider()
+        judge = LLMJudge(llm_provider)
         judge_results, invocations = judge.evaluate_all(fused_doc, turns_doc, metrics_result)
         judge_data = {'results': judge_results, 'invocations': invocations}
         write_json(out / 'judge-results.json', judge_data)

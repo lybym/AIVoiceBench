@@ -26,6 +26,8 @@ from typing import Optional
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -48,6 +50,20 @@ app.add_middleware(
 
 OUTPUT_ROOT = Path(os.environ.get("AIVOICEBENCH_OUTPUT", "artifacts"))
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Serve Web UI
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    """Serve the Web UI."""
+    html_path = _static_dir / "index.html"
+    if html_path.exists():
+        return html_path.read_text(encoding="utf-8")
+    return "<h1>AIVoiceBench API</h1><p>Web UI not found. Use /docs for API.</p>"
 
 
 class HealthResponse(BaseModel):
