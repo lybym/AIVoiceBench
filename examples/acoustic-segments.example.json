@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0.0",
+  "document_id": "ACOUSTIC-example-0001",
+  "source": {
+    "path": "normalized.wav",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "duration_ms": 2500,
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "encoding": "PCM_S16LE"
+  },
+  "processor": {
+    "method": "energy_vad",
+    "processor_version": "1.0.0",
+    "parameters": {
+      "frame_ms": 30,
+      "hop_ms": 10,
+      "energy_metric": "rms",
+      "threshold_factor": 0.15,
+      "threshold_mode": "noise_floor_plus_active_range_fraction",
+      "min_speech_ms": 100,
+      "min_silence_ms": 200,
+      "merge_gap_ms": 80,
+      "pre_roll_ms": 0,
+      "post_roll_ms": 0
+    }
+  },
+  "status": "complete",
+  "reason": null,
+  "segments": [
+    {
+      "segment_id": "SEG-0000",
+      "start_ms": 480,
+      "end_ms": 1020,
+      "confidence": 0.85,
+      "source": "acoustic",
+      "method": "energy_vad",
+      "uncertainty_ms": 10,
+      "frame_stats": {
+        "peak_rms": 0.609756,
+        "mean_rms": 0.456789,
+        "threshold_rms": 0.091463,
+        "frame_count": 54
+      }
+    },
+    {
+      "segment_id": "SEG-0001",
+      "start_ms": 1480,
+      "end_ms": 2020,
+      "confidence": 0.85,
+      "source": "acoustic",
+      "method": "energy_vad",
+      "uncertainty_ms": 10,
+      "frame_stats": {
+        "peak_rms": 0.609756,
+        "mean_rms": 0.456789,
+        "threshold_rms": 0.091463,
+        "frame_count": 54
+      }
+    }
+  ]
+}
