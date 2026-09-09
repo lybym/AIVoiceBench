@@ -329,9 +329,11 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
     for seg in segments:
         eid = f'EV-{evidence_num + 1:04d}'
         evidence.append({
+            'schema_version': '1.0.0',
             'evidence_id': eid,
             'artifact_id': 'ART-audio',
             'track_id': 'TRACK-mix',
+            'time_base': 'run_monotonic_ms',
             'start_ms': seg['start_ms'],
             'end_ms': seg['end_ms'],
             'source': 'audio_signal',

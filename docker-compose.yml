@@ -1,6 +1,6 @@
 # AIVoiceBench — Docker Compose
 # Usage: docker-compose up
-# Then: open http://localhost:8000/docs
+# Then: open http://localhost:8000 (Web UI) or http://localhost:8000/docs (API)
 
 services:
   aivoicebench:
@@ -9,17 +9,23 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Mount your recordings here (read-only)
       - ./data/recordings:/data/recordings:ro
-      # Analysis results persist here
       - ./data/output:/data/output
-      # Optional: mount Vosk models here
       - ./data/cache:/data/cache
-      # Optional: mount FFmpeg binary (if you need MP3/M4A support)
+      - ./config:/app/config:ro
+      # Optional: mount FFmpeg binary
       # - /usr/bin/ffmpeg:/usr/local/bin/ffmpeg:ro
     environment:
       - AIVOICEBENCH_OUTPUT=/data/output
       - AIVOICEBENCH_CACHE=/data/cache
-      # Optional: set FFmpeg path if mounted
-      # - FFMPEG_PATH=/usr/local/bin/ffmpeg
+      # === LLM Provider ===
+      # "mock" = no API key (default), "volcengine" = 火山引擎豆包, "openai" = OpenAI
+      - AIVOICEBENCH_LLM_PROVIDER=mock
+      # --- 火山引擎豆包 ---
+      # Set ARK_API_KEY in .env file (never commit to git!)
+      # - ARK_API_KEY=your_key_here
+      # - AIVOICEBENCH_LLM_MODEL=ep-xxxxxxxx  # your endpoint ID
+      # --- OpenAI ---
+      # - OPENAI_API_KEY=your_key_here
+      # - AIVOICEBENCH_LLM_MODEL=gpt-4o
     restart: unless-stopped

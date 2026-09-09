@@ -26,6 +26,8 @@ from typing import Optional
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -49,6 +51,20 @@ app.add_middleware(
 OUTPUT_ROOT = Path(os.environ.get("AIVOICEBENCH_OUTPUT", "artifacts"))
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
+# Serve Web UI
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    """Serve the Web UI."""
+    html_path = _static_dir / "index.html"
+    if html_path.exists():
+        return html_path.read_text(encoding="utf-8")
+    return "<h1>AIVoiceBench API</h1><p>Web UI not found. Use /docs for API.</p>"
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -64,6 +80,9 @@ class AnalysisResponse(BaseModel):
     metrics: list
     acoustic_segments: list
     timeline: dict
+    judge_results: list = []
+    findings: list = []
+    report_md: str = ""
 
 
 @app.get("/health")
@@ -192,46 +211,44 @@ async def analyze(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Normalization failed: {exc}")
 
-    # Run acoustic segmentation
-    segmenter = EnergyVadSegmenter(
-        frame_ms=frame_ms, hop_ms=hop_ms,
-        min_speech_ms=min_speech_ms, min_silence_ms=min_silence_ms,
-    )
-    acoustic_result = segmenter.segment(canonical_path)
-    acoustic_doc = acoustic_result.to_dict()
-    write_json(run_dir / "acoustic-segments.json", acoustic_doc)
-
-    # Run fusion → turns → events → timeline
-    fused_doc = fuse(acoustic_doc)
-    turns_doc = build_turns(fused_doc)
-    events, evidence, status, reason = detect_events(
-        fused_doc, turns_doc, timeout_ms=timeout_ms, false_endpoint_ms=false_endpoint_ms)
-    timeline_doc = generate_timeline(fused_doc, turns_doc, events, evidence, status, reason)
-    write_json(run_dir / "fused-segments.json", fused_doc)
-    write_json(run_dir / "turns.json", turns_doc)
-    write_json(run_dir / "timeline.json", timeline_doc)
-
-    # Run metrics
-    metrics_result = compute_timeline_metrics(timeline_doc)
-    write_json(run_dir / "metrics.json", metrics_result)
-
     # Save profile
     profile = {
         "device": device, "hardware": hardware, "firmware": firmware,
         "model": model, "prompt": prompt, "supplier": supplier,
         "environment": environment, "notes": notes,
     }
-    write_json(run_dir / "profile.json", profile)
+
+    # Run full unified pipeline
+    from .pipeline import run_full_pipeline
+    result = run_full_pipeline(
+        canonical_path, run_dir, profile,
+        frame_ms=frame_ms, hop_ms=hop_ms,
+        min_speech_ms=min_speech_ms, min_silence_ms=min_silence_ms,
+        timeout_ms=timeout_ms, false_endpoint_ms=false_endpoint_ms)
+
+    # Load all outputs for response
+    import json as _json
+    fused_doc = _json.loads((run_dir / "fused-segments.json").read_text(encoding="utf-8")) if (run_dir / "fused-segments.json").exists() else {"segments": []}
+    turns_doc = _json.loads((run_dir / "turns.json").read_text(encoding="utf-8")) if (run_dir / "turns.json").exists() else {"turns": []}
+    timeline_doc = _json.loads((run_dir / "timeline.json").read_text(encoding="utf-8")) if (run_dir / "timeline.json").exists() else {"events": []}
+    metrics_result = _json.loads((run_dir / "metrics.json").read_text(encoding="utf-8")) if (run_dir / "metrics.json").exists() else {"metrics": []}
+    acoustic_doc = _json.loads((run_dir / "acoustic-segments.json").read_text(encoding="utf-8"))
+    judge_data = _json.loads((run_dir / "judge-results.json").read_text(encoding="utf-8")) if (run_dir / "judge-results.json").exists() else {"results": []}
+    findings_data = _json.loads((run_dir / "findings.json").read_text(encoding="utf-8")) if (run_dir / "findings.json").exists() else {"findings": []}
+    report_md = (run_dir / "report.md").read_text(encoding="utf-8") if (run_dir / "report.md").exists() else ""
 
     return AnalysisResponse(
         run_id=run_id,
-        status=timeline_doc["status"],
-        fused_segments=fused_doc["segments"],
-        turns=turns_doc["turns"],
-        events=timeline_doc["events"],
-        metrics=metrics_result["metrics"],
-        acoustic_segments=acoustic_doc["segments"],
+        status=timeline_doc.get("status", "partial"),
+        fused_segments=fused_doc.get("segments", []),
+        turns=turns_doc.get("turns", []),
+        events=timeline_doc.get("events", []),
+        metrics=metrics_result.get("metrics", []),
+        acoustic_segments=acoustic_doc.get("segments", []),
         timeline=timeline_doc,
+        judge_results=judge_data.get("results", []),
+        findings=findings_data.get("findings", []),
+        report_md=report_md,
     )
 
 
