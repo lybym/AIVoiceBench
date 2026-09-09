@@ -78,6 +78,20 @@ def main(argv=None):
     run.add_argument('--asset-root', type=Path)
     run.add_argument('--device-profile', type=Path)
     run.add_argument('--dry-run', action='store_true', help='Only prepare assets/contracts, never capture hardware')
+    findings_cmd = subparsers.add_parser('findings', help='Generate Finding 2.0.0 from judge results')
+    findings_cmd.add_argument('--judge', type=Path, required=True, help='Judge results JSON')
+    findings_cmd.add_argument('--timeline', type=Path, required=True, help='EventTimeline JSON')
+    findings_cmd.add_argument('--metrics', type=Path, required=True, help='Metrics JSON')
+    findings_cmd.add_argument('--output', type=Path, default=Path('artifacts/findings/findings.json'))
+    report_cmd = subparsers.add_parser('report', help='Render Markdown + JSON report from pipeline outputs')
+    report_cmd.add_argument('--output', type=Path, default=Path('artifacts/report'))
+    report_cmd.add_argument('--profile', type=Path)
+    report_cmd.add_argument('--fused', type=Path, required=True)
+    report_cmd.add_argument('--turns', type=Path, required=True)
+    report_cmd.add_argument('--timeline', type=Path, required=True)
+    report_cmd.add_argument('--metrics', type=Path, required=True)
+    report_cmd.add_argument('--judge', type=Path, required=True)
+    report_cmd.add_argument('--findings', type=Path)
     validate = subparsers.add_parser('validate', help='Validate TestCase JSON/YAML without hardware or network')
     validate.add_argument('paths', nargs='+', type=Path)
     validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding', 'transcript', 'acoustic-segments', 'fused-segments', 'turns', 'judge-result'], default='test-case')
@@ -194,6 +208,31 @@ def main(argv=None):
             return 0 if observed else 2
         except (OSError, ValueError) as error:
             print(f'JUDGE ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
+            return 1
+    if args.command == 'findings':
+        from .findings import generate_findings_from_files
+        try:
+            findings, out_path = generate_findings_from_files(
+                args.judge, args.timeline, args.metrics, args.output)
+            defects = [f for f in findings if f['kind'] == 'defect']
+            observations = [f for f in findings if f['kind'] == 'observation']
+            print(f'{len(findings)} findings ({len(defects)} defects, {len(observations)} observations)')
+            for f in findings:
+                print(f'  [{f["severity"] or "—"}] {f["title"]} ({f["status"]})')
+            return 0 if findings else 2
+        except (OSError, ValueError) as error:
+            print(f'FINDINGS ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
+            return 1
+    if args.command == 'report':
+        from .report import render_report_from_files
+        try:
+            md_path, json_path = render_report_from_files(
+                args.output, args.profile, args.fused, args.turns,
+                args.timeline, args.metrics, args.judge, args.findings)
+            print(f'REPORT {md_path}')
+            return 0
+        except (OSError, ValueError) as error:
+            print(f'REPORT ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
             return 1
     if args.command == 'audio':
         import json

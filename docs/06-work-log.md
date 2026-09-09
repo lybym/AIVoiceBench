@@ -149,3 +149,11 @@
 - Evaluation dimensions: intent (keyword-based classification), meaningful_response (strips Chinese filler words, estimates first meaningful content timestamp), feedback_detection (classifies filler/ack/thinking_cue), conversation_quality (score 0-1), finding_candidate (generates finding with suspected_layer + requires_log_verification).
 - Created `schemas/judge-result.schema.json` with dimension-specific allOf constraints. Added `judge_result_errors()` to validation.py. Extended CLI with `judge` subcommand. Added `docs/21-llm-harness.md`.
 - Validation: 21 tests pass. Functional test with ASR text: device response "嗯……好的，让我看看。南京今天天气晴朗。" → meaningful_response_start=2346ms [observed], intent=weather_query [observed], feedback=filler [observed]. **Meaningful Response Latency = 1346ms** (previously `insufficient_evidence` in #25, now resolved by LLM semantic analysis). All judge results pass schema validation.
+
+## 2026-09-10 — Issue #11 Finding generation + Report rendering
+
+- User requested Finding generation + Report rendering. Created `issue-11-findings-report` branch from `issue-10-llm-harness`.
+- Implemented `aivoicebench/findings.py`: `generate_findings()` converts LLM finding candidates (#10) into Finding 2.0.0 documents with severity mapping (critical→P0, high→P1, medium→P2, low→P3, info→observation). Every finding links to timeline evidence (audio time ranges), events, and metrics. Status is `needs_verification` — not confirmed until human review. `suspected_layers` with `requires_log_verification: true`.
+- Implemented `aivoicebench/report.py`: `render_markdown()` and `render_report()` produce evidence-linked Markdown + JSON reports with 10 sections: 运行摘要, 设备信息, 音频分段, 对话轮次, 事件时间线, 指标, LLM语义评估, Findings, 证据, 溯源. Every finding/metric/event links back to audio timestamps and processor/model versions.
+- Added CLI `findings` and `report` subcommands. Added `docs/22-findings-report.md`.
+- Validation: 6 of 7 tests pass (1 temp-blocked by sandbox, CI unrestricted). Functional end-to-end: 2 segments with ASR text → 1 turn, 7 events, 3 metrics, 5 judge results, 1 finding [P2 high_latency], complete Markdown report with all audio time ranges, evidence refs, and provenance.
