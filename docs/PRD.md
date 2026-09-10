@@ -1,10 +1,10 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.0.1
+prd_version: 1.0.2
 status: consolidated_for_owner_review
 updated: 2026-09-10
 implementation_baseline: v0.1.3@e3c2821a417a1aeea90a7c029290b6f814bf747b
-main_baseline: 19d3a07e41c6e2b787e18f6df80c3c05c2bff8b8
+main_baseline: 3699587ff48d392f127bf7f47d3beaf0a0b27ffa
 ---
 
 # AIVoiceBench 产品需求文档（PRD）
@@ -26,8 +26,8 @@ main_baseline: 19d3a07e41c6e2b787e18f6df80c3c05c2bff8b8
 
 ### 代码位于哪里
 
-- `main` 审计提交为 `19d3a07`，含基础设施和证据保守修复。
-- `v0.1.3` 对应 `e3c2821`，含新版 Web、三格式 Web 导入及模型管理；[PR #43](https://github.com/lybym/AIVoiceBench/pull/43)、[PR #45](https://github.com/lybym/AIVoiceBench/pull/45) 仍未合并。**已发布 ≠ 已合入 main。**
+- `main` 审计提交为 `3699587`，含基础设施、证据保守修复及 PR #43/#45 已合入（Web 界面重构、FFmpeg、模型管理）。
+- `v0.1.3` 对应 `e3c2821`，发布基线与 main 主要功能等价；[PR #43](https://github.com/lybym/AIVoiceBench/pull/43)、[PR #45](https://github.com/lybym/AIVoiceBench/pull/45) 已合并入 main。
 - 下文代码与测试依据统一指向 [v0.1.3 源码](https://github.com/lybym/AIVoiceBench/tree/v0.1.3)。列为“main + release”的模块在 main 已有基础，不表示两个版本行为完全相同。
 - v0.1.3 本地 278 项测试通过；[CI](https://github.com/lybym/AIVoiceBench/actions/runs/34363937460)、[Docker 发布及容器检查](https://github.com/lybym/AIVoiceBench/actions/runs/34363991525) 成功。合成静音三格式、界面检查均不能证明真实混音分析准确性。
 
@@ -75,8 +75,8 @@ External Recording → Import → Normalize / Audio QA → Acoustic Segmentation
 | PRD-F011 | Findings 与问题解释 | P1（MVP 必需） | 🟡 partial | 候选生成已有；完整证据链/人工确认未闭环 |
 | PRD-F012 | 人工修正与有效视图 | P1（MVP 必需） | 🟡 partial | RevisionStore 已有；Web 修订/重算未接通 |
 | PRD-F013 | Markdown + JSON 报告 | P1（MVP 必需） | 🟡 partial | 文件可生成；完整结论级回溯待验收 |
-| PRD-F014 | Web 分析工作台 | P0/P1 | 🟡 partial | release 新界面；波形、完整 Timeline、人工审核尚缺 |
-| PRD-F015 | 统一模型配置管理 | P1 | ✅ implemented | release，待合并；限管理与 Judge 路由 |
+| PRD-F014 | Web 分析工作台 | P0/P1 | 🟡 partial | main + release；波形、完整 Timeline、人工审核尚缺 |
+| PRD-F015 | 统一模型配置管理 | P1 | ✅ implemented | main + release；限管理与 Judge 路由 |
 | PRD-F016 | 语音生成/分析适配器实际调用 | P0 ASR / P2 TTS | ⬜ planned | 配置占位不能算适配器；未集成旧云 ASR 分支 |
 | PRD-F017 | 同一录音分析修订与重现 | P1 | 🟡 partial | Hash/配置快照已有；同 Run 多版本重算未完成 |
 | PRD-F018 | 版本/设备/供应商 Compare | P2 | ⬜ planned | 无产品比较工作流 |
@@ -249,7 +249,7 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 ### PRD-F014 — Web 分析工作台
 
-**代码：🟡 partial；验证：browser_verified、container_verified（局部）；位置：release，部分未入 main。**
+**代码：🟡 partial；验证：browser_verified、container_verified（局部）；位置：main + release。**
 
 简洁界面，以 Home/Runs、Import、Analysis、Metrics、Findings、模型管理为当前导航；Compare 后续增加。Analysis 应联动 Audio Waveform、Speaker Segments、Transcript、Turn Timeline、Events、Metrics、LLM Findings。不能要求用户读开发实现信息才能正常操作。
 
@@ -260,7 +260,7 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 ### PRD-F015 — 模型配置管理
 
-**代码：✅ implemented（配置管理与既有 Judge 路由）；验证：software_verified、container_verified、browser_verified；位置：release，PR #45 待合并。**
+**代码：✅ implemented（配置管理与既有 Judge 路由）；验证：software_verified、container_verified、browser_verified；位置：main + release。**
 
 参考 DeepSeek Harness 的 provider profile、credential reference、用途绑定与配置修订方式，实现本项目独立配置层。支持 provider/model/endpoint、语音及推理参数、启停、tts/asr/diarization/judge 默认模型、只写入密钥或环境变量引用。保存配置不得等同于连通验证，不自动发起付费探测。
 
@@ -395,7 +395,70 @@ MVP 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
-| 1.0.1 | 2026-09-10 | 审阅第 3/5/7 节：明确 MVP 与排程、指标边界、场景覆盖及弃权验收；实现状态不变，定量策略待所有者确认 | 项目所有者“按你的建议执行”审阅要求；未代替所有者批准数值门槛 |
+| 1.0.2 | 2026-09-10 | 更新 main 基线至 3699587（PR #43/#45 已合并）；F014/F015 状态更新为 main + release；新增附录 A Issue→PRD 交叉引用 | 项目所有者要求检查未实现 Issue 并更新 PRD |
+| 1.0.1 | 2026-09-10 | 审阅第 3/5/7 节：明确 MVP 与排程、指标边界、场景覆盖及弃权验收 | 项目所有者审阅要求 |“按你的建议执行”审阅要求；未代替所有者批准数值门槛 |
 | 1.0.0 | 2026-09-10 | 从分散文档归集；导入优先、Docker/Web、模型管理、代码/发布/验收三者区分；未添加新的准确率/SLA 要求 | 项目所有者导入优先指令、2026-09-09 Docker/Web 与模型管理要求、2026-09-10 中央 PRD 要求 |
 
 归集映射与旧快照见 [产品文档索引](product/README.md)。用户审阅优先看第 3 节范围、第 5 节指标、第 7 节验收，再按编号修改第 4 节细节。
+
+## 附录 A — Issue → PRD 交叉引用
+
+20 个 Open Issue 全部映射到 PRD 需求编号。Issue 编号沿用不变；不按状态机械新建重复任务。
+
+### P0 Issues（当前 MVP 阻塞项）
+
+| Issue | 标题 | PRD 编号 | 关键未实现缺口 |
+| --- | --- | --- | --- |
+| #1 | Validate TestCase schema | 基础契约 | 契约验证已实现；Issue 未关闭因等待真实录音验收 |
+| #2 | Event Timeline schema | PRD-F008 | 自动 Timeline 的 schema 全验证未通过 |
+| #3 | MetricResult schema | PRD-F009 | 导入 metrics.py 统一规范 MetricResult 未完成 |
+| #4 | Finding/Evidence schema | PRD-F011, F002 | 完整证据链/人工确认未闭环 |
+| #7 | Timestamped ASR + cloud | PRD-F005 | Web 真实录音自动调用中文云 ASR 未接通 |
+| #8 | Deterministic engine + event pipeline | PRD-F008, F009 | 导入事件管线与旧引擎统一未完成 |
+| #20 | Recording import as primary | PRD-S2 Primary Workflow | 方向已确定；集成基线已建立 |
+| #21 | Import WAV/MP3/M4A | PRD-F001, F002, F003 | 真实 5-20 分钟录音验收未完成 |
+| #22 | Provider invocation + cloud ASR | PRD-F005, F016 | 云 ASR/diarization 原生输出与调用审计未集成 |
+| #23 | Acoustic segmentation | PRD-F008 | 声学片段已有；与统一阶段账本集成未完成 |
+| #24 | Fuse speaker + turns/events | PRD-F006, F007, F008 | 自动角色/语义关联、打断事件命名统一未完成 |
+| #25 | Expand metrics | PRD-F009, M001-M010 | 导入扩展公式与 MetricResult 契约差距；Turn Gap 方向修复 |
+| #27 | Integration + Docker/Web UI | PRD-F004, F013, F014, S7 | Web 后续阶段未统一接入编排；真实端到端验收未通过 |
+| #30 | Provider invocation audit | PRD-F016 | 统一 invocation 审计与 ASR/cloud 集成未完成 |
+
+### P1 Issues（MVP 必需，排程在后）
+
+| Issue | 标题 | PRD 编号 | 关键未实现缺口 |
+| --- | --- | --- | --- |
+| #10 | LLM Harness / Judge | PRD-F010 | 完整 schema-constrained 调用、工具循环、语义维度真实覆盖未闭环 |
+| #11 | Evidence-linked reports | PRD-F011, F013 | 完整结论级回溯、点击证据音频区间未完成 |
+| #26 | Human annotations + reanalysis | PRD-F012, F017 | 严格修订 schema/引用校验、Web 编辑、重算闭环未完成 |
+
+### P2/P3 Issues（非当前 MVP 阻塞）
+
+| Issue | 标题 | PRD 编号 | 状态 |
+| --- | --- | --- | --- |
+| #5 | Scripted Case runner | PRD-F020 | partial：Runner 基础保留，多轮控制未完成 |
+| #6 | Audio Station / HIL | PRD-F022 | deferred：Station 代码保留，非 MVP 门槛 |
+| #9 | Frozen TTS Golden asset | PRD-F019 | planned：暂停草稿，非 MVP |
+
+### 已关闭 Issue（需求已归入 PRD）
+
+| Issue | 标题 | PRD 编号 | 说明 |
+| --- | --- | --- | --- |
+| #40 | Restore evidence-safe baseline | PRD-N001, S7 | Docker/browser 交付基线已恢复 |
+| #42 | Fix Web release metadata + UI | PRD-F014 | Web 界面重构已合并入 main |
+| #44 | Model management | PRD-F015 | 模型配置管理已合并入 main |
+| #46 | Centralize PRD | PRD 全文 | PRD 已创建并持续维护 |
+
+### 审计结论
+
+**所有 20 个 Open Issue 的功能需求均已映射到 PRD 需求编号，未发现遗漏。** Issue 中的细节要求（如 #25 的负 gap 不截零、#24 的不按先后强制角色、#26 的严格引用校验）已在 PRD 第 4/5 节对应条目的验收条件中体现。
+
+当前 MVP 未完成的主要阻塞集中在 7 项：
+
+1. **PRD-F004 统一编排**（#27）：Web 后续 acoustic/fusion/metric/Judge/report 未全部接入同一阶段账本
+2. **PRD-F005/F016 云 ASR 集成**（#7, #22, #30）：真实录音自动调用中文云 ASR + diarization + 调用审计
+3. **PRD-F006/F007/F008 自动关联与事件**（#24）：自动角色/语义关联、打断场景、事件命名统一
+4. **PRD-F009 指标统一**（#25）：导入扩展公式修复、Turn Gap 方向修正、MetricResult 规范化
+5. **PRD-F010 LLM 语义闭环**（#10）：完整 schema-constrained 调用与语义维度覆盖
+6. **PRD-F012/F017 修订与重算**（#26）：Web 修订编辑、重算闭环
+7. **第 7 节真实录音验收**（#27）：全部 P0/P1 闭环后执行
