@@ -52,9 +52,9 @@ class FormulaTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             turn_gap_ms(-1, 1000)
 
-    def test_turn_gap_overlap_raises(self):
-        with self.assertRaises(ValueError):
-            turn_gap_ms(2000, 1000)
+    def test_turn_gap_overlap_returns_negative(self):
+        """PRD-M004: overlap is expressed as a negative signed gap, not an error."""
+        self.assertEqual(turn_gap_ms(2000, 1000), -1000)
 
     def test_barge_in_stop_latency_ms(self):
         self.assertEqual(barge_in_stop_latency_ms(1800, 2000), 200)
@@ -150,8 +150,10 @@ class ComputeMetricsTests(unittest.TestCase):
         timeline = make_timeline(events)
         result = compute_timeline_metrics(timeline)
         gaps = [m for m in result['metrics'] if m['name'] == 'turn_gap_ms']
-        self.assertEqual(len(gaps), 1)
-        self.assertEqual(gaps[0]['value'], 1500)
+        # PRD-M004: turn gap is per-turn (tester_end -> device_start).
+        self.assertEqual(len(gaps), 2)
+        self.assertEqual(gaps[0]['value'], 500)   # 1000 -> 1500
+        self.assertEqual(gaps[1]['value'], 500)   # 4000 -> 4500
 
     def test_overlap_metrics(self):
         events = [
@@ -172,12 +174,13 @@ class ComputeMetricsTests(unittest.TestCase):
         self.assertAlmostEqual(ratios[0]['value'], 0.2)  # 200/1000
 
     def test_barge_in_stop_latency(self):
+        # PRD-M005: interrupt_start must bind to the interrupted old response_id.
         events = [
             make_event('E1', 'tester_speech_start', 500, turn_id='TURN-0001'),
             make_event('E2', 'tester_speech_end', 1000, turn_id='TURN-0001'),
-            make_event('E3', 'device_speech_start', 1200, turn_id='TURN-0001'),
-            make_event('E4', 'interrupt_start', 1800, turn_id='TURN-0001'),
-            make_event('E5', 'device_speech_end', 2000, turn_id='TURN-0001'),
+            make_event('E3', 'device_speech_start', 1200, turn_id='TURN-0001', response_id='RESP-0001'),
+            make_event('E4', 'interrupt_start', 1800, turn_id='TURN-0001', response_id='RESP-0001'),
+            make_event('E5', 'device_speech_end', 2000, turn_id='TURN-0001', response_id='RESP-0001'),
         ]
         timeline = make_timeline(events)
         result = compute_timeline_metrics(timeline)
@@ -195,7 +198,8 @@ class ComputeMetricsTests(unittest.TestCase):
         ]
         timeline = make_timeline(events)
         result = compute_timeline_metrics(timeline)
-        feps = [m for m in result['metrics'] if m['name'] == 'false_endpoint_detected']
+        # PRD-M008 renamed the confirmed metric to a candidate.
+        feps = [m for m in result['metrics'] if m['name'] == 'false_endpoint_candidate']
         self.assertEqual(len(feps), 1)
         self.assertTrue(feps[0]['value'])
 

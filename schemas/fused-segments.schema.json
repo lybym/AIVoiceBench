@@ -101,6 +101,15 @@
             "minimum": 0,
             "maximum": 1
           },
+          "acoustic_boundary_confidence": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "acoustic_uncertainty_ms": {
+            "type": ["number", "null"],
+            "minimum": 0
+          },
           "speaker_source": {
             "enum": ["acoustic", "diarization", "heuristic", "llm", "manual"]
           },
@@ -125,6 +134,8 @@
           "speaker_id",
           "speaker_cluster_confidence",
           "role_attribution_confidence",
+          "acoustic_boundary_confidence",
+          "acoustic_uncertainty_ms",
           "speaker_source",
           "timing_source",
           "text",

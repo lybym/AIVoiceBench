@@ -253,8 +253,12 @@ def metric_errors(metric, timeline=None):
     timeline_issues = timeline_errors(timeline)
     if timeline_issues:
         return errors + ['Referenced timeline is invalid: ' + message for message in timeline_issues]
-    if any(metric[key] != timeline[key] for key in ('run_id', 'case_id', 'execution_kind')):
-        errors.append('/: metric and timeline run/case/execution_kind disagree')
+    # 3.0.0 allows nullable case_id for unscripted imported runs; only compare
+    # when both sides carry an identity, so imported metrics stay validatable.
+    for key in ('run_id', 'case_id', 'execution_kind'):
+        left, right = metric.get(key), timeline.get(key)
+        if left is not None and right is not None and left != right:
+            errors.append(f'/: metric and timeline {key} disagree')
     evidence = {item['evidence_id']: item for item in timeline['evidence']}
     events = {item['event_id']: item for item in timeline['events']}
     if any(key not in evidence for key in metric['evidence_ids']):

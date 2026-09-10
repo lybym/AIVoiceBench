@@ -1,11 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aivoicebench.local/schemas/metric.schema.json",
-  "title": "MetricResult 2.0.0",
+  "title": "MetricResult 3.0.0",
+  "description": "Canonical deterministic metric result. 3.0.0 adds PRD refs, policy versions, turn/response identity, nullable case_id (imported runs have no Case), nullable confidence (unknown is not zero), and signed turn_gap_ms. Legacy 2.0.0 documents remain readable.",
   "type": "object",
   "properties": {
     "schema_version": {
-      "const": "2.0.0"
+      "enum": ["2.0.0", "3.0.0"]
     },
     "metric_id": {
       "type": "string",
@@ -16,17 +17,41 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
     },
     "case_id": {
-      "type": "string",
+      "type": ["string", "null"],
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "analysis_id": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "prd_ref": {
+      "type": ["string", "null"],
+      "pattern": "^PRD-M[0-9]{3}$"
+    },
+    "turn_id": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "response_id": {
+      "type": ["string", "null"],
+      "minLength": 1
     },
     "name": {
       "enum": [
+        "feedback_latency_ms",
+        "first_speech_latency_ms",
+        "meaningful_response_latency_ms",
+        "turn_gap_ms",
+        "barge_in_stop_latency_ms",
+        "barge_in_new_intent_latency_ms",
+        "barge_in_success",
+        "false_endpoint_candidate",
+        "overlap_duration_ms",
+        "overlap_ratio",
+        "timeout",
+        "asr_wer",
         "e2e_first_audio_latency_ms",
         "semantic_response_latency_ms",
-        "barge_in_stop_latency_ms",
-        "overlap_duration_ms",
-        "false_endpoint",
-        "barge_in_success",
         "barge_in_stop_success",
         "barge_in_new_response_success",
         "context_success",
@@ -38,6 +63,7 @@
         "aec_erle_db",
         "asr_cer",
         "timeout_rate",
+        "false_endpoint",
         "false_endpoint_rate",
         "barge_in_success_rate",
         "context_success_rate",
@@ -46,6 +72,13 @@
     },
     "definition_version": {
       "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "policy": {
+      "type": ["string", "null"]
+    },
+    "policy_version": {
+      "type": ["string", "null"],
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
     },
     "execution_kind": {
@@ -101,9 +134,17 @@
       ]
     },
     "confidence": {
-      "type": "number",
+      "type": ["number", "null"],
       "minimum": 0,
       "maximum": 1
+    },
+    "confidence_source": {
+      "type": ["string", "null"],
+      "enum": ["acoustic_boundary", "speaker_cluster", "role_attribution", "semantic_event", "none", null]
+    },
+    "uncertainty_ms": {
+      "type": ["number", "null"],
+      "minimum": 0
     },
     "evidence_ids": {
       "type": "array",
@@ -339,7 +380,11 @@
               "e2e_first_audio_latency_ms",
               "semantic_response_latency_ms",
               "barge_in_stop_latency_ms",
-              "overlap_duration_ms"
+              "overlap_duration_ms",
+              "first_speech_latency_ms",
+              "feedback_latency_ms",
+              "meaningful_response_latency_ms",
+              "barge_in_new_intent_latency_ms"
             ]
           }
         }
@@ -366,16 +411,47 @@
       }
     },
     {
+      "description": "turn_gap_ms is signed: negative values express overlap/barge-in.",
+      "if": {
+        "properties": {
+          "name": {
+            "const": "turn_gap_ms"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "ms"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "measurement_scope": {
+            "const": "black_box"
+          },
+          "method": {
+            "const": "deterministic"
+          }
+        }
+      }
+    },
+    {
       "if": {
         "properties": {
           "name": {
             "enum": [
               "false_endpoint",
+              "false_endpoint_candidate",
               "barge_in_success",
               "barge_in_stop_success",
               "barge_in_new_response_success",
               "context_success",
-              "instruction_success"
+              "instruction_success",
+              "timeout"
             ]
           }
         }
@@ -398,7 +474,31 @@
       "if": {
         "properties": {
           "name": {
-            "const": "asr_cer"
+            "const": "overlap_ratio"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "ratio"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "name": {
+            "enum": ["asr_cer", "asr_wer"]
           }
         }
       },
@@ -527,6 +627,7 @@
           "name": {
             "enum": [
               "false_endpoint",
+              "false_endpoint_candidate",
               "barge_in_stop_success"
             ]
           }

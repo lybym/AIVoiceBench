@@ -80,6 +80,15 @@
           },
           "has_overlap": {
             "type": "boolean"
+          },
+          "interrupted_response_id": {
+            "type": ["string", "null"],
+            "minLength": 1
+          },
+          "interrupting_segment_ids": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
           }
         },
         "required": [
@@ -94,7 +103,9 @@
           "device_speech_start_ms",
           "device_speech_end_ms",
           "has_interruption",
-          "has_overlap"
+          "has_overlap",
+          "interrupted_response_id",
+          "interrupting_segment_ids"
         ],
         "additionalProperties": false
       }

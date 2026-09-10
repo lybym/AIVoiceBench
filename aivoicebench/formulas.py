@@ -133,17 +133,20 @@ def turn_gap_ms_legacy(device_speech_end_ms, next_tester_speech_start_ms):
 
 
 def barge_in_stop_latency_ms(interrupt_start_ms, device_speech_end_ms):
-    """Time from tester interruption start to device speech stop.
+    """Time from tester interruption start to the interrupted device speech stop.
 
-    PRD-M005: Must be associated with the OLD response_id.
-    The device_speech_end must belong to the response being interrupted,
-    not an arbitrary subsequent device speech.
+    PRD-M005: must be associated with the OLD response_id. The device speech
+    end must belong to the response being interrupted.
+
+    A non-negative value is required. If the old response already ended before
+    the interruption began (end < start), there is no stop latency to measure:
+    the caller must report not_applicable, not a negative latency.
     """
     start, end = _finite(interrupt_start_ms), _finite(device_speech_end_ms)
     if start < 0 or end < 0:
         raise ValueError('Barge-in stop latency requires nonnegative boundaries')
-    # Allow device_end < interrupt_start only if there's evidence the device
-    # stopped before the interruption — but typically end >= start
+    if end < start:
+        raise ValueError('Old response ended before interruption; not a barge-in stop')
     return end - start
 
 

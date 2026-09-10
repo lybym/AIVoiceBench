@@ -1,34 +1,27 @@
-"""Tests for PRD-M001-M010 metric contracts and E2E metrics pipeline.
+"""Tests for PRD-M001-M010 canonical MetricResult 3.0.0 metrics.
 
-Covers:
-- First Speech Latency (PRD-M002): positive, zero, missing device
-- Turn Gap (PRD-M004): positive, negative (overlap), zero, old vs new formula
-- False Endpoint (PRD-M008): candidate only, not confirmed
-- Barge-in Stop Latency (PRD-M005): must reference old response_id
-- Unknown role: role-dependent metrics must abstain
-- Confidence: no hardcoded values
-- Provenance: metric references timeline artifact
+Verifies:
+- First Speech Latency (PRD-M002)
+- Turn Gap signed semantics (PRD-M004): positive, negative, zero
+- False Endpoint candidate vs confirmed (PRD-M008)
+- Barge-in stop bound to interrupted old response_id (PRD-M005)
+- not_applicable vs insufficient_evidence distinction
+- Canonical MetricResult schema validity
+- Correct abstention without semantic evidence
 """
 
-import json
-import math
-import sys
 import unittest
-from array import array
-import wave
-from pathlib import Path
-import tempfile
 
 from aivoicebench.formulas import (
     latency_ms, turn_gap_ms, turn_gap_ms_legacy,
     barge_in_stop_latency_ms, overlap_duration_ms, overlap_ratio,
-    false_endpoint_detected,
 )
 from aivoicebench.metrics import compute_timeline_metrics
+from aivoicebench.validation import schema_errors
 
 
 def make_event(eid, etype, start, end=None, turn_id='TURN-0001',
-               response_id='RESP-0001', evidence_ids=None, confidence=0.0):
+               response_id='RESP-0001', evidence_ids=None, confidence=None):
     if end is None:
         end = start
     return {
@@ -36,13 +29,15 @@ def make_event(eid, etype, start, end=None, turn_id='TURN-0001',
         'case_id': 'CASE-t', 'turn_id': turn_id, 'response_id': response_id,
         'type': etype, 'start_ms': start, 'end_ms': end,
         'source': 'audio_signal', 'observation_scope': 'black_box',
-        'confidence': confidence, 'evidence_ids': evidence_ids or ['EV-001'],
+        'confidence': confidence, 'confidence_source': None, 'uncertainty_ms': None,
+        'evidence_ids': evidence_ids or ['EV-001'],
     }
 
 
-def make_timeline(events):
+def make_timeline(events, run_id='RUN-t', case_id=None):
     return {
-        'schema_version': '2.0.0', 'run_id': 'RUN-t', 'case_id': 'CASE-t',
+        'schema_version': '2.0.0', 'run_id': run_id, 'case_id': case_id,
+        'analysis_id': 'ANALYSIS-t',
         'case_version': '0.0.0', 'attempt': 1, 'execution_kind': 'imported',
         'time_base': {'kind': 'audio_relative_ms', 'origin': 'first_decoded_sample'},
         'run_snapshot': {'device': None, 'hardware': None, 'firmware': None,
@@ -54,239 +49,267 @@ def make_timeline(events):
     }
 
 
-class FirstSpeechLatencyTests(unittest.TestCase):
-    """PRD-M002: tester_speech_end → device_speech_start"""
+def find(metrics, name):
+    return [m for m in metrics if m['name'] == name]
 
-    def test_positive_latency(self):
+
+class CanonicalSchemaTests(unittest.TestCase):
+    """Every emitted metric must validate against the canonical schema."""
+
+    def test_all_metrics_schema_valid(self):
+        events = [
+            make_event('E1', 'tester_speech_start', 500),
+            make_event('E2', 'tester_speech_end', 1000),
+            make_event('E3', 'device_speech_start', 1500),
+            make_event('E4', 'device_speech_end', 2000),
+        ]
+        result = compute_timeline_metrics(make_timeline(events))
+        self.assertTrue(result['metrics'])
+        for m in result['metrics']:
+            errors = schema_errors(m, 'metric')
+            self.assertEqual(errors, [], f'{m["name"]} schema errors: {errors}')
+
+    def test_metric_has_prd_ref_and_policy(self):
         events = [
             make_event('E1', 'tester_speech_end', 1000),
             make_event('E2', 'device_speech_start', 1500),
         ]
         result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'first_speech_latency_ms']
-        self.assertTrue(m)
-        self.assertEqual(m[0]['value'], 500)
-        self.assertEqual(m[0]['status'], 'observed')
-        self.assertEqual(m[0]['prd_ref'], 'PRD-M002')
+        fs = find(result['metrics'], 'first_speech_latency_ms')[0]
+        self.assertEqual(fs['prd_ref'], 'PRD-M002')
+        self.assertEqual(fs['schema_version'], '3.0.0')
+        self.assertIsNotNone(fs['policy'])
+        self.assertIsNotNone(fs['policy_version'])
 
-    def test_zero_latency(self):
+    def test_counts_by_status(self):
+        events = [
+            make_event('E1', 'tester_speech_end', 1000),
+            make_event('E2', 'device_speech_start', 1500),
+        ]
+        result = compute_timeline_metrics(make_timeline(events))
+        counts = result['counts']
+        self.assertEqual(counts['total'], len(result['metrics']))
+        self.assertGreater(counts['observed'], 0)
+        self.assertEqual(counts['total'],
+                         counts['observed'] + counts['not_applicable'] + counts['insufficient_evidence'])
+
+
+class FirstSpeechLatencyTests(unittest.TestCase):
+    def test_positive(self):
+        events = [
+            make_event('E1', 'tester_speech_end', 1000),
+            make_event('E2', 'device_speech_start', 1500),
+        ]
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'first_speech_latency_ms')[0]
+        self.assertEqual(m['value'], 500)
+        self.assertEqual(m['status'], 'observed')
+
+    def test_zero(self):
         events = [
             make_event('E1', 'tester_speech_end', 1000),
             make_event('E2', 'device_speech_start', 1000),
         ]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'first_speech_latency_ms']
-        self.assertEqual(m[0]['value'], 0)
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'first_speech_latency_ms')[0]
+        self.assertEqual(m['value'], 0)
+        self.assertEqual(m['status'], 'observed')
 
-    def test_missing_device_start(self):
+    def test_no_device_is_insufficient(self):
         events = [make_event('E1', 'tester_speech_end', 1000)]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'first_speech_latency_ms']
-        self.assertFalse(m, 'No metric when device_start missing')
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'first_speech_latency_ms')[0]
+        self.assertEqual(m['status'], 'insufficient_evidence')
+        self.assertIsNone(m['value'])
+
+    def test_orphan_device_is_not_applicable(self):
+        """Device speaks first with no tester utterance → not_applicable."""
+        events = [
+            make_event('E1', 'device_speech_start', 500, turn_id='TURN-0001'),
+            make_event('E2', 'device_speech_end', 1000, turn_id='TURN-0001'),
+        ]
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'first_speech_latency_ms')[0]
+        self.assertEqual(m['status'], 'not_applicable')
 
 
 class TurnGapTests(unittest.TestCase):
-    """PRD-M004: tester_speech_end → device_speech_start (SAME turn)"""
-
-    def test_positive_turn_gap(self):
+    def test_positive(self):
         events = [
             make_event('E1', 'tester_speech_end', 1000),
             make_event('E2', 'device_speech_start', 1500),
         ]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'turn_gap_ms']
-        self.assertTrue(m)
-        self.assertEqual(m[0]['value'], 500)
-        self.assertEqual(m[0]['prd_ref'], 'PRD-M004')
-        self.assertEqual(m[0]['policy'], 'device_speech_start')
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'], 'turn_gap_ms')[0]
+        self.assertEqual(m['value'], 500)
+        self.assertEqual(m['status'], 'observed')
+        self.assertEqual(m['policy'], 'device_speech_start')
 
-    def test_negative_turn_gap_overlap(self):
-        """Device starts before tester finishes — negative gap = overlap."""
+    def test_negative_overlap(self):
         events = [
             make_event('E1', 'tester_speech_end', 1000),
             make_event('E2', 'device_speech_start', 800),
         ]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'turn_gap_ms']
-        self.assertTrue(m, 'Negative turn gap must produce a metric, not skip')
-        self.assertEqual(m[0]['value'], -200)
-        self.assertEqual(m[0]['status'], 'observed')
-        self.assertIn('overlap', m[0].get('reason', '').lower())
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'], 'turn_gap_ms')[0]
+        self.assertEqual(m['value'], -200)
+        self.assertEqual(m['status'], 'observed')
+        self.assertIn('overlap', m['reason'].lower())
 
-    def test_zero_turn_gap(self):
+    def test_zero(self):
         events = [
             make_event('E1', 'tester_speech_end', 1000),
             make_event('E2', 'device_speech_start', 1000),
         ]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'turn_gap_ms']
-        self.assertEqual(m[0]['value'], 0)
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'], 'turn_gap_ms')[0]
+        self.assertEqual(m['value'], 0)
 
-    def test_legacy_formula_raises_on_negative(self):
-        """Legacy formula must reject negative (old behavior, backward compat)."""
+    def test_negative_schema_valid(self):
+        events = [
+            make_event('E1', 'tester_speech_end', 1000),
+            make_event('E2', 'device_speech_start', 800),
+        ]
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'], 'turn_gap_ms')[0]
+        self.assertEqual(schema_errors(m, 'metric'), [])
+
+    def test_legacy_formula_still_rejects_negative(self):
         with self.assertRaises(ValueError):
             turn_gap_ms_legacy(1000, 800)
 
-    def test_new_formula_allows_negative(self):
-        """New formula must accept negative (overlap)."""
-        self.assertEqual(turn_gap_ms(1000, 800), -200)
-
-    def test_no_device_in_turn(self):
-        events = [make_event('E1', 'tester_speech_end', 1000)]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'turn_gap_ms']
-        self.assertFalse(m)
+    def test_negative_first_speech_is_not_applicable(self):
+        """Device before tester end → overlap; latency is not_applicable."""
+        events = [
+            make_event('E1', 'tester_speech_end', 1000),
+            make_event('E2', 'device_speech_start', 800),
+        ]
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'first_speech_latency_ms')[0]
+        self.assertEqual(m['status'], 'not_applicable')
+        self.assertIsNone(m['value'])
 
 
 class FalseEndpointTests(unittest.TestCase):
-    """PRD-M008: possible_false_endpoint is candidate, not confirmed"""
-
-    def test_candidate_not_confirmed(self):
-        events = [
-            make_event('E1', 'possible_false_endpoint', 700, turn_id=None, response_id=None),
-        ]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'false_endpoint_candidate']
-        self.assertTrue(m)
-        self.assertEqual(m[0]['value'], True)
-        self.assertEqual(m[0]['status'], 'observed')
-        self.assertIn('confirmation', m[0].get('reason', '').lower())
-        # Must NOT have a 'false_endpoint_detected' confirmed metric
-        confirmed = [x for x in result['metrics'] if x['name'] == 'false_endpoint_detected']
-        self.assertFalse(confirmed, 'Must not output confirmed false_endpoint_detected')
-
-    def test_no_false_endpoint_event(self):
-        events = [make_event('E1', 'tester_speech_end', 1000)]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if 'false_endpoint' in x['name']]
-        self.assertFalse(m)
+    def test_candidate_only(self):
+        events = [make_event('E1', 'possible_false_endpoint', 700, turn_id=None, response_id=None)]
+        metrics = compute_timeline_metrics(make_timeline(events))['metrics']
+        cand = find(metrics, 'false_endpoint_candidate')
+        self.assertTrue(cand)
+        self.assertEqual(cand[0]['value'], True)
+        self.assertEqual(cand[0]['policy'], 'candidate_only')
+        self.assertIn('confirmation', cand[0]['reason'].lower())
+        # No confirmed false_endpoint
+        self.assertFalse(find(metrics, 'false_endpoint'))
 
 
 class BargeInTests(unittest.TestCase):
-    """PRD-M005: interrupt_start → old device_speech_end (same turn/response)"""
-
-    def test_barge_in_stop_latency(self):
+    def test_stop_latency_bound_to_old_response(self):
         events = [
             make_event('E1', 'device_speech_start', 500, turn_id='TURN-0001', response_id='RESP-0001'),
-            make_event('E2', 'interrupt_start', 1500, turn_id='TURN-0001', response_id=None),
-            make_event('E3', 'device_speech_end', 2000, turn_id='TURN-0001', response_id='RESP-0001'),
+            make_event('E2', 'device_speech_end', 2000, turn_id='TURN-0001', response_id='RESP-0001'),
+            make_event('E3', 'interrupt_start', 1500, turn_id='TURN-0001', response_id='RESP-0001'),
         ]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'barge_in_stop_latency_ms']
-        self.assertTrue(m)
-        self.assertEqual(m[0]['value'], 500)
-        self.assertEqual(m[0]['prd_ref'], 'PRD-M005')
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'barge_in_stop_latency_ms')[0]
+        self.assertEqual(m['value'], 500)
+        self.assertEqual(m['status'], 'observed')
+        self.assertEqual(m['response_id'], 'RESP-0001')
 
-    def test_barge_in_must_reference_old_response(self):
-        """Must NOT use device_speech_end from a different response."""
+    def test_wrong_response_not_used(self):
+        """A later different response must not satisfy the interrupted response."""
         events = [
-            make_event('E1', 'interrupt_start', 1500, turn_id='TURN-0001', response_id=None),
+            make_event('E1', 'interrupt_start', 1500, turn_id='TURN-0001', response_id='RESP-0001'),
             make_event('E2', 'device_speech_end', 2000, turn_id='TURN-0002', response_id='RESP-0002'),
         ]
-        result = compute_timeline_metrics(make_timeline(events))
-        # TURN-0001 has interrupt but no device_speech_end in same turn
-        # TURN-0002 has device_speech_end but no interrupt in same turn
-        m = [x for x in result['metrics'] if x['name'] == 'barge_in_stop_latency_ms']
-        self.assertFalse(m, 'Must not cross-reference different turns/responses')
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'barge_in_stop_latency_ms')[0]
+        self.assertEqual(m['status'], 'insufficient_evidence')
+        self.assertIsNone(m['value'])
 
-    def test_prd_m006_new_intent_abstains(self):
-        """PRD-M006: New Intent Latency must be insufficient_evidence."""
+    def test_old_response_ended_before_interrupt_is_not_applicable(self):
+        events = [
+            make_event('E1', 'device_speech_end', 1000, turn_id='TURN-0001', response_id='RESP-0001'),
+            make_event('E2', 'interrupt_start', 1500, turn_id='TURN-0001', response_id='RESP-0001'),
+        ]
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'barge_in_stop_latency_ms')[0]
+        self.assertEqual(m['status'], 'not_applicable')
+        self.assertIsNone(m['value'])
+
+    def test_new_intent_abstains(self):
         events = [make_event('E1', 'tester_speech_end', 1000)]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'barge_in_new_intent_latency_ms']
-        self.assertTrue(m)
-        self.assertEqual(m[0]['status'], 'insufficient_evidence')
-        self.assertEqual(m[0]['prd_ref'], 'PRD-M006')
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'barge_in_new_intent_latency_ms')[0]
+        self.assertEqual(m['status'], 'insufficient_evidence')
+        self.assertEqual(m['prd_ref'], 'PRD-M006')
 
-    def test_prd_m007_success_abstains(self):
-        """PRD-M007: Barge-in Success must be insufficient_evidence without all 4 components."""
+    def test_barge_in_success_abstains(self):
         events = [make_event('E1', 'interrupt_start', 1500)]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'barge_in_success']
-        self.assertTrue(m)
-        self.assertEqual(m[0]['status'], 'insufficient_evidence')
-        self.assertEqual(m[0]['prd_ref'], 'PRD-M007')
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'barge_in_success')[0]
+        self.assertEqual(m['status'], 'insufficient_evidence')
+        self.assertEqual(m['prd_ref'], 'PRD-M007')
 
 
-class ConfidenceTests(unittest.TestCase):
-    """No hardcoded confidence values — use provider evidence or null."""
+class SemanticAbstentionTests(unittest.TestCase):
+    def test_feedback_abstains(self):
+        events = [make_event('E1', 'tester_speech_end', 1000)]
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'feedback_latency_ms')[0]
+        self.assertEqual(m['status'], 'insufficient_evidence')
+        self.assertEqual(m['prd_ref'], 'PRD-M001')
 
-    def test_metric_has_policy_version(self):
-        events = [
-            make_event('E1', 'tester_speech_end', 1000),
-            make_event('E2', 'device_speech_start', 1500),
-        ]
-        result = compute_timeline_metrics(make_timeline(events))
-        for m in result['metrics']:
-            self.assertIn('policy_version', m)
-            self.assertIsNotNone(m['policy_version'])
-
-    def test_no_hardcoded_event_confidence(self):
-        """Events with None confidence should not get fabricated numbers."""
-        events = [
-            make_event('E1', 'tester_speech_end', 1000, confidence=None),
-            make_event('E2', 'device_speech_start', 1500, confidence=None),
-        ]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'first_speech_latency_ms']
-        self.assertTrue(m)
-        self.assertEqual(m[0]['status'], 'observed')
-
-
-class CorrectAbstentionTests(unittest.TestCase):
-    """Metrics that should abstain must do so correctly."""
+    def test_meaningful_response_abstains(self):
+        events = [make_event('E1', 'tester_speech_end', 1000)]
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'meaningful_response_latency_ms')[0]
+        self.assertEqual(m['status'], 'insufficient_evidence')
+        self.assertEqual(m['prd_ref'], 'PRD-M003')
 
     def test_empty_timeline(self):
         result = compute_timeline_metrics(make_timeline([]))
         self.assertEqual(result['status'], 'insufficient_evidence')
+        self.assertEqual(result['metrics'], [])
 
-    def test_feedback_latency_abstains(self):
-        events = [make_event('E1', 'tester_speech_end', 1000)]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'feedback_latency_ms']
-        self.assertTrue(m)
-        self.assertEqual(m[0]['status'], 'insufficient_evidence')
-        self.assertEqual(m[0]['prd_ref'], 'PRD-M001')
 
-    def test_meaningful_response_abstains(self):
-        events = [make_event('E1', 'tester_speech_end', 1000)]
-        result = compute_timeline_metrics(make_timeline(events))
-        m = [x for x in result['metrics'] if x['name'] == 'meaningful_response_latency_ms']
-        self.assertTrue(m)
-        self.assertEqual(m[0]['status'], 'insufficient_evidence')
-        self.assertEqual(m[0]['prd_ref'], 'PRD-M003')
-
-    def test_counts_reported(self):
-        """Total/observed/insufficient counts must be reported."""
+class DefaultAggregationTests(unittest.TestCase):
+    def test_observed_aggregation(self):
         events = [
             make_event('E1', 'tester_speech_end', 1000),
             make_event('E2', 'device_speech_start', 1500),
         ]
-        result = compute_timeline_metrics(make_timeline(events))
-        self.assertIn('total_count', result)
-        self.assertIn('observed_count', result)
-        self.assertIn('insufficient_count', result)
-        self.assertEqual(result['total_count'],
-                         result['observed_count'] + result['insufficient_count'])
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'turn_gap_ms')[0]
+        agg = m['aggregation']
+        self.assertEqual(agg['kind'], 'single')
+        self.assertEqual(agg['sample_count'], 1)
+        self.assertEqual(agg['total_count'], 1)
+        self.assertEqual(agg['excluded_count'], 0)
 
+    def test_insufficient_aggregation(self):
+        events = [make_event('E1', 'tester_speech_end', 1000)]
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'turn_gap_ms')[0]
+        agg = m['aggregation']
+        self.assertEqual(agg['sample_count'], 0)
+        self.assertEqual(agg['total_count'], 1)
+        self.assertEqual(agg['excluded_count'], 1)
 
-class FormulaVersioningTests(unittest.TestCase):
-    """Turn Gap formula versioning — old vs new semantics."""
-
-    def test_new_turn_gap_direction(self):
-        """New: tester_end → device_start (same turn)."""
-        self.assertEqual(turn_gap_ms(1000, 1500), 500)
-
-    def test_legacy_turn_gap_direction(self):
-        """Legacy: device_end → next_tester_start."""
-        self.assertEqual(turn_gap_ms_legacy(1000, 1500), 500)
-
-    def test_new_allows_negative(self):
-        self.assertEqual(turn_gap_ms(1000, 800), -200)
-
-    def test_legacy_rejects_negative(self):
-        with self.assertRaises(ValueError):
-            turn_gap_ms_legacy(1000, 800)
+    def test_barge_in_negative_schema_rejected(self):
+        """barge_in_stop_latency_ms must not accept a negative value."""
+        negative = {
+            'schema_version': '3.0.0', 'metric_id': 'RUN-t.barge_in_stop_latency_ms.TURN-0001',
+            'run_id': 'RUN-t', 'case_id': None, 'analysis_id': None,
+            'prd_ref': 'PRD-M005', 'turn_id': 'TURN-0001', 'response_id': 'RESP-0001',
+            'name': 'barge_in_stop_latency_ms', 'definition_version': '3.0.0',
+            'policy': 'interrupt_start_to_old_response_end', 'policy_version': '1.0.0',
+            'execution_kind': 'imported', 'value': -500, 'unit': 'ms', 'status': 'observed',
+            'reason': 'negative must be rejected', 'measurement_scope': 'black_box',
+            'method': 'deterministic', 'confidence': None, 'confidence_source': None,
+            'uncertainty_ms': None, 'evidence_ids': ['EV-001'], 'event_ids': ['E1'],
+            'aggregation': {'kind': 'single', 'sample_count': 1, 'total_count': 1,
+                            'excluded_count': 0, 'algorithm': 'single', 'input_metric_ids': []},
+        }
+        errors = schema_errors(negative, 'metric')
+        self.assertTrue(any('minimum' in e or 'less than' in e for e in errors),
+                        f'negative barge-in must be rejected, got: {errors}')
 
 
 if __name__ == '__main__':

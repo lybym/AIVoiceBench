@@ -30,6 +30,8 @@ class FusedSegment:
     speaker_id: str | None = None  # from diarization: speaker_0, speaker_1, ...
     speaker_cluster_confidence: float | None = None  # confidence of clustering
     role_attribution_confidence: float | None = None  # confidence of role mapping
+    acoustic_boundary_confidence: float | None = None  # confidence of acoustic onset/offset
+    acoustic_uncertainty_ms: float | None = None  # acoustic boundary uncertainty
     speaker_source: str = 'acoustic'  # acoustic | diarization | heuristic | llm | manual
     timing_source: str = 'acoustic'  # acoustic | asr | fused
     text: str | None = None
@@ -45,6 +47,8 @@ class FusedSegment:
             'speaker_id': self.speaker_id,
             'speaker_cluster_confidence': round(self.speaker_cluster_confidence, 4) if self.speaker_cluster_confidence is not None else None,
             'role_attribution_confidence': round(self.role_attribution_confidence, 4) if self.role_attribution_confidence is not None else None,
+            'acoustic_boundary_confidence': round(self.acoustic_boundary_confidence, 4) if self.acoustic_boundary_confidence is not None else None,
+            'acoustic_uncertainty_ms': round(self.acoustic_uncertainty_ms, 3) if self.acoustic_uncertainty_ms is not None else None,
             'speaker_source': self.speaker_source,
             'timing_source': self.timing_source,
             'text': self.text,
@@ -67,6 +71,10 @@ class Turn:
     device_speech_end_ms: float | None = None
     has_interruption: bool = False
     has_overlap: bool = False
+    # Interruption identity: which old response was interrupted and by which tester segment.
+    # PRD-M005 requires binding barge-in stop latency to the interrupted old response_id.
+    interrupted_response_id: str | None = None
+    interrupting_segment_ids: list = field(default_factory=list)
 
 
 def fuse(acoustic_doc, transcript_doc=None):
@@ -145,6 +153,8 @@ def fuse(acoustic_doc, transcript_doc=None):
             speaker_id=None,
             speaker_cluster_confidence=None,
             role_attribution_confidence=None,
+            acoustic_boundary_confidence=aseg.get('confidence'),
+            acoustic_uncertainty_ms=aseg.get('uncertainty_ms'),
             speaker_source='acoustic',
             timing_source=timing,
             text=text,
@@ -210,6 +220,10 @@ def build_turns(fused_doc):
                 if current_turn.get('device_speech_end_ms') and start < current_turn['device_speech_end_ms']:
                     current_turn['has_interruption'] = True
                     current_turn['has_overlap'] = True
+                    # Bind interruption identity: which old response was interrupted,
+                    # and which tester segment did the interrupting (PRD-M005).
+                    current_turn['interrupted_response_id'] = current_turn.get('response_id')
+                    current_turn['interrupting_segment_ids'] = [seg_id]
                     turns.append(_finalize_turn(current_turn))
                     turn_num += 1
                     current_turn = None
@@ -240,6 +254,8 @@ def build_turns(fused_doc):
                     'device_speech_end_ms': None,
                     'has_interruption': False,
                     'has_overlap': False,
+                    'interrupted_response_id': None,
+                    'interrupting_segment_ids': [],
                 }
 
         elif role == 'device':
@@ -260,6 +276,8 @@ def build_turns(fused_doc):
                     'device_speech_end_ms': end,
                     'has_interruption': False,
                     'has_overlap': False,
+                    'interrupted_response_id': None,
+                    'interrupting_segment_ids': [],
                 }
             else:
                 if current_turn['device_speech_start_ms'] is None:
@@ -305,6 +323,8 @@ def _finalize_turn(t):
         'device_speech_end_ms': round(t['device_speech_end_ms'], 3) if t['device_speech_end_ms'] is not None else None,
         'has_interruption': t['has_interruption'],
         'has_overlap': t['has_overlap'],
+        'interrupted_response_id': t.get('interrupted_response_id'),
+        'interrupting_segment_ids': list(t.get('interrupting_segment_ids', [])),
     }
 
 
@@ -359,12 +379,11 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
         start = seg['start_ms']
         end = seg['end_ms']
         ev_id = ev_map[sid]
-        # Use the segment's actual confidence, not hardcoded values
-        seg_conf = seg.get('role_attribution_confidence')
-        if seg_conf is None:
-            seg_conf = seg.get('speaker_cluster_confidence')
-        # If no confidence available, use None — do not fabricate a number
-        acoustic_conf = seg_conf  # acoustic timing confidence comes from attribution/diarization
+        # Acoustic boundary confidence comes from acoustic segmentation, NOT from
+        # speaker clustering or role attribution. Those are different dimensions.
+        acoustic_conf = seg.get('acoustic_boundary_confidence')
+        acoustic_source = 'acoustic_boundary' if acoustic_conf is not None else None
+        acoustic_uncertainty = seg.get('acoustic_uncertainty_ms')
 
         # Find the turn this segment belongs to
         turn_id = None
@@ -377,28 +396,34 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
 
         if role == 'tester':
             events.append(_event(f'EVT-{event_num + 1:04d}', 'tester_speech_start', start, start,
-                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id]))
+                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id],
+                                 acoustic_source, acoustic_uncertainty))
             event_num += 1
             events.append(_event(f'EVT-{event_num + 1:04d}', 'tester_speech_end', end, end,
-                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id]))
+                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id],
+                                 acoustic_source, acoustic_uncertainty))
             event_num += 1
         elif role == 'device':
             events.append(_event(f'EVT-{event_num + 1:04d}', 'device_speech_start', start, start,
-                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id]))
+                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id],
+                                 acoustic_source, acoustic_uncertainty))
             event_num += 1
             events.append(_event(f'EVT-{event_num + 1:04d}', 'device_speech_end', end, end,
-                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id]))
+                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id],
+                                 acoustic_source, acoustic_uncertainty))
             event_num += 1
             # Response start/end for the first device segment in a turn
             if turn_id and response_id:
                 t = turn_lookup.get(turn_id)
                 if t and sid == t['device_segment_ids'][0]:
                     events.append(_event(f'EVT-{event_num + 1:04d}', 'response_start', start, start,
-                                         turn_id, response_id, 'derived', acoustic_conf, [ev_id]))
+                                         turn_id, response_id, 'derived', acoustic_conf, [ev_id],
+                                         acoustic_source, acoustic_uncertainty))
                     event_num += 1
                 if t and sid == t['device_segment_ids'][-1]:
                     events.append(_event(f'EVT-{event_num + 1:04d}', 'response_end', end, end,
-                                         turn_id, response_id, 'derived', acoustic_conf, [ev_id]))
+                                         turn_id, response_id, 'derived', acoustic_conf, [ev_id],
+                                         acoustic_source, acoustic_uncertainty))
                     event_num += 1
 
     # Detect silence between segments
@@ -438,12 +463,17 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
                                              t['turn_id'], t.get('response_id'), 'derived', None, ev_ids))
                         event_num += 1
         if t['has_interruption']:
-            # The tester segment that interrupted device speech
-            tester_segs = [s for s in segments if s['segment_id'] in t['tester_segment_ids']]
-            for ts in tester_segs:
-                ev_ids = [ev_map[ts['segment_id']]]
-                events.append(_event(f'EVT-{event_num + 1:04d}', 'interrupt_start', ts['start_ms'], ts['start_ms'],
-                                     t['turn_id'], None, 'derived', None, ev_ids))
+            # PRD-M005: interrupt_start must bind to the interrupted OLD response_id,
+            # and be timestamped at the interrupting tester segment (not the original tester).
+            old_response_id = t.get('interrupted_response_id') or t.get('response_id')
+            for sid in t.get('interrupting_segment_ids', []):
+                seg = next((s for s in segments if s['segment_id'] == sid), None)
+                if seg is None:
+                    continue
+                ev_ids = [ev_map[sid]]
+                events.append(_event(f'EVT-{event_num + 1:04d}', 'interrupt_start',
+                                     seg['start_ms'], seg['start_ms'],
+                                     t['turn_id'], old_response_id, 'derived', None, ev_ids))
                 event_num += 1
 
     # Detect possible false endpoint: short tester segment followed by immediate device response
@@ -467,8 +497,14 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
 
 
 def _event(event_id, event_type, start_ms, end_ms, turn_id, response_id,
-           source, confidence, evidence_ids):
-    """Build a schema-compliant Event 2.0.0 dict."""
+           source, confidence, evidence_ids, confidence_source=None,
+           uncertainty_ms=None):
+    """Build a schema-compliant Event 2.0.0 dict.
+
+    confidence stays None when no defensible value exists. Unknown is not zero.
+    confidence_source records which dimension the number belongs to
+    (acoustic_boundary / speaker_cluster / role_attribution / semantic_event).
+    """
     return {
         'schema_version': '2.0.0',
         'event_id': event_id,
@@ -481,7 +517,9 @@ def _event(event_id, event_type, start_ms, end_ms, turn_id, response_id,
         'end_ms': round(end_ms, 3),
         'source': source,
         'observation_scope': 'black_box',
-        'confidence': round(confidence, 4) if confidence is not None else 0.0,
+        'confidence': round(confidence, 4) if confidence is not None else None,
+        'confidence_source': confidence_source,
+        'uncertainty_ms': uncertainty_ms,
         'evidence_ids': evidence_ids,
     }
 
