@@ -170,3 +170,11 @@
 - Local Docker engine is available but clean build failed downloading the Python base layer from Docker Hub (network EOF). Added an isolated GitHub container workflow for codecs, synthetic ASR and actual Docker restart/manifest hash checks; result pending PR execution. Target source version 0.2.0-alpha.1; not a release declaration. No automatic merge.
 
 - Follow-up verification: 7 targeted M1 tests passed, including report interruption recovery without repeating ASR. Actual Windows browser showed the synthetic transcript at 0.10–0.60 s, unknown role and partial Run; clicking its timestamp changed the audio control to playing. GitHub built the image and passed three-codec API smoke; its first test stage lacked the TestClient-only httpx dependency. Added that dependency to the isolated test container (same as existing contract CI), not the release image; rerunning container/restart validation.
+
+## 2026-09-10 — M1 final software verification (PR #48)
+
+- Validated source commit 379f4b4896cd233db85a1dd5e76f21612eda186e. [Windows and Linux contract CI](https://github.com/lybym/AIVoiceBench/actions/runs/34445056898) passed all 303 tests on each platform.
+- [Container backbone check](https://github.com/lybym/AIVoiceBench/actions/runs/34445056890) passed image build, actual HTTP WAV/MP3/M4A imports, seven synthetic ASR/recovery tests, and an actual Docker restart followed by history, Transcript, model settings, audio and artifact hash checks. The earlier missing test dependency is resolved. The local Docker Hub download failure remains a local environment limitation; successful container evidence comes from GitHub CI.
+- Windows browser inspection also confirmed timestamped Transcript rendering and audio seek/playback for a synthetic Run. All media and ASR transport responses used here are synthetic; these checks do not establish live cloud recognition or real terminal accuracy.
+- PRD-F004/F005/F016 implementation is available in PR #48, unmerged and unreleased. Issues #22/#30 remain open. Real M1 acceptance still requires an authorized 5–20 minute recording, configured Volcengine credentials and private signed audio publication. No private recording, generated personal report or secret was committed.
+- This final update changes verification documentation only; it does not alter the tested code or expand M1 scope.
