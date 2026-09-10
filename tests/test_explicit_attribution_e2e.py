@@ -122,9 +122,8 @@ class ExplicitAttributionE2ETests(unittest.TestCase):
         self.assertEqual(stages['fusion']['status'], 'complete')
         self.assertEqual(stages['turns']['status'], 'complete')
         self.assertEqual(stages['timeline']['status'], 'complete')
-        self.assertEqual(stages['metrics']['status'], 'failed')
-        # Metrics may fail due to timeline structure issues — the key is that
-        # turns and timeline ran successfully with explicit roles
+        self.assertEqual(stages['metrics']['status'], 'partial')
+        # Turns and timeline ran successfully with explicit roles
         self.assertEqual(stages['turns']['status'], 'complete')
         self.assertEqual(stages['timeline']['status'], 'complete')
 

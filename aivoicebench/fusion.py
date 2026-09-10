@@ -344,7 +344,8 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
             'start_ms': seg['start_ms'],
             'end_ms': seg['end_ms'],
             'source': 'audio_signal',
-            'confidence': seg.get('speaker_confidence', 0.5),
+            'confidence': seg.get('role_attribution_confidence') if seg.get('role_attribution_confidence') is not None
+                else seg.get('speaker_cluster_confidence'),
         })
         ev_map[seg['segment_id']] = eid
         evidence_num += 1
@@ -358,6 +359,12 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
         start = seg['start_ms']
         end = seg['end_ms']
         ev_id = ev_map[sid]
+        # Use the segment's actual confidence, not hardcoded values
+        seg_conf = seg.get('role_attribution_confidence')
+        if seg_conf is None:
+            seg_conf = seg.get('speaker_cluster_confidence')
+        # If no confidence available, use None — do not fabricate a number
+        acoustic_conf = seg_conf  # acoustic timing confidence comes from attribution/diarization
 
         # Find the turn this segment belongs to
         turn_id = None
@@ -370,28 +377,28 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
 
         if role == 'tester':
             events.append(_event(f'EVT-{event_num + 1:04d}', 'tester_speech_start', start, start,
-                                 turn_id, response_id, 'audio_signal', 0.7, [ev_id]))
+                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id]))
             event_num += 1
             events.append(_event(f'EVT-{event_num + 1:04d}', 'tester_speech_end', end, end,
-                                 turn_id, response_id, 'audio_signal', 0.7, [ev_id]))
+                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id]))
             event_num += 1
         elif role == 'device':
             events.append(_event(f'EVT-{event_num + 1:04d}', 'device_speech_start', start, start,
-                                 turn_id, response_id, 'audio_signal', 0.7, [ev_id]))
+                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id]))
             event_num += 1
             events.append(_event(f'EVT-{event_num + 1:04d}', 'device_speech_end', end, end,
-                                 turn_id, response_id, 'audio_signal', 0.7, [ev_id]))
+                                 turn_id, response_id, 'audio_signal', acoustic_conf, [ev_id]))
             event_num += 1
             # Response start/end for the first device segment in a turn
             if turn_id and response_id:
                 t = turn_lookup.get(turn_id)
                 if t and sid == t['device_segment_ids'][0]:
                     events.append(_event(f'EVT-{event_num + 1:04d}', 'response_start', start, start,
-                                         turn_id, response_id, 'derived', 0.6, [ev_id]))
+                                         turn_id, response_id, 'derived', acoustic_conf, [ev_id]))
                     event_num += 1
                 if t and sid == t['device_segment_ids'][-1]:
                     events.append(_event(f'EVT-{event_num + 1:04d}', 'response_end', end, end,
-                                         turn_id, response_id, 'derived', 0.6, [ev_id]))
+                                         turn_id, response_id, 'derived', acoustic_conf, [ev_id]))
                     event_num += 1
 
     # Detect silence between segments
@@ -405,11 +412,11 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
             gap_duration = gap_end - gap_start
             if gap_duration >= timeout_ms:
                 events.append(_event(f'EVT-{event_num + 1:04d}', 'timeout', gap_start, gap_end,
-                                     None, None, 'derived', 0.8, [eid]))
+                                     None, None, 'derived', None, [eid]))
                 event_num += 1
             else:
                 events.append(_event(f'EVT-{event_num + 1:04d}', 'silence', gap_start, gap_end,
-                                     None, None, 'derived', 0.9, [eid]))
+                                     None, None, 'derived', None, [eid]))
                 event_num += 1
 
     # Detect overlap and interruption from turns
@@ -425,10 +432,10 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
                     if overlap_end - overlap_start >= overlap_min_ms:
                         ev_ids = [ev_map[ts['segment_id']], ev_map[ds['segment_id']]]
                         events.append(_event(f'EVT-{event_num + 1:04d}', 'overlap_start', overlap_start, overlap_start,
-                                             t['turn_id'], t.get('response_id'), 'derived', 0.8, ev_ids))
+                                             t['turn_id'], t.get('response_id'), 'derived', None, ev_ids))
                         event_num += 1
                         events.append(_event(f'EVT-{event_num + 1:04d}', 'overlap_end', overlap_end, overlap_end,
-                                             t['turn_id'], t.get('response_id'), 'derived', 0.8, ev_ids))
+                                             t['turn_id'], t.get('response_id'), 'derived', None, ev_ids))
                         event_num += 1
         if t['has_interruption']:
             # The tester segment that interrupted device speech
@@ -436,7 +443,7 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
             for ts in tester_segs:
                 ev_ids = [ev_map[ts['segment_id']]]
                 events.append(_event(f'EVT-{event_num + 1:04d}', 'interrupt_start', ts['start_ms'], ts['start_ms'],
-                                     t['turn_id'], None, 'derived', 0.7, ev_ids))
+                                     t['turn_id'], None, 'derived', None, ev_ids))
                 event_num += 1
 
     # Detect possible false endpoint: short tester segment followed by immediate device response
@@ -448,7 +455,7 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
                 segments[i + 1]['start_ms'] - seg['end_ms'] < 200):
             ev_ids = [ev_map[seg['segment_id']]]
             events.append(_event(f'EVT-{event_num + 1:04d}', 'possible_false_endpoint', seg['end_ms'], seg['end_ms'],
-                                 None, None, 'derived', 0.5, ev_ids))
+                                 None, None, 'derived', None, ev_ids))
             event_num += 1
 
     # Sort events by start_ms
@@ -474,7 +481,7 @@ def _event(event_id, event_type, start_ms, end_ms, turn_id, response_id,
         'end_ms': round(end_ms, 3),
         'source': source,
         'observation_scope': 'black_box',
-        'confidence': round(confidence, 4),
+        'confidence': round(confidence, 4) if confidence is not None else 0.0,
         'evidence_ids': evidence_ids,
     }
 

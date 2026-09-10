@@ -236,13 +236,23 @@ def _metrics(run, timeline_doc, parent_ids):
     """Compute deterministic metrics from the timeline."""
     from .metrics import compute_timeline_metrics
     metrics_result = compute_timeline_metrics(timeline_doc)
-    status = metrics_result.get('status', 'partial')
-    output = run.envelope('metrics', status,
+    # Map metrics status to envelope-level status:
+    # 'observed' → 'complete', 'insufficient_evidence' with metrics → 'partial'
+    # (partial so data is preserved; insufficient_evidence forces data=null in schema)
+    raw_status = metrics_result.get('status', 'insufficient_evidence')
+    has_metrics = bool(metrics_result.get('metrics'))
+    if raw_status == 'observed':
+        envelope_status = 'complete'
+    elif has_metrics:
+        envelope_status = 'partial'  # Has metrics data, just no observed ones
+    else:
+        envelope_status = 'insufficient_evidence'
+    output = run.envelope('metrics', envelope_status,
                           'Deterministic metrics from timeline events',
-                          _envelope_data(metrics_result, status), parent_ids)
+                          _envelope_data(metrics_result, envelope_status), parent_ids)
     run.manifest['stages']['metrics']['processor'] = {'name': 'metrics', 'version': '1.0.0'}
     observed = [m for m in metrics_result.get('metrics', []) if m.get('status') == 'observed']
-    reason = None if observed else 'No observed metrics'
+    reason = None if observed else 'No observed metrics (all insufficient_evidence)'
     return [output], metrics_result, reason
 
 
