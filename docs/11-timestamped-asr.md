@@ -1,5 +1,7 @@
 # Timestamped external ASR
 
+> Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
+
 The provider boundary is independent of the hardware/controller. Providers return native response strings plus the actual provider/model/config fingerprint and implement normalization into Transcript 1.0.0. Vosk is the first optional local adapter; online providers can implement the same interface. Local operation does not require that TTS/ASR/Judge all run offline.
 
 ## Run locally

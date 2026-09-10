@@ -1,5 +1,7 @@
 # Contract versions and TestCase execution semantics
 
+> Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
+
 ## TestCase 2.0.0 (Issue #1)
 
 Breaking change from the seed 1.0.0: strict mode-specific stimulus objects replace open-ended fields. Case ID remains stable; migrated example content uses Case version 2.0.0. Other seed contracts remain at 1.0.0 until their respective Issues; do not assume all contracts share one version.

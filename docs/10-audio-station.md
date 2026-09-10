@@ -1,5 +1,7 @@
 # Audio station — hardware acceptance pending
 
+> Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
+
 The target is a voice-conversation terminal with built-in speaker/microphone. The user has not prepared a target or external station routing. This module is generic across terminal models. No actual playback, recording or loopback calibration has been performed in this task.
 
 ## Windows commands
@@ -34,4 +36,4 @@ Calibration plays a fixed low-level pseudorandom probe, records repetitions and 
 
 Software tests inject known delay, gain, polarity, noise, stream-open failure, callback exceptions and overflow flags. No test harness input is a real HIL recording. Physical reproducibility, clock accuracy, channel isolation and hardware stress remain untested.
 
-Official API checked 2026-09-07: [Stream callbacks and clocks](https://python-sounddevice.readthedocs.io/en/latest/api/streams.html), [device enumeration and format checks](https://python-sounddevice.readthedocs.io/en/latest/api/checking-hardware.html). The callback fills buffers, retains ADC/DAC/current time and does no disk writes. Fixed blocks and preallocated buffers bound the MVP; actual realtime behavior still needs hardware tests. Packaging must include and verify PortAudio/platform dependencies in the later Windows executable stage.
+Official API checked 2026-09-07: [Stream callbacks and clocks](https://python-sounddevice.readthedocs.io/en/latest/api/streams.html), [device enumeration and format checks](https://python-sounddevice.readthedocs.io/en/latest/api/checking-hardware.html). The callback fills buffers, retains ADC/DAC/current time and does no disk writes. Fixed blocks and preallocated buffers bound the MVP; actual realtime behavior still needs hardware tests. Future HIL deployment must verify PortAudio/platform dependencies on its actual station host; Windows executable delivery is not required by the current PRD.

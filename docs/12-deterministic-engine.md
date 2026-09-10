@@ -1,5 +1,7 @@
 # Deterministic canonical-event evaluation
 
+> Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
+
 ```powershell
 python -m aivoicebench analyze examples/test-case.example.yaml --timeline examples/timeline.example.json
 ```

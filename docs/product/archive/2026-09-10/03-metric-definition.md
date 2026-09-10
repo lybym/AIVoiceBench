@@ -1,7 +1,5 @@
 # Metric definitions 1.0.0 (MetricResult schema 2.0.0)
 
-> Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
-
 Definitions are versioned independently from schemas. No thresholds in this document are approved release criteria. Synthetic reference calculations validate arithmetic, not device performance.
 
 ## Shared rules

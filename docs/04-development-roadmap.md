@@ -1,49 +1,15 @@
-# Development Roadmap — Import-first MVP
+# Development Roadmap — PRD 执行映射
 
-Updated 2026-09-07 by explicit product direction. Primary workflow: External Recording → Import → Normalize/QA → Acoustic + ASR/Diarization → Attribution/Fusion → Turns/Events/Timeline → Metrics → LLM Harness → Findings/Evidence → Human Verification → Report/Regression. Preserve the existing contracts, Runner, ASR/Vosk, deterministic engine and Audio Station. See `13-import-first-migration.md` for audited refs and Issue migration.
+本文件只维护执行顺序与任务依赖；产品范围、功能状态和验收条件以 [PRD](PRD.md) 为准。PRD 版本：1.0.0；审计日期：2026-09-10。
 
-## P0 — establish the import path
+| 顺序 | PRD refs | 现有任务 | 依赖和执行说明 |
+| --- | --- | --- | --- |
+| 基线 | PRD-F001/F014/F015、PRD-N001 | #42/#44，PR #43/#45 | v0.1.3 已发布但尚未入 main；只在用户授权后按 #43 → #45 集成，不新增长链 |
+| P0-1 | PRD-F004/F005/F006/F016 | #21/#22/#23/#30 | 统一阶段/调用审计；复用 ASR、Vosk、FFmpeg，审核关闭但未集成的旧 PR #31/#32 |
+| P0-2 | PRD-F007/F008/F009、PRD-M001～M010 | #24/#25/#8 | 有可靠角色与边界后建立规范事件/指标，不能用缺证据的数值追求自动化率 |
+| P1 | PRD-F010/F011/F012/F013/F017 | #10/#11/#26 | 语义证据、修订与报告闭环；修订契约可提前，完整功能仍是 MVP 必需 |
+| MVP gate | PRD 第 7 节、PRD-N005 | #27 | 真实 5～20 分钟录音与 Windows 浏览器/容器恢复验收 |
+| P2 | PRD-F018～F021 | #9/#5 及后续有界 Issue | Golden、Controller、探索、比较；不抢占当前导入证据闭环 |
+| P3 | PRD-F022 | #6 | 保留 Audio Station/HIL，实际硬件和 Remote 后置 |
 
-1. #20 architecture, repository/PR audit and migration governance.
-2. #21 immutable WAV/MP3/M4A import, canonical normalization, provenance, versioned stage ledger and recoverable partial Run; basic JSON/Markdown status report.
-3. #22 unified invocation/provider layer plus current cloud ASR/diarization, preserving Vosk fallback. #23 independent acoustic segmentation with explicit uncertainty.
-4. Define #26 annotation/revision contract early; #24 consumes it with ASR/acoustic evidence to create role assignments, turns/responses and events automatically.
-5. #25 expand metrics without changing legacy meanings: feedback, first speech, meaningful response, turn gap, barge-in stop/new intent/composite success, false endpoint and overlap duration/ratio.
-6. #27 integrate the complete pipeline and verify real-recording acceptance. #10 and #11 below are dependencies for full semantic/report acceptance; unavailable stages may be partial during intermediate milestones.
-
-## P1 — semantic judgement and review
-
-- #10 structured, provider-independent Harness/Judge: intent/turn relations, meaningful answer position, context/memory/instructions, reasoning/hallucination, persona/emotion/proactivity/safety, candidate findings. No invented timing/evidence/internal causes.
-- #26 append-only text/speaker/boundary/association/finding corrections, effective views and reanalysis. Preserve original machine outputs and reviewer provenance.
-- #11 complete evidence-linked JSON/Markdown report, clear machine/semantic/human status and audio ranges. No invented scores/release gates. The thin #21 report is a checkpoint, not full report acceptance.
-
-## P2 — test generation and comparison
-
-- #9 mature API TTS → frozen Golden assets with source/model/voice/config/hash and sample-exact inserted pauses. Currently paused draft retained.
-- Scripted multi-turn controller, exploratory voice agent, minimized regression Cases.
-- Version/device/supplier comparison, known-policy release gates and population/denominator-aware statistics.
-
-## P3 — physical automation
-
-- #6 integrated Audio Station, device playback/capture and loopback calibration; existing code/tests retained.
-- Automatic HIL and remote Station. These do not block imported-recording analysis.
-
-## Real MVP acceptance and Docker/Web UI delivery
-
-Give the program one real 5–20 minute tester + terminal recording. It must preserve/hash the source; standardize audio; transcribe with timestamps; automatically identify tester/device/unknown speech; build turns/events; compute eligible latency, interruption and overlap measurements; evaluate semantics; emit findings and JSON/Markdown; resolve every important conclusion to Run/Turn/Event/audio interval/Transcript/Evidence/processor or model version; allow human corrections; reproduce or explain differences between analysis revisions.
-
-Confidence/uncertainty must remain honest. Unknown speaker is not forced into a role, ASR timestamps are not acoustic ground truth, silence at EOF is not automatically timeout, and unavailable semantic checks do not pass barge-in success. Synthetic codec/fixture tests and generated speech smoke tests are labeled separately from real acceptance. No actual user recording is available yet.
-
-Ship a Docker backend and frontend, usable through a Windows browser, with Runs, Import (device/hardware/firmware/model/prompt/supplier/environment/notes), Analyze, waveform/transcript/turns/events/metrics/findings, evidence navigation and human review. Verify container startup, persistent Run storage, restart recovery and browser workflows. A Windows executable/installer is not required. Code, standalone commands and a placeholder report do not satisfy MVP acceptance. Cloud providers may be configured; no server cluster is mandatory.
-
-## Integration policy
-
-As of the 2026-09-09 audit, main at `4ee8594` contains the integrated foundation,
-import pipeline and later acoustic/fusion/metrics/LLM/revision/Web UI modules.
-The previous serial PRs are closed; closure alone is not proof of acceptance.
-New fixes branch from current main and receive independent Issues/PRs. Do not
-merge automatically. Issue #40 restores the regression baseline and Docker/Web UI
-acceptance; next fix unsupported speaker attribution, false LLM success, metric
-contracts, and shared Web/CLI import/evidence orchestration before real-recording
-acceptance. Cloud ASR/provider-audit work from #31/#32 still needs explicit
-integration accounting. Record actual tests and unverified limitations separately.
+#1～#4 对应可复用契约基础；Issue 仍 open 不代表代码为空，关闭也不代表满足整体 PRD。历史串行 #1→#11 计划和旧迁移快照见 [归档索引](product/README.md)。

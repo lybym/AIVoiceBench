@@ -1,6 +1,6 @@
 # Contributing
 
-Read [AGENTS.md](AGENTS.md), the applicable Requirement IDs in [docs/PRD.md](docs/PRD.md), relevant technical docs and the current Issue before changes. Work logs are execution history, not product requirements. Use one branch and PR per Issue; dependent PRs must name their base/dependencies. Do not merge PRs automatically. Preserve existing user changes and never commit unrelated WORK files, secrets, raw private recordings or generated reports.
+Read `docs/05-project-context.md`, the relevant Issue and `docs/06-work-log.md` before changes. Use one branch and PR per Issue; dependent PRs must name their base/dependencies. Do not merge PRs automatically. Preserve existing user changes and never commit unrelated WORK files, secrets, raw private recordings or generated reports.
 
 Python 3.12 is the initial validated environment. In PowerShell:
 
@@ -15,4 +15,4 @@ python -m venv .venv
 
 Schema changes require a version decision, updated examples, meaningful positive/negative tests and migration notes. Structural schema invariants and cross-reference/runtime invariants must be documented separately. Never label synthetic fixtures or dry-runs as measured hardware results. New provider APIs/models require official-document verification before integration. No service credentials belong in manifests.
 
-Record actual validation, untested hardware/provider dependencies, commits, push status, PR URLs and next steps in the work log. Docker/Web delivery and the real-recording acceptance gate are defined only in docs/PRD.md. Product behavior changes must update the same PRD IDs in the same PR; distinguish code implementation, main integration and real acceptance.
+Record actual validation, untested hardware/provider dependencies, commits, push status, PR URLs and next steps in the work log. Windows executable/installer packaging and a verified local full workflow remain final product requirements after the CLI MVP.

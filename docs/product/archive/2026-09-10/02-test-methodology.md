@@ -1,7 +1,5 @@
 # Test methodology and capability mapping
 
-> Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
-
 Capability IDs classify what the device should do; metric IDs define measurements; Case IDs select reproducible stimuli and expectations. These catalogs evolve independently. `capability_refs` links cases to the capability catalog below; `metrics` and assertion `metric_id` link cases to metric definitions. An engineering category is the primary ownership layer, not an inferred root cause. Multiple capabilities may be attached to one case.
 
 | Business view | Capability IDs | Engineering layers |
