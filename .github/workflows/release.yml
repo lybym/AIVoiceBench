@@ -4,9 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v0.1.0)'
+        description: 'Release tag (e.g. v0.2.0-alpha.1)'
         required: true
-        default: 'v0.1.0'
+      ref:
+        description: 'Commit SHA or branch to build. Must resolve to the commit the tag will point at.'
+        required: true
+      draft:
+        description: 'Create as draft first (recommended: verify attachments, then publish)'
+        type: boolean
+        default: true
 
 env:
   IMAGE_NAME: aivoicebench
@@ -20,9 +26,44 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 1
+
+      - name: Resolve the exact source commit
+        id: source
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Building from $SHA"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      # Version, tag, source and notes must agree before anything is built or published.
+      - name: Verify tag, version and release notes agree
+        id: verify
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, pathlib, re, sys
+          tag = os.environ['RELEASE_TAG']
+          sys.path.insert(0, '.')
+          from aivoicebench.version import VERSION
+          if tag != 'v' + VERSION:
+              sys.exit(f"Tag {tag!r} does not match application VERSION {VERSION!r} (expected 'v{VERSION}')")
+          notes = pathlib.Path('docs/releases') / f'{VERSION}.md'
+          if not notes.is_file():
+              sys.exit(f"Missing release notes {notes}; the Release body must describe this exact version")
+          text = notes.read_text(encoding='utf-8')
+          if not re.search(r'预览版|Pre-release|pre-release', text, re.I):
+              sys.exit('Release notes must state that this is a pre-release')
+          print(f"OK tag={tag} version={VERSION} notes={notes}")
+          PY
+          echo "notes=docs/releases/$(python -c 'from aivoicebench.version import VERSION; print(VERSION)').md" >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image
         uses: docker/build-push-action@v5
@@ -34,78 +75,68 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Verify release version
-        env:
-          RELEASE_TAG: ${{ github.event.inputs.tag }}
+      - name: Smoke test container (synthetic; no cloud calls)
         run: |
-          python -c "import os; from aivoicebench.version import VERSION; assert os.environ['RELEASE_TAG'] == 'v' + VERSION"
-
-      - name: Smoke test container
-        run: |
-          docker run -d --name release-smoke aivoicebench:${{ github.event.inputs.tag }}
+          set -euo pipefail
+          docker volume create release-smoke-data
+          docker run -d --name release-smoke -v release-smoke-data:/data/output \
+            ${{ env.IMAGE_NAME }}:${{ github.event.inputs.tag }}
           docker cp scripts/docker_smoke.py release-smoke:/app/docker_smoke.py
+          docker cp tests release-smoke:/app/tests
+          docker exec release-smoke python -m pip install --quiet httpx
           docker exec release-smoke python /app/docker_smoke.py
+          docker exec release-smoke python -m unittest discover -s tests -p test_recording_backbone.py
+          docker exec release-smoke python /app/docker_smoke.py --save-history
+          docker restart release-smoke
+          docker exec release-smoke python /app/docker_smoke.py --verify-history
           docker rm -f release-smoke
+          docker volume rm release-smoke-data
 
-      - name: Save image as tarball
+      # A tarball that cannot be loaded and run is not a deliverable.
+      - name: Save image, then prove it reloads and runs
         run: |
-          docker save ${{ env.IMAGE_NAME }}:${{ github.event.inputs.tag }} | gzip > aivoicebench-${{ github.event.inputs.tag }}.tar.gz
-          ls -lh aivoicebench-*.tar.gz
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          docker save "${{ env.IMAGE_NAME }}:${TAG}" | gzip > "${{ env.IMAGE_NAME }}-${TAG}.tar.gz"
+          ls -lh "${{ env.IMAGE_NAME }}-${TAG}.tar.gz"
+          docker image rm "${{ env.IMAGE_NAME }}:${TAG}"
+          docker load -i "${{ env.IMAGE_NAME }}-${TAG}.tar.gz"
+          docker volume create reload-check-data
+          docker run -d --name reload-check -v reload-check-data:/data/output \
+            "${{ env.IMAGE_NAME }}:${TAG}"
+          docker cp scripts/docker_smoke.py reload-check:/app/docker_smoke.py
+          docker exec reload-check python /app/docker_smoke.py
+          docker rm -f reload-check
+          docker volume rm reload-check-data
+
+      - name: Stage release attachments with checksums
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          mkdir -p dist
+          cp "${{ env.IMAGE_NAME }}-${TAG}.tar.gz" dist/
+          cp docs/releases/docker-compose.preview.yml dist/
+          cp docs/releases/start-aivoicebench-preview.ps1 dist/
+          cp "${{ steps.verify.outputs.notes }}" "dist/RELEASE-NOTES-${TAG}.md"
+          ( cd dist && sha256sum -- * > SHA256SUMS.txt )
+          cat dist/SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ steps.source.outputs.sha }}
+          # Single source of truth for prerelease: derived from the tag. It is never
+          # repeated later in this block, because a duplicate YAML key silently wins.
           prerelease: ${{ contains(github.event.inputs.tag, '-') }}
+          # A pre-release must never take over the "Latest" designation of a stable release.
+          make_latest: ${{ contains(github.event.inputs.tag, '-') && 'false' || 'true' }}
           name: AIVoiceBench ${{ github.event.inputs.tag }}
-          body: |
-            # AIVoiceBench ${{ github.event.inputs.tag }}
-
-            ## 下载与运行
-
-            ```bash
-            # 1. 下载 aivoicebench-${{ github.event.inputs.tag }}.tar.gz
-
-            # 2. 加载镜像
-            docker load < aivoicebench-${{ github.event.inputs.tag }}.tar.gz
-
-            # 3. 运行
-            docker run -d --name aivoicebench \
-              -p 8000:8000 \
-              -v ./data/recordings:/data/recordings:ro \
-              -v ./data/output:/data/output \
-              -v ./data/cache:/data/cache \
-              -e AIVOICEBENCH_LLM_PROVIDER=none \
-              aivoicebench:${{ github.event.inputs.tag }}
-
-            # 4. 打开 http://localhost:8000
-            ```
-
-            ## 配置火山引擎 LLM
-
-            ```bash
-            docker run -d --name aivoicebench \
-              -p 8000:8000 \
-              -v ./data/recordings:/data/recordings:ro \
-              -v ./data/output:/data/output \
-              -e AIVOICEBENCH_LLM_PROVIDER=volcengine \
-              -e ARK_API_KEY=your_key \
-              -e AIVOICEBENCH_LLM_MODEL=ep-xxxxxxxx \
-              aivoicebench:${{ github.event.inputs.tag }}
-            ```
-
-            ## 包含的功能
-
-            - 声学分割 (能量 VAD)
-            - 段融合 + 说话人归因
-            - 轮次构建 + 事件检测
-            - 确定性时延指标
-            - LLM 语义评估 (Mock + 火山引擎/OpenAI Provider)
-            - Finding 生成
-            - Markdown + JSON 报告
-            - 人工修正契约
-            - Web UI (拖放上传 + 分析结果展示)
-          files: aivoicebench-*.tar.gz
-          draft: false
-          prerelease: false
+          body_path: ${{ steps.verify.outputs.notes }}
+          draft: ${{ github.event.inputs.draft }}
+          files: |
+            dist/*.tar.gz
+            dist/docker-compose.preview.yml
+            dist/start-aivoicebench-preview.ps1
+            dist/SHA256SUMS.txt
+            dist/RELEASE-NOTES-*.md
