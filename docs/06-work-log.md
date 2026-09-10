@@ -149,3 +149,11 @@
 - Every new Web Run captures/registers a SHA256-backed secret-free configuration snapshot. SQLite stores local credentials under persistent output; Compose defaults to localhost. Added redaction, concurrency, route/parameter validation, env precedence and Run-freeze tests. Browser verified model creation and default selection without secrets or network calls.
 - Final validation: full 278 tests passed in 36.680 s, including 9 model settings tests. v0.1.3 Docker release verification follows. No real recording or cloud/device validation.
 - Branch feature-model-management is one bounded follow-up to #43, not a growing feature stack. Publish via explicit source ref; keep PRs available for user-authorized integration.
+
+## 2026-09-10 — v0.1.3 release verification
+
+- Resumed after a workspace-credit approval interruption; no release failure was inferred from that interruption.
+- Confirmed both Contract validation runs 34363937460/34363920358 succeeded for e3c2821a417a1aeea90a7c029290b6f814bf747b. Docker registry workflow 34363996503 and Release workflow 34363991525 also succeeded.
+- Container smoke passed version 0.1.3, settings write/redaction, WAV/MP3/M4A synthetic imports, history/detail status and audio responses. This remains synthetic software validation, not real device accuracy acceptance.
+- Release v0.1.3 pins that exact source commit. Asset aivoicebench-v0.1.3.tar.gz: 320066940 bytes; SHA256 8107c67b7c1261e09640edbfe909a6f11cb552c42e4ad692be098fabd2c95c78.
+- Updated published Release notes with the refreshed UI, model management, deployment instructions and explicit pending speech-adapter scope. PR #43 and #45 remain reviewable, without automatic merge.
