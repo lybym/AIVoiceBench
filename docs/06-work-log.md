@@ -138,3 +138,11 @@
 - Centralized original product-source snapshots under docs/product/archive/2026-09-10. Charter/context/roadmap/migration now have narrow roles or redirect to PRD. Preserved technical metric/methodology/contracts and historical work logs; corrected stale Windows installer, alternating-role, mock-success and release API descriptions.
 - Added AGENTS.md, docs navigation and PR template to require PRD-to-Issue-to-code/test traceability. Independent docs-central-prd branch/worktree from main; no extension of the #43/#45 stack and no runtime code changes.
 - Validation passed: 38 unique requirement IDs, 64 active local links (65 after adding the capability-methodology reference), 42 pinned v0.1.3 source paths and 13 byte-preserved Git snapshots; whitespace diff check passed. No audio/real-device/container tests were rerun for this documentation-only change. Commit/push and PR follow; no automatic merge or Docker release.
+
+
+## 2026-09-10 — PRD owner-requested review of sections 3 / 5 / 7 (#46, PR #47)
+
+- Reviewed the requirements overview, user-perceived metrics and complete MVP gate at the user's request. PRD 1.0.1 clarifies that P1 scheduling does not remove required MVP features; speech configuration and actual adapters remain separate.
+- Clarified feedback versus speech versus meaningful response, legacy metric naming, Turn Gap direction/policy, bounded barge-in success evidence, uncertainty and aggregation denominators. These are documented requirements, not claims that the metric code was fixed.
+- Added real-scenario coverage and machine-before-human acceptance records. All-unknown/all-abstention or empty findings cannot count as successful automatic analysis; missing scenarios remain unverified. Quantitative acceptance policy remains for the owner to confirm before formal quality acceptance, without invented thresholds or a scope/status upgrade.
+- Validation passed: 38 stable requirement IDs, 65 active local links, 42 pinned v0.1.3 source paths, 13 unchanged source snapshots and git diff whitespace check. Documentation-only: no runtime or Docker retest, real recording upload, merge or release. Changes remain in the existing independent PR #47.

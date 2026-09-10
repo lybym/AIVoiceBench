@@ -1,6 +1,6 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.0.0
+prd_version: 1.0.1
 status: consolidated_for_owner_review
 updated: 2026-09-10
 implementation_baseline: v0.1.3@e3c2821a417a1aeea90a7c029290b6f814bf747b
@@ -84,6 +84,12 @@ External Recording → Import → Normalize / Audio QA → Acoustic Segmentation
 | PRD-F020 | 多轮固定测试 Controller | P2 | 🟡 partial | Runner 基础已有，真实多轮控制未完成 |
 | PRD-F021 | Exploratory Voice Agent | P2 | ⬜ planned | 无完整探索→确认→回归链路 |
 | PRD-F022 | Audio Station / HIL / Remote | P3 | ⏸ deferred | Station 代码保留，非当前 MVP 门槛 |
+
+### MVP 范围与排程的关系
+
+P0/P1 表示开发先后，不表示可选与必选。当前 MVP 包含 PRD-F001～F015、PRD-F016 的云 ASR/diarization 与调用审计部分、PRD-F017；各项以第 4 节限定范围和第 7 节验收为准。PRD-F016 的 TTS 部分及 PRD-F018～F022 不阻塞当前 MVP。PRD-F015 的配置管理已实现，不代表 PRD-F016 的语音调用已实现。
+
+同一功能的“代码已实现”“已合入 main”“已发布”“真实录音验收通过”分别记录；本次审阅不升级任何实现或验收状态。
 
 ## 4. 核心功能与验收条件
 
@@ -313,7 +319,7 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 | ID | 指标与验收含义 | 代码状态 / 明确差距 |
 | --- | --- | --- |
 | PRD-M001 | Feedback Latency：用户最终结束 → 首次可感知反馈；记录 feedback_type（嗯/好的/thinking cue/提示音等） | 🟡 partial：当前返回 insufficient_evidence；反馈起点及逐 turn 关联未接通，反馈自身时长不是反馈时延 |
-| PRD-M002 | First Speech / E2E First Audio Latency：同一关联轮次用户最终结束 → 首个设备语音 onset | 🟡 partial：旧引擎/基础公式已有，混音角色及可靠声学边界自动供给未闭环 |
+| PRD-M002 | First Speech Latency：同一关联轮次用户最终结束 → 首个设备语音 onset；旧 E2E First Audio 名称的兼容语义见下文 | 🟡 partial：旧引擎/基础公式已有，混音角色及可靠声学边界自动供给未闭环 |
 | PRD-M003 | Meaningful Response Latency：用户结束 → 首个承载答案语义的信息点；ASR+LLM 选择既有锚点并记录证据/confidence | 🟡 partial：已有契约/占位，真实语义锚点未实现；不得将“嗯/让我看看”自动等同答案 |
 | PRD-M004 | Turn Gap：用户说完 → 设备有效开始下一轮；明确有效起点和负 gap/overlap 处理 | 🟡 partial：当前 metrics.py 使用 device end → next tester start，与需求方向不符，必须修复 |
 | PRD-M005 | Barge-in Stop Latency：测试者打断开始 → AI 旧 response 停止；必须关联旧 response_id | 🟡 partial：旧引擎有基础，自动打断角色/旧回答关联仍待验证 |
@@ -324,6 +330,15 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 | PRD-M010 | Timeout、CER/WER、统计：健康窗口+显式 deadline；正确参考文本来源；eligible 样本与分母、P50/P90/P95/P99 | 🟡 partial：旧 engine 的 CER/timeout/分位数已有；WER/导入自动适用性与完整对照待实现 |
 
 依据集中为 [formulas.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/formulas.py)、[engine.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/engine.py)、[metrics.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/metrics.py)、[test_metrics_expanded.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_metrics_expanded.py)。主要任务为 #8、#25，语义依赖 #10，事件依赖 #24。这些问题在本次仅文档 PR 中登记，不偷改业务代码。
+
+### 指标边界与判定策略
+
+- **Feedback / First Speech / Meaningful Response 分别记录。** 提示音可以是反馈但不是语音；“嗯”可以同时是反馈和首次语音，但不自动成为有效答案。PRD-M002 保留旧 E2E First Audio 指标按设备语音 onset 计算的兼容语义，不静默改成“任意声音”。输出注明 metric ID、公式版本和所选事件，历史值不能混用新口径。
+- **Turn Gap 明示有效起点。** PRD-M004 的方向固定为 tester end → device start；策略须说明选择语音起点还是经语义确认的有效回答起点，并引用相应事件。起点未明确时不计算；不同策略不直接聚合比较。可观察的负间隔保留为负值并关联 overlap，不能截成零掩盖抢话；旧 device end → tester start 结果不能沿用本指标名称。
+- **打断成功有观察范围。** PRD-M005 的停止时长与 PRD-M007 的成功判定分开。成功需分别给出旧回答停止、新输入被接收、新 Intent 被回答、观察范围内未恢复旧回答的证据；停止期限和后续观察窗口属于版本化策略。外部录音只能证明可观察行为，不能声称已读取设备内部接收状态。窗口不完整或任一必要证据缺失时不得通过；EOF 不能证明“以后不再回到旧回答”。
+- **区间与统计不可伪精确。** 每个时延保留两个边界的来源、不确定性和关联身份；阈值落在不确定区间内时需复核。Overlap 对重复区间先去重，明确分母是有效观察时长还是其他声明范围；unknown 声源不能直接计为 tester/device 重叠。汇总同时报告总样本、可计算样本、弃权/失败及排除原因，避免只展示成功样本。
+
+上述约束是验收口径，尚未全部实现。具体停止期限、观察窗口、覆盖率和允许误差未由项目所有者确定，不在此虚构默认数值；评测设备体验的阈值与验证 AIVoiceBench 测量准确性的容差分别保存。
 
 ## 6. 非功能需求
 
@@ -351,6 +366,21 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 - [ ] Windows 浏览器中的上传→分析→历史→回放→报告→修订全流程可用；Docker 重启后历史/配置/证据仍可访问。
 - [ ] 明确记录实际设备、录音、服务、人工标注、失败案例、版本与验收结论；不得用合成 fixture 或“有报告文件”代替。
 
+### 验收执行与证据记录
+
+先保存机器自动分析，再做人工标注/修订；分别评估自动结果与人工修订后的结果，不能用修订后准确性替代自动能力。三格式导入可用同一授权录音的派生编码验证，但应记录转换关系，不能计为三次独立真实对话。
+
+| 验收范围 | 必须记录的证据与判定边界 |
+| --- | --- |
+| 场景覆盖 | 记录自然问答、反馈/填充语、打断换 Intent、重叠、句中停顿及未响应场景是否实际出现。录音没有出现的场景标为未覆盖；需要补充授权真实片段或继续待验收，不能从“未发现”推导检测通过 |
+| 自动识别与时间 | 对照人工复核的文字、角色、事件边界和 Turn/Response 关系，记录识别错误、边界偏差、漏检/误检及人工标注自身不确定性；可计算覆盖率与准确性分开呈现 |
+| 语义与 Findings | 对照音频/转写检查 Intent、Context 与有效回答证据，记录候选误报、漏报、弃权及人工确认/拒绝；未被对话触发的语义维度不虚构评分 |
+| 弃权与失败 | 证据不足时弃权是正确行为，但全部 unknown、全部 insufficient_evidence、空 Findings 或仅报告生成成功都不能证明 MVP 完成。故障隔离测试通过也不能代替正常录音自动分析验收 |
+| 重复分析与恢复 | 使用同一原件记录不同 AnalysisRevision，核对确定性结果与配置/模型变化；重启后检查历史、配置、原件和派生证据可访问，机器原始结果没有被修订覆盖 |
+| 验收结论 | 保存需求 ID、Run/修订、音频区间、人工参考、处理器/模型/策略版本、实测值和通过/不通过/待验收理由；缺必要证据不得勾选通过 |
+
+**定量验收策略待确定：** 在正式质量验收前，由项目所有者确认并版本化场景覆盖、最低可计算覆盖率、角色/事件识别质量、边界允许误差及语义复核准则。当前不填写未经确认的数值；缺少对应策略时可以完成实现和采集实测数据，但不能宣称整体质量验收通过。不能看过结果后静默降低门槛。这里验证的是所选真实录音及已覆盖场景，不据单次录音宣称所有设备/供应商普遍适用。
+
 MVP 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不是 Windows 打包、硬件播放录制或 TTS 样式。P1 标记代表排程层次，不代表这些验收项可以从 MVP 删除。
 
 ## 8. 优先级与变更流程
@@ -365,6 +395,7 @@ MVP 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
+| 1.0.1 | 2026-09-10 | 审阅第 3/5/7 节：明确 MVP 与排程、指标边界、场景覆盖及弃权验收；实现状态不变，定量策略待所有者确认 | 项目所有者“按你的建议执行”审阅要求；未代替所有者批准数值门槛 |
 | 1.0.0 | 2026-09-10 | 从分散文档归集；导入优先、Docker/Web、模型管理、代码/发布/验收三者区分；未添加新的准确率/SLA 要求 | 项目所有者导入优先指令、2026-09-09 Docker/Web 与模型管理要求、2026-09-10 中央 PRD 要求 |
 
 归集映射与旧快照见 [产品文档索引](product/README.md)。用户审阅优先看第 3 节范围、第 5 节指标、第 7 节验收，再按编号修改第 4 节细节。
