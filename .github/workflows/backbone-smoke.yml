@@ -1,0 +1,40 @@
+name: Recording backbone container
+on:
+  pull_request:
+    paths:
+      - 'aivoicebench/**'
+      - 'schemas/**'
+      - 'tests/test_recording_backbone.py'
+      - 'Dockerfile'
+      - 'scripts/docker_smoke.py'
+      - '.github/workflows/backbone-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tested source
+        run: docker build -t backbone:test .
+      - name: Start isolated container
+        run: |
+          docker volume create backbone-test-data
+          docker run -d --name backbone-test -v backbone-test-data:/data/output backbone:test
+          docker cp scripts/docker_smoke.py backbone-test:/app/docker_smoke.py
+          docker cp tests backbone-test:/app/tests
+      - name: Codec and synthetic ASR evidence tests
+        run: |
+          docker exec backbone-test python /app/docker_smoke.py
+          docker exec backbone-test python -m unittest discover -s tests -p test_recording_backbone.py -v
+          docker exec backbone-test python /app/docker_smoke.py --save-history
+      - name: Restart and verify persisted runs
+        run: |
+          docker restart backbone-test
+          docker exec backbone-test python /app/docker_smoke.py --verify-history
+      - name: Cleanup isolated resources
+        if: always()
+        run: |
+          docker rm -f backbone-test || true
+          docker volume rm backbone-test-data || true

@@ -344,7 +344,7 @@ def transcript_errors(transcript):
             if word['start_ms'] < word_end - 0.001 or word['end_ms'] < word['start_ms'] or word['end_ms'] > segment['end_ms'] + 0.001:
                 errors.append(f'/segments/{index}/words: timing out of segment bounds or order')
             word_end = word['end_ms']
-        previous_end = segment['end_ms']
+        previous_end = segment['start_ms'] if transcript['schema_version'] == '1.1.0' else segment['end_ms']
     return errors
 
 

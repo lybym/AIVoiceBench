@@ -23,6 +23,7 @@ def main(argv=None):
     importer.add_argument('--ffprobe', type=Path)
     importer.add_argument('--synthetic', action='store_true', help='Explicitly label generated/unit test audio')
     importer.add_argument('--asr-provider', choices=['vosk'], help='Optional offline fallback; no cloud upload by default')
+    importer.add_argument('--model-settings', type=Path, help='Explicit configured cloud ASR route; may upload to the selected service')
     importer.add_argument('--model-dir', type=Path)
     importer.add_argument('--model-version')
     analyze = subparsers.add_parser('analyze', help='Evaluate canonical events with deterministic metrics')
@@ -132,6 +133,12 @@ def main(argv=None):
         from .audio_processing import FFmpegAudioProcessor
         from .import_pipeline import import_recording
         factory = None
+        snapshot = providers = None
+        if args.model_settings and args.asr_provider:
+            parser.error('Choose --model-settings or --asr-provider, not both')
+        if args.model_settings:
+            from .model_settings import ModelSettings
+            snapshot, providers = ModelSettings(args.model_settings).capture()
         if args.asr_provider == 'vosk':
             def factory():
                 from .asr import VoskProvider
@@ -142,11 +149,11 @@ def main(argv=None):
             directory, manifest = import_recording(args.source, args.output,
                 profile=load_document(args.profile) if args.profile else None,
                 audio_processor=FFmpegAudioProcessor(args.ffmpeg, args.ffprobe),
-                asr_provider_factory=factory, synthetic=args.synthetic)
+                asr_provider_factory=factory, synthetic=args.synthetic, model_snapshot=snapshot, providers=providers)
             print(f'{manifest["status"].upper()} {directory} ({manifest["execution_kind"]}; retained import Run)')
             for name, stage in manifest['stages'].items():
                 print(f'  {name}: {stage["status"]}')
-            print(f'Report: {directory / "report.md"}')
+            print(f'Report: {directory / "analysis" / manifest["analysis_id"] / "report.md"}')
             return 1 if any(stage['status'] == 'failed' for stage in manifest['stages'].values()) else 2
         except (OSError, ValueError, yaml.YAMLError) as error:
             print(f'IMPORT ERROR: {error}', file=sys.stderr)

@@ -9,6 +9,7 @@ import math
 import os
 import re
 import sqlite3
+from dataclasses import dataclass, field
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -17,6 +18,18 @@ CAPABILITIES = {'tts': '语音生成', 'asr': '语音识别', 'diarization': '�
 PROTOCOLS = {'openai_chat': {'judge'}, 'volcengine_tts': {'tts'},
              'volcengine_asr': {'asr', 'diarization'}, 'custom_speech': {'tts', 'asr', 'diarization'}}
 PARAMETERS = {'temperature', 'max_tokens', 'timeout_seconds', 'voice', 'speed', 'sample_rate', 'format', 'resource_id'}
+
+@dataclass(frozen=True)
+class RunProviders:
+    asr: object = field(default=None, repr=False)  # factory(evidence_root), initialized inside stage
+    diarization: object = field(default=None, repr=False)
+    judge: object = field(default=None, repr=False)
+    tts: object = field(default=None, repr=False)
+
+
+def adapter_available(profile, role):
+    return ((role == 'judge' and profile['protocol'] == 'openai_chat') or
+            (role == 'asr' and profile['protocol'] == 'volcengine_asr'))
 
 class SettingsError(ValueError):
     pass
@@ -106,7 +119,8 @@ class ModelSettings:
         doc,keys=self.resolve()
         for p in doc['profiles']:
             p['credential_configured']=bool(keys[p['id']])
-            p['adapter_status']='available' if p['protocol']=='openai_chat' else 'not_integrated'
+            p['adapter_status']='available' if any(adapter_available(p,c) for c in p['capabilities']) else 'not_integrated'
+            p['adapter_capabilities']=[c for c in p['capabilities'] if adapter_available(p,c)]
         doc['capabilities']=CAPABILITIES
         doc['applies']='next_run'
         return doc
@@ -157,11 +171,24 @@ class ModelSettings:
                 timeout_seconds=params.get('timeout_seconds',30))
         # Presence and adapter readiness are evidence, not a network connectivity claim.
         doc['readiness']={role:('not_configured' if not by_id.get(route) else
-            'not_integrated' if by_id[route]['protocol']!='openai_chat' else
+            'not_integrated' if not adapter_available(by_id[route], role) else
             'configured' if keys[route] else 'credential_missing') for role,route in doc['routes'].items()}
+        asr_factory=None
+        asr=by_id.get(doc['routes']['asr'])
+        if asr and asr['enabled'] and adapter_available(asr, 'asr'):
+            from .volcengine_asr import VolcengineASRProvider
+            publication_config=tuple(os.environ.get(k,'') for k in ('AIVOICEBENCH_AUDIO_PUT_URL','AIVOICEBENCH_AUDIO_GET_URL','AIVOICEBENCH_AUDIO_HOST'))
+            def asr_factory(root):
+                from .cloud_transport import SignedURLPublication
+                return VolcengineASRProvider(root, keys[asr['id']], model=asr['model'],
+                    endpoint=asr['base_url'], resource_id=asr['parameters'].get('resource_id','volc.bigasr.auc_turbo'),
+                    timeout=asr['parameters'].get('timeout_seconds',300),
+                    publication=lambda: SignedURLPublication(*publication_config))
+            doc['asr_publication_configured']=all(bool(os.environ.get(k)) for k in
+                ('AIVOICEBENCH_AUDIO_PUT_URL','AIVOICEBENCH_AUDIO_GET_URL','AIVOICEBENCH_AUDIO_HOST'))
         if doc['revision']==0:
             doc['legacy_environment']={'provider':os.environ.get('AIVOICEBENCH_LLM_PROVIDER','none'),
                 'model':os.environ.get('AIVOICEBENCH_LLM_MODEL',''),
                 'note':'Existing environment configuration applies until settings are first saved'}
             provider=None
-        return doc,provider
+        return doc,RunProviders(asr=asr_factory, judge=provider)

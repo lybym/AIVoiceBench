@@ -157,3 +157,14 @@
 - Container smoke passed version 0.1.3, settings write/redaction, WAV/MP3/M4A synthetic imports, history/detail status and audio responses. This remains synthetic software validation, not real device accuracy acceptance.
 - Release v0.1.3 pins that exact source commit. Asset aivoicebench-v0.1.3.tar.gz: 320066940 bytes; SHA256 8107c67b7c1261e09640edbfe909a6f11cb552c42e4ad692be098fabd2c95c78.
 - Updated published Release notes with the refreshed UI, model management, deployment instructions and explicit pending speech-adapter scope. PR #43 and #45 remain reviewable, without automatic merge.
+
+
+## 2026-09-10 — M1 recording backbone (#22 / #30)
+
+- User limited this milestone to PRD-F004/F005/F016: unified ImportRun, actual configured cloud ASR, native invocation evidence, timestamped Transcript and minimal Web visibility. No diarization/Turn/Event/Metric expansion, HIL, Compare or new dashboard work.
+- Audited main 3f75d5a (PR #43/#45/#47 merged). Original checkout still contains rebase metadata, so created independent issue-22-recording-backbone worktree. Selectively ported #31 invocation primitives/tests and #32 signed-upload/hash-readback design; did not merge old branches or their obsolete orchestration.
+- Verified the requested current Volcano product updates and navigated to current recording flash HTTP docs (2608628, updated 2026-09-09). Selected documented synchronous URL-based ASR with explicit private publication configuration; no historical base64 assumption. No actual user audio upload or credential-based API request occurred.
+- Web now invokes one ImportRun ledger. ASR native output, audit and Transcript are cataloged; ModelSettings captures capability providers once, with diarization/TTS still unavailable. Failed ASR preserves the Run; explicit retries preserve previous AnalysisRevision and invocation attempts. Web displays transcript and reuses playback; legacy web-analysis is read-only compatibility.
+- Transcript 1.1 adds honest cloud unknown model hash/word confidence and overlap support; legacy 1.0 validation remains strict. Existing deterministic/semantic modules are retained and not auto-run without their evidence. Reports and model snapshots are revision-local.
+- Validation: full suite 302 tests passed at the initial M1 integration check; targeted recovery test added afterward (final result recorded below). JavaScript syntax, Python compilation and diff whitespace checks passed. Tests are synthetic transports/media, not real device/cloud acceptance.
+- Local Docker engine is available but clean build failed downloading the Python base layer from Docker Hub (network EOF). Added an isolated GitHub container workflow for codecs, synthetic ASR and actual Docker restart/manifest hash checks; result pending PR execution. Target source version 0.2.0-alpha.1; not a release declaration. No automatic merge.

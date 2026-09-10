@@ -24,9 +24,9 @@ class ModelSettingsTests(unittest.TestCase):
         public=self.store.update(data)
         self.assertNotIn('secret-canary',json.dumps(public));self.assertTrue(public['profiles'][0]['credential_configured'])
         snapshot,provider=ModelSettings(self.root).capture()
-        self.assertEqual(provider.api_key,'secret-canary');self.assertEqual(provider.model,'test-model')
-        self.assertEqual(provider.timeout_seconds,15);self.assertNotIn('secret-canary',json.dumps(snapshot))
-        self.store.update(payload(rev=1));self.assertEqual(self.store.capture()[1].api_key,'secret-canary')
+        self.assertEqual(provider.judge.api_key,'secret-canary');self.assertEqual(provider.judge.model,'test-model')
+        self.assertEqual(provider.judge.timeout_seconds,15);self.assertNotIn('secret-canary',json.dumps(snapshot))
+        self.store.update(payload(rev=1));self.assertEqual(self.store.capture()[1].judge.api_key,'secret-canary')
     def test_stale_revision_is_atomic(self):
         self.store.update(payload())
         with self.assertRaises(RevisionConflict):self.store.update(payload())
@@ -43,7 +43,7 @@ class ModelSettingsTests(unittest.TestCase):
         p=profile();p['credential_env']='MODEL_TEST_KEY'
         with patch.dict(os.environ,{'MODEL_TEST_KEY':'env-secret'}):
             self.store.update(payload(p));snapshot,provider=self.store.capture()
-            self.assertEqual(provider.api_key,'env-secret');self.assertNotIn('env-secret',json.dumps(snapshot))
+            self.assertEqual(provider.judge.api_key,'env-secret');self.assertNotIn('env-secret',json.dumps(snapshot))
     def test_deleted_profile_and_secret(self):
         d=payload();d['secrets']={'judge':'secret'};self.store.update(d)
         d={'expected_revision':1,'profiles':[],'routes':dict.fromkeys(['tts','asr','diarization','judge'])}
@@ -81,15 +81,15 @@ class ModelSettingsTests(unittest.TestCase):
             with patch('aivoicebench.pipeline.run_full_pipeline',return_value={}) as run:
                 response=client.post('/api/analyze',files={'file':('fixture.wav',data.getvalue())})
             self.assertEqual(response.status_code,200)
-            if not run.called:
-                self.skipTest('Normalization tools unavailable')
-            self.assertEqual(run.call_args.kwargs['provider'].model,'test-model')
+            self.assertFalse(run.called, 'Web must not create a second analysis pipeline')
             directory=self.root/response.json()['run_id']
-            snapshot=(directory/'model-config.json').read_text()
+            manifest=json.loads((directory/'manifest.json').read_text())
+            config_path=directory/next(a['path'] for a in manifest['artifacts'] if a['kind']=='model_configuration')
+            snapshot=config_path.read_text(encoding='utf-8')
             self.assertNotIn('run-secret-canary',snapshot)
             manifest=json.loads((directory/'manifest.json').read_text())
             artifact=next(a for a in manifest['artifacts'] if a['kind']=='model_configuration')
-            self.assertEqual(artifact['sha256'],digest(directory/'model-config.json'))
+            self.assertEqual(artifact['sha256'],digest(config_path))
             d=payload(rev=1);d['profiles'][0]['model']='new-model'
             client.post('/api/models',json=d)
-            self.assertEqual(snapshot,(directory/'model-config.json').read_text())
+            self.assertEqual(snapshot,config_path.read_text(encoding='utf-8'))

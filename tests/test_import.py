@@ -57,7 +57,7 @@ class ImportFailureAndContracts(unittest.TestCase):
         self.assertEqual(manifest['status'], 'failed')
         self.assertEqual(manifest['stages']['ingestion']['status'], 'failed')
         self.assertEqual(manifest['stages']['report']['status'], 'complete')
-        self.assertTrue((directory / 'report.md').exists())
+        self.assertTrue((directory / 'analysis' / manifest['analysis_id'] / 'report.md').exists())
         self.assertEqual(recording_run_errors(manifest, directory), [])
 
     def test_reject_profile_secrets_before_side_effects(self):
@@ -81,7 +81,7 @@ class ImportFailureAndContracts(unittest.TestCase):
         path.write_text('x')
         directory, manifest = import_recording(path, self.root / 'runs')
         self.assertEqual(manifest['status'], 'failed')
-        self.assertTrue((directory / 'report.json').exists())
+        self.assertTrue((directory / 'analysis' / manifest['analysis_id'] / 'report.json').exists())
 
     def test_outputs_are_immutable(self):
         run = ImportRun(self.root / 'runs', synthetic=True)
@@ -236,10 +236,10 @@ class ActualCodecImport(unittest.TestCase):
             value = load_document(directory / path['path'])
             self.assertEqual(schema_errors(value, 'analysis-output'), [])
             self.assertIsNone(value['data'])
-        report = load_document(directory / 'report.json')
+        report = load_document(directory / 'analysis' / manifest['analysis_id'] / 'report.json')
         self.assertEqual(report['device_performance'], 'insufficient_evidence')
         self.assertEqual(report['conclusions'], [])
-        self.assertNotIn('<script>', (directory / 'report.md').read_text(encoding='utf-8'))
+        self.assertNotIn('<script>', (directory / 'analysis' / manifest['analysis_id'] / 'report.md').read_text(encoding='utf-8'))
 
     def test_manifest_validator_detects_tamper_and_path_escape(self):
         directory, manifest = self._import()

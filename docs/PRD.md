@@ -1,6 +1,6 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.0.2
+prd_version: 1.0.3
 status: consolidated_for_owner_review
 updated: 2026-09-10
 implementation_baseline: v0.1.3@e3c2821a417a1aeea90a7c029290b6f814bf747b
@@ -383,6 +383,16 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 MVP 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不是 Windows 打包、硬件播放录制或 TTS 样式。P1 标记代表排程层次，不代表这些验收项可以从 MVP 删除。
 
+### M1 — Real Recording Backbone（本分支实现，真实验收待完成）
+
+本轮按所有者最新指令限定 PRD-F004/F005/F016：Web/CLI 导入统一通过 ImportRun 阶段账本；模型配置提供 ASR 路由；云服务原生响应、时间戳 Transcript、调用审计进入同一 Run；失败保留证据，显式重试创建新的分析修订。Web 仅补足转写查看与重试，停止创建第二套 web-analysis。旧录音结果继续可读，既有分析模块保留。
+
+当前分支实现依据：[Import Pipeline](../aivoicebench/import_pipeline.py)、[云 ASR](../aivoicebench/volcengine_asr.py)、[Invocation Audit](../aivoicebench/providers.py)、[M1 验证](../tests/test_recording_backbone.py)。状态限本分支，尚未合并/发布；F004/F005 仍为 partial，F016 云 ASR 部分在本分支为 partial（不再只是配置占位），diarization/TTS 未接入。上方 v0.1.3 表格仍描述其固定发布基线。
+
+M1 只验收三格式导入、原件/标准化保留、真实云调用与原生响应、带时间戳的文本、provider/model/latency/invocation 回溯、重启后 Run 可访问、Web 转写和 API 失败不丢 Run。真实录音/API 项待提供授权录音及有效凭据后执行，软件测试不能替代；不要求 M1 产生准确时延或打断结论。版本目标为 v0.2.0-alpha.1，不等于已发布。
+
+后续按 M2 Speaker Attribution → M3 Turn/Event/Metrics → M4 Structured LLM/Findings → M5 人工修订/重分析/Web 验收推进。现阶段暂缓波形、Dashboard、Compare、Golden TTS、Exploratory Agent、HIL 和指标扩张；不改变这些既有需求的长期范围。接入与验证方式见 [M1 技术说明](23-recording-backbone.md)。
+
 ## 8. 优先级与变更流程
 
 近期顺序：先按授权处理 #43/#45 集成基线 → 统一 PRD-F004 编排/审计与 PRD-F005/F006 音频识别 → PRD-F007/F008 规范事件与关联 → PRD-F009 和 PRD-M001～M010 → PRD-F010/F011 语义与发现 → PRD-F012/F013/F017 审核/修订/报告 → 第 7 节真实验收。相互独立的结构/基础工作可以并行，不能再次形成冗长串行 PR 链。
@@ -395,6 +405,7 @@ MVP 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
+| 1.0.3 | 2026-09-10 | 按用户 M1 指令收敛本轮实现与验收，区分分支代码和真实云验收 | 所有者提供的 Real Recording Backbone 工作要求 |
 | 1.0.2 | 2026-09-10 | 更新 main 基线至 3699587（PR #43/#45 已合并）；F014/F015 状态更新为 main + release；新增附录 A Issue→PRD 交叉引用 | 项目所有者要求检查未实现 Issue 并更新 PRD |
 | 1.0.1 | 2026-09-10 | 审阅第 3/5/7 节：明确 MVP 与排程、指标边界、场景覆盖及弃权验收 | 项目所有者审阅要求 |“按你的建议执行”审阅要求；未代替所有者批准数值门槛 |
 | 1.0.0 | 2026-09-10 | 从分散文档归集；导入优先、Docker/Web、模型管理、代码/发布/验收三者区分；未添加新的准确率/SLA 要求 | 项目所有者导入优先指令、2026-09-09 Docker/Web 与模型管理要求、2026-09-10 中央 PRD 要求 |

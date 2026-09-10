@@ -1,5 +1,7 @@
 # System Architecture — Recording Import and Automatic Analysis
 
+> M1 实现更新：本分支统一 ImportRun、ASR 路由、调用审计和转写；恢复/契约与当前验证限制见 [Recording Backbone](23-recording-backbone.md)。下文旧版本路径和可用状态以该技术更新为准。
+
 > Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
 
 The primary Docker/Web UI product is an evaluation harness for externally recorded tester + AI terminal conversations. Recording may be performed by a phone, recorder or computer; tester speech can be spontaneous, driven by frozen audio or by a future agent. The import pipeline does not require a sound card, a live device or a TestCase. Existing HIL and Case infrastructure remains available as a later input path.
