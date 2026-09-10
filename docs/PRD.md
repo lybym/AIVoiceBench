@@ -1,0 +1,370 @@
+---
+prd_id: AIVB-PRD
+prd_version: 1.0.0
+status: consolidated_for_owner_review
+updated: 2026-09-10
+implementation_baseline: v0.1.3@e3c2821a417a1aeea90a7c029290b6f814bf747b
+main_baseline: 19d3a07e41c6e2b787e18f6df80c3c05c2bff8b8
+---
+
+# AIVoiceBench 产品需求文档（PRD）
+
+**产品唯一需求入口。** 本文归集已明确的用户要求，不因当前代码缺少功能而降低验收要求。需求由项目所有者审阅修改；架构、Issue、工作日志不能自行改变本文的产品范围。直接的新用户指令优先，开发者应在同一 PR 中同步本文并说明差异，不能把自己的推断写成用户批准。
+
+## 1. 如何审阅与识别实现状态
+
+每项功能有稳定 `PRD-Fxxx` 编号，指标有 `PRD-Mxxx`，非功能要求有 `PRD-Nxxx`。编号不随排序变化，也不复用已废弃编号。每项记录需求、可核对的验收条件、代码状态、验证状态和实现依据。**需求内容是目标；状态是截至本次审计的事实。**
+
+| 标识 | 代码状态含义 |
+| --- | --- |
+| ✅ `implemented` 已实现 | 所标明的有限功能范围已有代码与针对性验证；不等于整个产品完成真实录音验收 |
+| 🟡 `partial` 部分实现 | 有基础或局部能力，但该需求尚有未闭环的必要条件 |
+| ⬜ `planned` 待实现 | 审计基线未发现可交付实现；设计、配置占位和关闭 Issue 均不算实现 |
+| ⏸ `deferred` 暂缓 | 非当前 MVP 优先项；保留现有代码，需后续排期 |
+
+验证标识独立记录：`software_verified` 软件/合成数据验证、`container_verified` 镜像验证、`browser_verified` 浏览器操作验证、`real_recording_pending` 真实录音待验收。未给定真实录音与有效服务凭据，**本 PRD 不含任何 real_recording_verified 项**。测试数量不能替代功能覆盖率，不发布“完成百分比”。
+
+### 代码位于哪里
+
+- `main` 审计提交为 `19d3a07`，含基础设施和证据保守修复。
+- `v0.1.3` 对应 `e3c2821`，含新版 Web、三格式 Web 导入及模型管理；[PR #43](https://github.com/lybym/AIVoiceBench/pull/43)、[PR #45](https://github.com/lybym/AIVoiceBench/pull/45) 仍未合并。**已发布 ≠ 已合入 main。**
+- 下文代码与测试依据统一指向 [v0.1.3 源码](https://github.com/lybym/AIVoiceBench/tree/v0.1.3)。列为“main + release”的模块在 main 已有基础，不表示两个版本行为完全相同。
+- v0.1.3 本地 278 项测试通过；[CI](https://github.com/lybym/AIVoiceBench/actions/runs/34363937460)、[Docker 发布及容器检查](https://github.com/lybym/AIVoiceBench/actions/runs/34363991525) 成功。合成静音三格式、界面检查均不能证明真实混音分析准确性。
+
+## 2. 产品定义与边界
+
+AIVoiceBench 是可复现、可追溯、可比较、可回归的 **AI Voice Terminal Evaluation Harness**，服务于 AI 玩具、陪伴终端、音箱等具备麦克风与扬声器的语音设备。
+
+主要使用者：测试工程师分析对话和缺陷；产品负责人审阅体验与验收证据；算法/软件工程师定位退化；采购或供应商评估人员在可比条件下对照版本与设备。供应商比较是后续扩展，不挤占导入分析 MVP。
+
+**Primary Workflow：**
+
+External Recording → Import → Normalize / Audio QA → Acoustic Segmentation + ASR / Diarization → Source Attribution / Segment Fusion → Turn / Response Association → Automatic Events / Event Timeline → Deterministic Metrics → Structured LLM Evaluation → Findings / Evidence → Human Verification → Report → Regression。
+
+输入通常是手机、录音笔或电脑录下的**单轨混音**，同时包含测试者与 AI 设备。对话可人工驱动、固定音频驱动或由未来 Agent 驱动。测试人员只须提供录音与可选设备资料，不能被要求先手工创建 Timeline、指定全部说话人或准备 TestCase。
+
+交付形态为 **Docker 后端 + 前端、Windows 浏览器访问 Web UI**；前后端可以同一容器提供。Windows EXE/安装包、集群、复杂云端 Control Plane、真实声卡播放录制、自动 SPL 校准、Remote Station 均不是当前 MVP 交付前提。既有 Audio Station/HIL、Runner、Vosk、契约、确定性引擎必须保留并按需扩展。
+
+### 能力分类（非全部已实现声明）
+
+保持原有五层评测视角：L1 声学/语音（wake word、VAD/endpoint、ASR、AEC、TTS、远场/噪声）；L2 实时交互（turn-taking、节奏、打断、TTS cancel、连续对话）；L3 AI 认知（intent、context、memory、instructions、knowledge/reasoning、工具使用）；L4 Persona/UX/Safety（自然度、情感、主动性、儿童安全、隐私、医疗与内容安全）；L5 可靠性（网络、重连、恢复、耐久、性能漂移）。能力 ID、指标 ID 和 Case ID 独立，通过引用关联。分类不意味着每一项都有检测器或属于当前 MVP 的已实现功能；实现范围逐项以下文为准，技术映射见 [测试方法](02-test-methodology.md)。
+
+### 不可违反的产品原则
+
+1. Evidence First：结论可回溯到 Run → Turn → Event → 音频区间 → Transcript/Evidence → 处理器/模型版本。缺失证据输出 insufficient_evidence、low_confidence 或 needs_review，不猜时间、得分或内部根因。
+2. 不把 ASR/diarization/LLM 估计边界写成精确声学真值；不按先后顺序强行分配 tester/device；混音不能伪装成独立声道。
+3. 文件、Hash、音频元数据、信号时间、公式、CER/WER、统计和验证由确定性代码执行；语义决策由有约束、有证据的模型节点执行。
+4. 原始文件、机器输出和人工修订分层保存；不得以“人工修正”为由覆盖机器原件。
+5. 云 ASR/TTS/音频服务可优先选用，Vosk 保留离线 fallback。实现云接口前核对官方文档，不把历史 endpoint/resource/model/voice/API version 固化为产品要求。
+6. 无设备日志不能宣称已测得内部 VAD/ASR/LLM/TTS 延迟；外部 ASR 不是设备内部 ASR；黑盒回声行为不是 ERLE。疑似层只能带置信度和 requires_log_verification。
+
+## 3. 需求总览
+
+| ID | 功能 | 优先级 | 代码状态 | 集成位置 / 当前主要缺口 |
+| --- | --- | --- | --- | --- |
+| PRD-F001 | WAV/MP3/M4A 导入与设备资料 | P0 | ✅ implemented | main CLI；release Web，待合并 |
+| PRD-F002 | 原始与派生 Evidence/provenance | P0 | ✅ implemented | main + release；此状态限定导入资产 |
+| PRD-F003 | 标准化与 Audio QA | P0 | ✅ implemented | main + release；准确率不由 QA 保证 |
+| PRD-F004 | 全链路可恢复编排 | P0 | 🟡 partial | 导入 ledger 已有，Web 后续阶段未完全统一 |
+| PRD-F005 | 时间戳 ASR 与云服务 | P0 | 🟡 partial | Vosk/Transcript 已有；Web 云 ASR 未接通 |
+| PRD-F006 | 混音说话人/声源归属 | P0 | 🟡 partial | unknown 与数据结构已有；实际 diarization 未接通 |
+| PRD-F007 | Turn / Response 关联 | P0 | 🟡 partial | 显式角色输入可处理；自动语义关联未完成 |
+| PRD-F008 | 自动事件与规范 Timeline | P0 | 🟡 partial | 候选事件已有；证据/命名/契约需统一 |
+| PRD-F009 | 确定性指标集成 | P0 | 🟡 partial | 旧引擎可复用；导入扩展公式与契约有差距 |
+| PRD-F010 | Structured LLM Harness / Judge | P1（MVP 必需） | 🟡 partial | Provider/验证已有；完整工具循环和语义证据未闭环 |
+| PRD-F011 | Findings 与问题解释 | P1（MVP 必需） | 🟡 partial | 候选生成已有；完整证据链/人工确认未闭环 |
+| PRD-F012 | 人工修正与有效视图 | P1（MVP 必需） | 🟡 partial | RevisionStore 已有；Web 修订/重算未接通 |
+| PRD-F013 | Markdown + JSON 报告 | P1（MVP 必需） | 🟡 partial | 文件可生成；完整结论级回溯待验收 |
+| PRD-F014 | Web 分析工作台 | P0/P1 | 🟡 partial | release 新界面；波形、完整 Timeline、人工审核尚缺 |
+| PRD-F015 | 统一模型配置管理 | P1 | ✅ implemented | release，待合并；限管理与 Judge 路由 |
+| PRD-F016 | 语音生成/分析适配器实际调用 | P0 ASR / P2 TTS | ⬜ planned | 配置占位不能算适配器；未集成旧云 ASR 分支 |
+| PRD-F017 | 同一录音分析修订与重现 | P1 | 🟡 partial | Hash/配置快照已有；同 Run 多版本重算未完成 |
+| PRD-F018 | 版本/设备/供应商 Compare | P2 | ⬜ planned | 无产品比较工作流 |
+| PRD-F019 | Frozen Golden TTS 资产 | P2 | ⬜ planned | 暂停草稿不算可交付能力 |
+| PRD-F020 | 多轮固定测试 Controller | P2 | 🟡 partial | Runner 基础已有，真实多轮控制未完成 |
+| PRD-F021 | Exploratory Voice Agent | P2 | ⬜ planned | 无完整探索→确认→回归链路 |
+| PRD-F022 | Audio Station / HIL / Remote | P3 | ⏸ deferred | Station 代码保留，非当前 MVP 门槛 |
+
+## 4. 核心功能与验收条件
+
+### PRD-F001 — 录音导入与设备资料
+
+**代码：✅ implemented；验证：software_verified、container_verified、browser_verified；位置：main CLI / release Web。**
+
+接收 WAV、MP3、M4A，不依赖 TestCase；支持用户提供的 5～20 分钟完整对话。Device、Hardware Version、Firmware、AI Model、Prompt Version、Supplier、Environment、Notes 可选，未知保持空值。当前实现额外设置 30 分钟 / 1 GiB 上限，这是版本限制，不把真实 20 分钟准确性验收改成短样本验收。
+
+- [x] CLI 与发布版 Web 三种格式可进入导入流程，错误格式明确拒绝。
+- [x] 设备资料与 Run 关联，损坏录音仍保留导入 Run。
+- [ ] 5～20 分钟真实录音的全链路质量与可用性验收（见第 7 节，不能由本项代码完成替代）。
+
+依据：[import_pipeline.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/import_pipeline.py)、[api.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/api.py)；[test_import.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_import.py)、[test_web_release.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_web_release.py)；Issues #21、#42。
+
+### PRD-F002 — 导入资产与溯源
+
+**代码：✅ implemented（限定导入资产）；验证：software_verified、container_verified；位置：main + release。**
+
+原始文件和标准化文件分开保存，记录 SHA256、大小、元数据、父资产 ID、转换工具/版本、调用参数及审计输出，不覆盖原件。可沿派生关系找到原始录音；失败诊断与成功结果分开。全部分析结论的统一 Evidence 仍属于 PRD-F004/F008/F011。
+
+- [x] 原始与派生文件存在、Hash 可复核、父引用可追踪。
+- [x] 禁止修改已登记的不可变资产；保留转换失败信息。
+
+依据：[import_artifacts.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/import_artifacts.py)、[test_import.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_import.py)；Issue #21。
+
+### PRD-F003 — 标准化与音频 QA
+
+**代码：✅ implemented；验证：software_verified、container_verified；位置：main + release。**
+
+内部 Canonical Audio 使用 WAV / PCM16 / 16 kHz / mono，保存原始通道与格式。测量 duration、sample count、peak、RMS、DC、clipping 等，不凭空添加合格阈值。转换可能存在 codec delay 等残余不确定性，不宣称原始压缩音频与标准化边界等同于声学真值。
+
+- [x] FFmpeg/FFprobe 版本和参数有记录；Docker 自带工具。
+- [x] 三种真实编码格式的合成音频转换通过；空音频/无语音可以明确弃权。
+
+依据：[audio_processing.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/audio_processing.py)、[Dockerfile](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/Dockerfile)、[docker_smoke.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/scripts/docker_smoke.py)；Issue #21。
+
+### PRD-F004 — 分阶段编排与失败隔离
+
+**代码：🟡 partial；验证：software_verified（局部）；位置：main + release。**
+
+每层 input → versioned processor → output，Run 应包含 OriginalArtifact、NormalizedAudio、AudioMetadata、Transcript、Timeline、Metrics、JudgeResults、Findings、Report。每个阶段可 pending、partial、insufficient_evidence、failed；单阶段失败不能破坏 Run。依赖缺失时明确跳过原因，报告仍尝试输出。
+
+- [x] 导入/标准化/可选 ASR 有阶段账本、输出封装与失败保留。
+- [ ] Web 后续 acoustic/fusion/metric/Judge/report 全部接入同一阶段账本、规范资产登记和修订身份。
+- [ ] Web/CLI 使用一致的完整分析编排，而非两个局部路径。
+
+依据：[import_pipeline.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/import_pipeline.py)、[pipeline.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/pipeline.py)；Issues #21、#27。
+
+### PRD-F005 — ASR
+
+**代码：🟡 partial；验证：software_verified；位置：main + release。**
+
+使用可替换 Provider 输出原始响应和带时间戳 Transcript，标记 ASR estimated timing；保留中文、混合语言及识别缺口。Vosk 为可选离线方案，优先允许成熟云服务，不要求本地模型成为最终默认。
+
+- [x] ASRProvider、Vosk、Transcript 与原生输出验证已有。
+- [ ] Web 真实录音自动调用中文云 ASR，并把文本/时间证据接入后续语义和事件分析。
+- [ ] 云调用资源 ID、版本、原生输出与统一 invocation 审计完成集成。旧 PR #31/#32 关闭不等于已合入。
+
+依据：[asr.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/asr.py)、[test_asr.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_asr.py)；Issues #7、#22、#30。
+
+### PRD-F006 — Speaker / Source Attribution
+
+**代码：🟡 partial；验证：software_verified（弃权与结构）；位置：main + release。**
+
+处理单轨混音的 speech segmentation → speaker clusters → tester/device/unknown。Assignment 含 confidence、source、provider、model、evidence；融合音色参考、diarization、可选语义判断和人工修正，保留冲突。不能只相信一个模型或按轮流出现强制角色。
+
+- [x] 默认未知角色不会生成伪确定的角色时延。
+- [ ] 可用 diarization/source Provider 与真实混音角色识别。
+- [ ] 人工角色修订作为新 Evidence/Annotation 参与有效结果。
+
+依据：[fusion.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/fusion.py)、[test_evidence_guards.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_evidence_guards.py)；Issues #22、#24、#26。
+
+### PRD-F007 — Turn / Response 关联
+
+**代码：🟡 partial；验证：software_verified（显式归属 fixture）；位置：main + release。**
+
+把 Speech Segment → Speaker/Source → Turn → Response → Event 关联。打断后能区分旧回答终止、新输入结束、新 Intent 回答，以及是否又回到旧回答。语义关系不确定时保留候选/待复核，不靠纯时间顺序确认 Intent。
+
+- [x] 显式标注角色的输入可构建基础 turns/responses。
+- [ ] 自动角色/语义关联、跨轮纠正和反例覆盖完成。
+
+依据：[fusion.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/fusion.py)、[test_fusion.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_fusion.py)；Issue #24。
+
+### PRD-F008 — Automatic Event Detection / Timeline
+
+**代码：🟡 partial；验证：software_verified；位置：main + release。**
+
+识别 tester_speech_start/end、device_speech_start/end、silence、overlap、interruption_start/end、response_start/end、timeout、possible_false_endpoint，并映射到版本化规范事件契约。产品事件概念与当前序列化别名可以不同，但映射必须明确，不能静默改义。
+
+边界必须包含 source、confidence、method、evidence、uncertainty，区分 acoustic、ASR estimated、diarization、LLM semantic selection、manual corrected。声学分段不能只依赖 ASR timestamp。Timeout 需要完整观察窗口和策略；录音 EOF 不自动是 timeout；possible_false_endpoint 不是已确认缺陷。
+
+- [x] 能量 VAD 声学片段、时序候选、未知角色弃权。
+- [ ] 自动 Timeline 的 Run/Turn/Response/Evidence、音频区间和规范 schema 全部验证通过。
+- [ ] 打断结束、timeout 与 false endpoint 语义及事件命名统一，不把候选直接判真。
+
+依据：[acoustic.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/acoustic.py)、[fusion.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/fusion.py)、[validation.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/validation.py)；Issues #2、#23、#24。
+
+### PRD-F009 — 确定性指标
+
+**代码：🟡 partial；验证：software_verified；位置：main + release。**
+
+复用 TestCase、EventTimeline、MetricResult、公式、验证和旧 deterministic engine。指标需声明事件选择、适用范围、单位、样本/分母、不确定性、缺值和版本化阈值；没有阈值不得自动判通过。具体用户含义见第 5 节，技术公式见 [指标定义](03-metric-definition.md)。
+
+- [x] 旧引擎的证据验证、基本时延/overlap/CER/统计基础存在。
+- [ ] 导入 metrics.py 统一规范 MetricResult；事件选择及扩展公式修复完成。
+- [ ] 真实录音的指标边界与人工标注对照验证。
+
+依据：[engine.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/engine.py)、[formulas.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/formulas.py)、[metrics.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/metrics.py)、[test_engine.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_engine.py)；Issues #3、#8、#25。
+
+### PRD-F010 — Structured LLM Harness / Judge
+
+**代码：🟡 partial；验证：software_verified；位置：main + release。**
+
+Orchestrator → Context → Model → Structured Decision → 允许的 Tool/Deterministic Function → Observation → Model → Final Result。关键调用使用 schema-constrained 输出与引用校验，保留原生响应和验证结果；不能用自由文本猜 JSON，不能发明时间戳、音频 Evidence 或内部原因。
+
+语义维度至少覆盖 Intent、Turn 关联、Meaningful Response、Context、Memory、Instruction Following、Reasoning/Knowledge、Hallucination、Persona、Emotion、Proactivity、Safety、对话质量与结论解释。JudgeResult 包含 decision、score、confidence、reason、evidence_refs、turn_refs、model、prompt_version；Decision 包含 selected_action、confidence、rationale、required_tools、expected_evidence。疑似根因保留 attribution_confidence 与 requires_log_verification。
+
+- [x] 可配置兼容服务、结构字段校验、失败/无证据弃权，不默认 Mock 成功。
+- [ ] 有效 Transcript/Turn/时间锚点进入 Context；模型只选择已有证据。
+- [ ] 完整 schema-constrained 调用、受限工具循环、统一调用审计与上述维度的真实覆盖。
+
+依据：[llm.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/llm.py)、[llm_provider.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/llm_provider.py)、[test_llm.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_llm.py)；Issues #10、#30。
+
+### PRD-F011 — Findings
+
+**代码：🟡 partial；验证：software_verified；位置：main + release。**
+
+Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Suspected Layer 与 Human Review。确定性异常与 LLM 候选都须通过证据验证，不从缺少发现推导“设备合格”。严重安全/主观问题需要人工复核。
+
+- [x] Finding/Evidence 基础契约、候选生成和基本呈现存在。
+- [ ] 每条结论的完整可解析引用与点击证据音频区间、确认/拒绝工作流。
+
+依据：[findings.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/findings.py)、[test_findings.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_findings.py)；Issues #4、#11。
+
+### PRD-F012 — 人工修订
+
+**代码：🟡 partial；验证：software_verified；位置：main + release。**
+
+支持 ASR 文本、speaker、事件边界、turn association、finding 确认/拒绝；记录 reviewer、reason、base revision、原值、新值、证据目标。机器原件保留，生成有效视图与新分析修订，形成 Machine → Human Review → Confirmed Evidence → Regression Case。
+
+- [x] RevisionStore 与复制后应用修订的基础实现。
+- [ ] 严格修订 schema/引用校验、并发/基线检查、Web 编辑、下游重算和确认闭环。
+
+依据：[revision.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/revision.py)、[test_revision_pipeline.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_revision_pipeline.py)；Issue #26。
+
+### PRD-F013 — 报告
+
+**代码：🟡 partial；验证：software_verified、browser_verified；位置：main + release。**
+
+生成 Markdown + JSON，呈现状态、缺口、指标、语义结果、Findings 和 Evidence。关键结论可定位音频区间及处理版本。只有明确版本化评分/门禁策略存在时才显示 Release Gate 或综合分，必须显示样本与分母。
+
+- [x] 导入状态报告、分析报告、Web Markdown 下载；部分结果不是成功验收。
+- [ ] 完整结论级证据闭环、有效修订报告、兼容规范输出与真实验收。
+
+依据：[report.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/report.py)、[import_report.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/import_report.py)、[test_findings_report.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_findings_report.py)；Issues #11、#27。
+
+### PRD-F014 — Web 分析工作台
+
+**代码：🟡 partial；验证：browser_verified、container_verified（局部）；位置：release，部分未入 main。**
+
+简洁界面，以 Home/Runs、Import、Analysis、Metrics、Findings、模型管理为当前导航；Compare 后续增加。Analysis 应联动 Audio Waveform、Speaker Segments、Transcript、Turn Timeline、Events、Metrics、LLM Findings。不能要求用户读开发实现信息才能正常操作。
+
+- [x] 浅色工作台、历史、导入表单、报告状态、音频控件、片段跳转、指标/发现切换。
+- [ ] 波形、完整转写/轮次/事件联动、Finding 区间跳转、人工审核入口及真实长录音体验。
+
+依据：[static/](https://github.com/lybym/AIVoiceBench/tree/v0.1.3/aivoicebench/static)、[api.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/api.py)；Issues #27、#42。
+
+### PRD-F015 — 模型配置管理
+
+**代码：✅ implemented（配置管理与既有 Judge 路由）；验证：software_verified、container_verified、browser_verified；位置：release，PR #45 待合并。**
+
+参考 DeepSeek Harness 的 provider profile、credential reference、用途绑定与配置修订方式，实现本项目独立配置层。支持 provider/model/endpoint、语音及推理参数、启停、tts/asr/diarization/judge 默认模型、只写入密钥或环境变量引用。保存配置不得等同于连通验证，不自动发起付费探测。
+
+- [x] 新增/编辑/移除、用途约束、乐观配置版本、持久化、密钥不回显；结果分析使用所选兼容服务。
+- [x] 配置于下一 Run 生效；每个 Web Run 保存脱敏快照和 Hash。
+- [x] 未接入 speech adapter 明示 not_integrated，不模拟运行；现有环境配置首次保存前保持兼容。
+
+依据：[model_settings.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/model_settings.py)、[models.js](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/static/models.js)、[test_model_settings.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_model_settings.py)；Issue #44。
+
+### PRD-F016 — 语音服务实际调用
+
+**代码：⬜ planned（发布基线的云 speech adapter）；验证：real_recording_pending。**
+
+提供统一 ASRProvider、TTSProvider、AudioProcessingProvider、DiarizationProvider 接入点；核对火山等当前官方 API 后实现真实调用。每次调用记录 provider、model、endpoint/API version、config、prompt_version（适用时）、timestamp、输入/输出 refs、latency、status，不记录 Secret。配置管理不代表调用能力已交付。音频标准化和 Vosk 已有能力分别见 PRD-F003/F005，不在此重复标为未实现。
+
+- [ ] 云 ASR/diarization 原生输出、重试/失败状态、调用审计与 Web 分析集成。
+- [ ] TTS 真实调用与冻结资产出口（P2），效果与成本按服务实际支持能力选择。
+
+依据：[model_settings.py 的 not_integrated 声明](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/model_settings.py)；Issues #22、#30、#9；关闭未合并的 PR #31/#32 须先做集成审计再复用。
+
+### PRD-F017 — 重复分析与修订
+
+**代码：🟡 partial；验证：software_verified（Hash/模型快照）；位置：main + release。**
+
+同一录音可生成独立 AnalysisRevision，保留 Run、原始 Hash、输入引用、处理器/模型/配置版本、调用记录和人工修订 ID。确定性环节应可重现；云模型差异应可解释而非承诺位级一致。
+
+- [x] 文件 Hash、独立导入记录、模型配置快照等基础存在。
+- [ ] 同 Run 多次分析入口、输出不覆盖、修订对比和可解释差异报告。
+
+依据：[import_artifacts.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/import_artifacts.py)、[revision.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/revision.py)；Issues #26、#27。
+
+### PRD-F018 — Compare
+
+**代码：⬜ planned；优先级：P2。** 比较版本 A/B、设备 A/B、供应商 A/B；声明 case/audio/metric/model policy 的可比范围、样本、分母、环境与不兼容项。验收需可比群体选择、差异指标、证据回溯和不兼容拒绝，不能仅并排展示两个分数。依据：发布版 [api.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/api.py) 无 Compare 工作流；Issue #27 的后续范围。
+
+### PRD-F019 — Frozen Golden Voice
+
+**代码：⬜ planned；优先级：P2。** 成熟 TTS API 生成后冻结，保存 text/provider/model/voice/speed/pitch/volume/sample_rate/format/生成时间/hash/响应元数据。回归重用 Frozen Audio，不实时重合成。精确停顿采用 TTS(A) + sample-exact silence + TTS(B)，800 ms 等是 Case 示例，非所有测试的统一阈值。支持可追踪资产版本、缓存和 QA。依据：Issue #9 暂停草稿未纳入发布代码；既有 TestCase/音频资产契约可复用。
+
+### PRD-F020 — Multi-turn Test Controller
+
+**代码：🟡 partial；优先级：P2；验证：software_verified（Runner 基础）。** 保留固定/交互 Case 与 Run 准备能力；未来控制多轮输入、超时和响应触发，打断资产与提示资产分离。验收要求真实事件驱动、明确响应身份和可冻结复现，不能用预拼接时间近似实时打断。依据：[runner.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/runner.py)、[test_runner.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_runner.py)；Issue #5。
+
+### PRD-F021 — Exploratory Voice Agent
+
+**代码：⬜ planned；优先级：P2。** 模型规划探索对话，Harness 约束动作与观测；发现经人工确认、最小化后转换成固定回归 Case。不能将探索输出等同于 Golden ground truth。验收需明确探索预算/停止条件、轨迹、证据和回归转换；预算具体数值须配置，不在本文虚构默认 SLA。依据：路线图历史范围，发布基线无完整实现。
+
+### PRD-F022 — HIL / Station
+
+**代码：⏸ deferred；优先级：P3；保留已有局部实现。** 后续提供播放、录制、同步/校准、loopback、physical HIL 与 Remote Station；设备/声卡实测未准备不能阻塞录音导入 MVP。验收须明确真实硬件、同步不确定性与健康观察窗口，不以软件 fixture 冒充硬件测试。依据：[station.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/station.py)、[test_station.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_station.py)；Issue #6。
+
+## 5. 用户体感指标要求（PRD-F009 的子需求）
+
+下表定义产品含义；技术单位、公式版本、事件别名和验证边界由 [metric-definition](03-metric-definition.md) 维护，不得反向修改本表以迎合当前错误实现。
+
+| ID | 指标与验收含义 | 代码状态 / 明确差距 |
+| --- | --- | --- |
+| PRD-M001 | Feedback Latency：用户最终结束 → 首次可感知反馈；记录 feedback_type（嗯/好的/thinking cue/提示音等） | 🟡 partial：当前返回 insufficient_evidence；反馈起点及逐 turn 关联未接通，反馈自身时长不是反馈时延 |
+| PRD-M002 | First Speech / E2E First Audio Latency：同一关联轮次用户最终结束 → 首个设备语音 onset | 🟡 partial：旧引擎/基础公式已有，混音角色及可靠声学边界自动供给未闭环 |
+| PRD-M003 | Meaningful Response Latency：用户结束 → 首个承载答案语义的信息点；ASR+LLM 选择既有锚点并记录证据/confidence | 🟡 partial：已有契约/占位，真实语义锚点未实现；不得将“嗯/让我看看”自动等同答案 |
+| PRD-M004 | Turn Gap：用户说完 → 设备有效开始下一轮；明确有效起点和负 gap/overlap 处理 | 🟡 partial：当前 metrics.py 使用 device end → next tester start，与需求方向不符，必须修复 |
+| PRD-M005 | Barge-in Stop Latency：测试者打断开始 → AI 旧 response 停止；必须关联旧 response_id | 🟡 partial：旧引擎有基础，自动打断角色/旧回答关联仍待验证 |
+| PRD-M006 | Barge-in New Intent Latency：新的打断语句结束 → 开始回答新 Intent | ⬜ planned：尚无有效自动语义关联链路，不能用任意下一次设备发声代替 |
+| PRD-M007 | Barge-in Success：停止旧回答 + 接收新输入 + 回答新 Intent + 不再回到旧回答 | 🟡 partial：停止/新回答基础契约存在，完整组合语义未闭环；缺一项证据均不得自动通过 |
+| PRD-M008 | False Endpoint：用户句中停顿时设备错误抢答；结合意图继续证据，possible_false_endpoint 保持候选 | 🟡 partial：旧 planned-pause 公式可用；导入扩展把候选提升为 observed 的逻辑需修复 |
+| PRD-M009 | Overlap Duration / Ratio：区间并集交集及明确分母；后续可区分正常 backchannel/主动打断/意外重叠 | 🟡 partial：算术基础已有，混音双声源与多区间/分母一致性待闭环 |
+| PRD-M010 | Timeout、CER/WER、统计：健康窗口+显式 deadline；正确参考文本来源；eligible 样本与分母、P50/P90/P95/P99 | 🟡 partial：旧 engine 的 CER/timeout/分位数已有；WER/导入自动适用性与完整对照待实现 |
+
+依据集中为 [formulas.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/formulas.py)、[engine.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/engine.py)、[metrics.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/metrics.py)、[test_metrics_expanded.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_metrics_expanded.py)。主要任务为 #8、#25，语义依赖 #10，事件依赖 #24。这些问题在本次仅文档 PR 中登记，不偷改业务代码。
+
+## 6. 非功能需求
+
+| ID | 要求与验收 | 代码状态 / 验证 / 依据 |
+| --- | --- | --- |
+| PRD-N001 | Docker 后端+前端、Windows 浏览器；版本号与 Release 一致；有启动配置与持久卷；不要求 EXE | ✅ implemented（容器交付基础）；container_verified/browser_verified；[release.yml](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/.github/workflows/release.yml)、[Dockerfile](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/Dockerfile)。长期运行/恢复与真实全流程仍由第 7 节验收 |
+| PRD-N002 | 所有结论的证据与不确定性可验证；规范 schema 和 runtime refs/hash 同时验证 | 🟡 partial；旧 contracts/validation/engine 已有，导入自动输出尚未全部遵从；[validation.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/validation.py) |
+| PRD-N003 | 调用/配置/处理器版本可追踪，原件不覆盖，重复运行可解释 | 🟡 partial；import/模型快照已实现，统一 invocation/AnalysisRevision 尚缺；PRD-F004/F016/F017 |
+| PRD-N004 | Secret 不进 Git、API 响应、分析快照；私有录音/个人报告不提交；配置存储持久且限制访问 | ✅ implemented（现有单用户本地管理范围）；software_verified；[.gitignore](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/.gitignore)、[model_settings.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/model_settings.py)。本地密钥数据库为明文，不宣称加密或多租户授权；远程暴露须认证代理 |
+| PRD-N005 | 5～20 分钟录音可用、依赖错误可诊断、重启恢复不丢历史/配置/原件；资源限制明确 | 🟡 partial；上传上限和持久卷已有，长录音、恢复/中断全流程待验收；不捏造处理时长或准确率 SLA |
+| PRD-N006 | 重要模块有针对性测试；合成/真实分开；每逻辑单元 Issue/branch/PR/work log；不得自动 merge | ✅ implemented（治理与测试基础）；[tests](https://github.com/lybym/AIVoiceBench/tree/v0.1.3/tests)、[AGENTS.md](../AGENTS.md)、[work log](06-work-log.md)。本次 PR 新增 AGENTS/PRD 规则待合并；每次变更仍须执行，不因历史遵守而永久豁免 |
+
+## 7. 整体 MVP 验收门槛（当前未通过）
+
+使用项目所有者提供或明确授权的 **5～20 分钟真实测试者+设备混音录音**，保留本地证据，不提交录音/个人报告到 Git。以下全体通过后，才可将当前 MVP 标为完成：
+
+- [ ] 三种格式可导入，原件/标准化/Hash/元数据/转换 provenance 可复核。
+- [ ] 时间戳 ASR、tester/device/unknown 自动分段与角色证据可检查，不依赖手工造 Timeline。
+- [ ] 自动 Turn/Response/Event Timeline 能表达自然对话及打断场景。
+- [ ] 核心时延、抢话、重叠、打断按合格证据计算；缺证据正确弃权。
+- [ ] 结构化 LLM 对 Intent/Context 等执行有效语义判断，结论不越过可观察边界。
+- [ ] Findings、Markdown 与 JSON 的关键结论可点击/解析到对应音频区间和处理版本。
+- [ ] 人工文本/角色/边界/关联/发现修订可保存，不覆盖机器原件，能生成新有效分析。
+- [ ] 同一录音重复分析可按 Run/AnalysisRevision 追踪差异及模型/配置变化。
+- [ ] Windows 浏览器中的上传→分析→历史→回放→报告→修订全流程可用；Docker 重启后历史/配置/证据仍可访问。
+- [ ] 明确记录实际设备、录音、服务、人工标注、失败案例、版本与验收结论；不得用合成 fixture 或“有报告文件”代替。
+
+MVP 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不是 Windows 打包、硬件播放录制或 TTS 样式。P1 标记代表排程层次，不代表这些验收项可以从 MVP 删除。
+
+## 8. 优先级与变更流程
+
+近期顺序：先按授权处理 #43/#45 集成基线 → 统一 PRD-F004 编排/审计与 PRD-F005/F006 音频识别 → PRD-F007/F008 规范事件与关联 → PRD-F009 和 PRD-M001～M010 → PRD-F010/F011 语义与发现 → PRD-F012/F013/F017 审核/修订/报告 → 第 7 节真实验收。相互独立的结构/基础工作可以并行，不能再次形成冗长串行 PR 链。
+
+1. 修改产品行为先定位 Requirement ID。Issue 写 `PRD refs`、本次范围、验收与依赖；现有 Issue 编号沿用，不按状态机械新建重复任务。
+2. 产品范围、优先级、行为或验收变化在同一 PR 修改本文，并在下表记录原因和用户决定。明确新增用户要求后可执行，不因历史文档冲突再索取已给出的授权；未被授权的产品取舍不得静默猜测。
+3. 实现状态从 planned → partial → implemented 必须提供代码入口、针对性测试和所在 commit/PR/tag；真实验收状态须另有实际证据。仅添加测试、文档或关闭 Issue 不足以升级状态。
+4. 架构定义实现约束，schemas/技术指标定义契约，Issue 定义当前工作单元，work log 只记录事实。若它们与 PRD 冲突，指出并修正，不用旧日志覆盖当前需求。
+5. 文档、代码和需求同库版本化；发布记录准确 commit/tag。PRD 变更保留 Requirement ID，合并仅在用户明确授权时执行。
+
+| PRD 版本 | 日期 | 变更 | 来源 |
+| --- | --- | --- | --- |
+| 1.0.0 | 2026-09-10 | 从分散文档归集；导入优先、Docker/Web、模型管理、代码/发布/验收三者区分；未添加新的准确率/SLA 要求 | 项目所有者导入优先指令、2026-09-09 Docker/Web 与模型管理要求、2026-09-10 中央 PRD 要求 |
+
+归集映射与旧快照见 [产品文档索引](product/README.md)。用户审阅优先看第 3 节范围、第 5 节指标、第 7 节验收，再按编号修改第 4 节细节。

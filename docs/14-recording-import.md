@@ -1,5 +1,7 @@
 # Recording Import — first verified implementation stage
 
+> Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
+
 Highest priority is now External Recording → Automatic Analysis. The complete migration/context/architecture changes are in sibling [PR #28](https://github.com/lybym/AIVoiceBench/pull/28), Issue #20. They are not merged; this independent #21 branch shares the same fixed `167e5cc` baseline. Historical documents describing hardware-first sequencing are superseded by the import-first product decision. Audio Station and all existing contracts/tests remain intact.
 
 ## What works in this stage

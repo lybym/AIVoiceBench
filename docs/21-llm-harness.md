@@ -1,112 +1,19 @@
-# LLM Harness — Semantic Evaluation
+# LLM Harness — 实现说明
 
-Issue #10. Implements the LLM evaluation layer that handles semantic
-understanding, complementing the Deterministic Engine (#8/#25).
+产品语义能力、结构输出、证据边界和验收统一见 [PRD-F010](PRD.md)。本文描述 main 19d3a07 / v0.1.3 的代码事实。
 
-## Architecture (user directive section #6)
+## 当前调用路径
 
-```
-Orchestrator → Context → Model → Structured Decision → Result
-                              ↓
-                    Schema-constrained output
-```
+`LLMJudge` 调用 `LLMProvider.complete(system_prompt, user_prompt, dimension, context)`，返回结构结果与 `LLMInvocation`。默认 `UnavailableLLMProvider`，`MockLLMProvider` 仅为显式软件 fixture/CLI 测试；不能把 Mock 结果称为真实模型评估。
 
-The LLM handles: intent, meaningful response, feedback detection,
-conversation quality, finding candidates. It does NOT handle timing,
-file I/O, or arithmetic — those stay in the Deterministic Engine.
+`llm_provider.py` 已有兼容 Chat Completions 的 OpenAI/Volcengine Provider，失败、非法 JSON、无有效引用和模型编造时间会被拒绝。它不是完整的 schema-constrained tool loop：上下文/语义锚点、统一原生调用审计和更多产品维度仍需接通。
 
-## Provider abstraction
+v0.1.3 的模型管理可为下一 Web Run 选择 Judge profile，保留脱敏配置快照；main 未合入该功能。语音 Provider 适配器仍为后续集成，配置本身不证明连通。
 
-```python
-class LLMProvider(Protocol):
-    def complete(self, system_prompt, user_prompt, dimension, context) -> (dict, LLMInvocation)
-```
+## 时间与 Findings
 
-- **MockLLMProvider**: deterministic heuristics for testing (no API keys)
-- Future: OpenAIProvider, VolcengineLLMProvider (same interface)
+`pipeline._integrate_llm_metrics()` 当前保留反馈和有效回答时延为 insufficient_evidence。未来应由模型选择已有边界 ID，再由确定性公式计算；不能恢复旧文档中由模型直接返回毫秒并视为 observed 的做法。
 
-Every call records an immutable `LLMInvocation` with:
-`invocation_id`, `provider`, `model`, `prompt_version`, `started_at`,
-`finished_at`, `latency_ms`, `status`, `input_chars`, `output_chars`.
+JudgeResult schema、已有样例和运行时验证仍需统一；schema 接受字段不代表该字段具有有效声学 Evidence。Finding 候选、疑似层和日志验证要求的产品规则见 PRD-F011。
 
-## Evaluation dimensions
-
-| Dimension | What it does | Needs |
-|---|---|---|
-| `intent` | Classify user intent (weather_query, time_query, etc.) | Tester transcript |
-| `meaningful_response` | Locate first information-bearing point | Device transcript + timestamps |
-| `feedback_detection` | Detect filler/ack/thinking cue | Device transcript + timestamps |
-| `conversation_quality` | Overall quality score (0-1) | Metrics + events |
-| `finding_candidate` | Generate finding if issues detected | Metrics + events |
-
-## Meaningful Response detection
-
-The key capability that resolves `insufficient_evidence` from #25:
-
-```
-Device: "嗯……好的，让我看看。南京今天天气晴朗。"
-                ↑ filler          ↑ meaningful content starts
-```
-
-The LLM classifies text segments as filler vs meaningful and returns
-`meaningful_response_start_ms`. This enables:
-
-```
-meaningful_response_latency_ms = meaningful_response_start_ms - tester_speech_end_ms
-```
-
-In the functional test: tester ended at 1000ms, meaningful content starts
-at 2346ms → **latency = 1346ms** [observed].
-
-## Finding candidate generation
-
-When metrics show issues, the judge generates finding candidates with:
-- `finding_severity`: info/low/medium/high/critical
-- `suspected_layer`: vad/endpoint/asr/aec/network/llm/prompt/...
-- `attribution_confidence`: how confident the LLM is about the cause
-- `requires_log_verification`: **always True** for suspected causes
-
-LLM cannot claim a confirmed root cause from black-box audio. Suspected
-causes are hypotheses that need device log verification.
-
-## Command
-
-```powershell
-& ./.venv/Scripts/python.exe -m aivoicebench judge \
-  artifacts/fusion/fused-segments.json \
-  --turns artifacts/fusion/turns.json \
-  --metrics artifacts/fusion/metrics.json \
-  --output artifacts/judge
-```
-
-## Schema
-
-`JudgeResult 1.0.0` (`schemas/judge-result.schema.json`):
-- Dimension-specific required fields (allOf constraints)
-- `suspected_layer` → must have `attribution_confidence` + `requires_log_verification`
-- `meaningful_response` → must have `meaningful_response_start_ms`
-- `feedback_detection` → must have `feedback_type`, `feedback_start_ms`, `feedback_end_ms`
-- `intent` → must have `intent_label`
-- `finding_candidate` → must have `finding_severity`, `suspected_layer`
-
-Validation: `python -m aivoicebench validate doc.json --kind judge-result`
-
-## Current limitations
-
-1. **MockLLMProvider only** — real LLM providers (OpenAI, Volcengine) need
-   API keys and implementation. The mock uses simple heuristics (filler
-   word matching, keyword-based intent classification).
-2. **No real LLM calls** — all results are deterministic mock outputs.
-3. **No prompt engineering** — system prompts are templates, not
-   optimized for a specific model.
-4. **No streaming** — all calls are synchronous.
-5. **No Finding confirmation** — candidates are generated but not linked
-   to the Finding 2.0.0 lifecycle (that needs #11 report integration).
-
-## Next steps
-
-- Implement real LLM provider (OpenAI/Volcengine) with schema-constrained output
-- Integrate `meaningful_response_start_ms` back into the metrics pipeline to
-  resolve the `insufficient_evidence` latency
-- Add Finding lifecycle integration (candidate → human review → confirmed)
-- Add context/memory/instruction_following dimensions
+代码：`aivoicebench/llm.py`、`llm_provider.py`、`pipeline.py`；测试：`test_llm.py`、`test_evidence_guards.py`、`test_revision_pipeline.py`；Issue #10/#30。旧示例原文集中在 [历史快照](product/archive/2026-09-10/21-llm-harness.md)。

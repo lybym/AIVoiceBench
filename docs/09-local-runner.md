@@ -1,5 +1,7 @@
 # Local Runner 0.1.0 — preparation milestone
 
+> Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
+
 Current behavior: validate Case/suite, verify frozen assets, prepare fixed audio, create isolated Run outputs and report missing measurement evidence. It does not yet play/record audio or call ASR/Judge providers. This is an intermediate CLI milestone toward the complete Windows executable/installer, not the final product.
 
 ## Windows startup

@@ -129,3 +129,12 @@
 - Validation: full unittest discovery — 264 tests passed (30.568 s); whitespace diff check passed. Tests include provider failure, malformed JSON, invented timestamps, unknown-role abstention and revision preservation. No real provider call, user recording, or physical device test occurred.
 - Docker client is present but Docker engine is unavailable (docker_engine named pipe missing). Image startup, persistent-volume recovery and browser acceptance remain unverified. Existing Docker service serves API and static frontend together; no Windows installer is required.
 - Remaining P0: shared Web/CLI import orchestration (including MP3/M4A), audited ASR/diarization integration, canonical timeline/metric validation and correct event/latency semantics. Structured semantic anchoring, complete evidence playback/revision flows and labeled real-recording acceptance remain open. This patch restores a conservative baseline; it does not complete the MVP. No automatic merge.
+
+
+## 2026-09-10 — Central PRD and product document consolidation (#46)
+
+- Read the user's PRD reference and audited main 19d3a07, v0.1.3 e3c2821, open Issues and PR #43/#45. Published feature code remains unmerged; document statuses distinguish release, main and real acceptance.
+- Created docs/PRD.md with stable IDs for 22 functions, 10 metrics and 6 non-functional requirements; includes acceptance conditions, implementation markers, code/test/ref evidence and outstanding real-recording gate. No new model IDs, thresholds, SLA or product scope were invented.
+- Centralized original product-source snapshots under docs/product/archive/2026-09-10. Charter/context/roadmap/migration now have narrow roles or redirect to PRD. Preserved technical metric/methodology/contracts and historical work logs; corrected stale Windows installer, alternating-role, mock-success and release API descriptions.
+- Added AGENTS.md, docs navigation and PR template to require PRD-to-Issue-to-code/test traceability. Independent docs-central-prd branch/worktree from main; no extension of the #43/#45 stack and no runtime code changes.
+- Validation passed: 38 unique requirement IDs, 64 active local links (65 after adding the capability-methodology reference), 42 pinned v0.1.3 source paths and 13 byte-preserved Git snapshots; whitespace diff check passed. No audio/real-device/container tests were rerun for this documentation-only change. Commit/push and PR follow; no automatic merge or Docker release.

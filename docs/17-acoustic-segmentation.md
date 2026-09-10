@@ -1,5 +1,7 @@
 # Acoustic Segmentation — signal-based speech detection
 
+> Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
+
 Issue #23. This module produces speech-segment *candidates* from raw audio
 using frame-based energy VAD. Acoustic timing is signal-processor timing,
 distinct from ASR estimated timing, diarization timing, LLM-inferred

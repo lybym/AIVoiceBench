@@ -1,5 +1,7 @@
 # Finding Generation + Report Rendering
 
+> Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
+
 Issue #11. Generates Finding 2.0.0 documents from LLM judge results and
 renders evidence-linked Markdown + JSON reports.
 
