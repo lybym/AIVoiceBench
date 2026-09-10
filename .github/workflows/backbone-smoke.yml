@@ -24,6 +24,7 @@ jobs:
           docker run -d --name backbone-test -v backbone-test-data:/data/output backbone:test
           docker cp scripts/docker_smoke.py backbone-test:/app/docker_smoke.py
           docker cp tests backbone-test:/app/tests
+          docker exec backbone-test python -m pip install httpx
       - name: Codec and synthetic ASR evidence tests
         run: |
           docker exec backbone-test python /app/docker_smoke.py
