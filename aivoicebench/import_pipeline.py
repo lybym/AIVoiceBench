@@ -218,53 +218,78 @@ def _run_evidence_chain(run, normalized, asr_available):
     result, norm_art_id = normalized
     norm_path = result.path
 
-    # Acoustic segmentation — always runs if normalized audio exists
+    # Acoustic segmentation — parent: normalized_audio
     acoustic_result = run.execute('acoustic', [norm_art_id],
         lambda: _acoustic(run, norm_path, norm_art_id))
 
+    acoustic_art_id = None
+    if run.manifest['stages']['acoustic']['output_artifact_ids']:
+        acoustic_art_id = run.manifest['stages']['acoustic']['output_artifact_ids'][-1]
+
     # Load transcript if ASR ran
     transcript_doc = None
+    asr_art_id = None
     asr_stage = run.manifest['stages']['asr']
     if asr_stage['status'] == 'complete':
         transcript_path = run.analysis / 'transcript.json'
         if transcript_path.exists():
             envelope_data = json.loads(transcript_path.read_text(encoding='utf-8'))
             transcript_doc = envelope_data.get('data')
+            if asr_stage['output_artifact_ids']:
+                asr_art_id = asr_stage['output_artifact_ids'][-1]
 
-    # Fusion — needs acoustic segments
+    # Fusion — parents: acoustic_segments (+ transcript if available)
     if acoustic_result and acoustic_result.get('segments'):
         acoustic_doc = acoustic_result
-        fusion_result = run.execute('fusion', [norm_art_id],
-            lambda: _fusion(run, acoustic_doc, transcript_doc, [norm_art_id]))
+        fusion_parents = [p for p in [acoustic_art_id, asr_art_id] if p]
+        if not fusion_parents:
+            fusion_parents = [norm_art_id]
+        fusion_result = run.execute('fusion', fusion_parents,
+            lambda: _fusion(run, acoustic_doc, transcript_doc, fusion_parents))
 
-        # Turns — needs fused segments with known roles
+        fusion_art_id = None
+        if run.manifest['stages']['fusion']['output_artifact_ids']:
+            fusion_art_id = run.manifest['stages']['fusion']['output_artifact_ids'][-1]
+
+        # Turns — parent: fused_segments (not normalized_audio)
         if fusion_result and fusion_result.get('segments'):
             fused_doc = fusion_result
-            # Only build turns if any segment has a known role
             has_roles = any(s.get('speaker_role') in ('tester', 'device')
                            for s in fused_doc.get('segments', []))
-            if has_roles:
-                turns_result = run.execute('turns', [norm_art_id],
-                    lambda: _turns(run, fused_doc, [norm_art_id]))
+            if has_roles and fusion_art_id:
+                turns_result = run.execute('turns', [fusion_art_id],
+                    lambda: _turns(run, fused_doc, [fusion_art_id]))
 
+                turns_art_id = None
+                if run.manifest['stages']['turns']['output_artifact_ids']:
+                    turns_art_id = run.manifest['stages']['turns']['output_artifact_ids'][-1]
+
+                # Timeline — parents: fused_segments + turns
                 if turns_result and turns_result.get('turns'):
                     turns_doc = turns_result
-                    timeline_result = run.execute('timeline', [norm_art_id],
-                        lambda: _timeline(run, fused_doc, turns_doc, [norm_art_id]))
+                    tl_parents = [p for p in [fusion_art_id, turns_art_id] if p]
+                    timeline_result = run.execute('timeline', tl_parents,
+                        lambda: _timeline(run, fused_doc, turns_doc, tl_parents))
 
-                    if timeline_result and timeline_result.get('events') is not None:
+                    timeline_art_id = None
+                    if run.manifest['stages']['timeline']['output_artifact_ids']:
+                        timeline_art_id = run.manifest['stages']['timeline']['output_artifact_ids'][-1]
+
+                    # Metrics — parent: timeline
+                    if timeline_result and timeline_result.get('events') is not None and timeline_art_id:
                         timeline_doc = timeline_result
-                        run.execute('metrics', [norm_art_id],
-                            lambda: _metrics(run, timeline_doc, [norm_art_id]))
+                        run.execute('metrics', [timeline_art_id],
+                            lambda: _metrics(run, timeline_doc, [timeline_art_id]))
             else:
-                # No known speaker roles — turns/timeline/metrics can't be built
+                insuf_parent = fusion_art_id or norm_art_id
                 for stage_name in ('turns', 'timeline', 'metrics'):
                     stage = run.manifest['stages'][stage_name]
                     stage['status'] = 'insufficient_evidence'
                     stage['reason'] = 'No known speaker roles; diarization not configured'
+                    stage['input_artifact_ids'] = [insuf_parent]
                     output = run.envelope(
                         {'turns': 'turns', 'timeline': 'timeline', 'metrics': 'metrics'}[stage_name],
-                        'insufficient_evidence', stage['reason'])
+                        'insufficient_evidence', stage['reason'], refs=[insuf_parent])
                     stage['output_artifact_ids'].append(output)
 
 

@@ -23,7 +23,7 @@
       "minLength": 1
     },
     "time_base": {
-      "const": "run_monotonic_ms"
+      "enum": ["run_monotonic_ms", "audio_relative_ms"]
     },
     "start_ms": {
       "type": "number",
