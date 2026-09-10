@@ -1,26 +1,10 @@
-"""Simple Web API for the AIVoiceBench analysis pipeline.
-
-Accepts a WAV file upload, runs acoustic segmentation → fusion → metrics,
-and returns structured JSON results. Non-canonical WAV (non-16kHz/mono) is
-converted in-process; MP3/M4A requires external FFmpeg (mount or configure
-FFMPEG_PATH).
-
-Endpoints:
-  GET  /health         — health check
-  POST /api/analyze    — upload WAV, run full pipeline, return results
-  GET  /api/runs       — list previous analysis runs from output directory
-"""
+"""Web recording import, recoverable analysis, history and audio playback."""
 
 from __future__ import annotations
 
-from array import array
 import json
-import math
 import os
-import sys
 import tempfile
-import uuid
-import wave
 from pathlib import Path
 from typing import Optional
 
@@ -28,18 +12,20 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from .acoustic import EnergyVadSegmenter, segment_audio
-from .fusion import fuse, build_turns, detect_events, generate_timeline
-from .metrics import compute_timeline_metrics
+from .acoustic import EnergyVadSegmenter
 from .runner import write_json
+from .version import VERSION
+from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
+from .import_pipeline import import_recording
+from .audio_processing import MAX_INPUT_BYTES
 
 app = FastAPI(
     title="AIVoiceBench",
     description="AI Voice Terminal Evaluation — Recording Import & Analysis API",
-    version="0.1.0",
+    version=VERSION,
 )
 app.add_middleware(
     CORSMiddleware,
@@ -83,84 +69,14 @@ class AnalysisResponse(BaseModel):
     judge_results: list = []
     findings: list = []
     report_md: str = ""
+    reason: Optional[str] = None
+    audio_url: str = ""
+    profile: dict = {}
 
 
 @app.get("/health")
 def health() -> HealthResponse:
-    return HealthResponse(status="ok", version="0.1.0")
-
-
-def _normalize_wav(source: Path, output: Path) -> Path:
-    """Convert any WAV to PCM16 16kHz mono using only Python stdlib.
-
-    Handles: stereo→mono downmix, sample rate conversion (linear interpolation),
-    bit depth conversion. Does NOT handle MP3/M4A (needs FFmpeg).
-    """
-    with wave.open(str(source), "rb") as inp:
-        channels = inp.getnchannels()
-        sample_width = inp.getsampwidth()
-        rate = inp.getframerate()
-        frames = inp.getnframes()
-        raw = inp.readframes(frames)
-
-    if sample_width != 2:
-        # Convert to 16-bit
-        raise HTTPException(
-            status_code=400,
-            detail=f"WAV sample width must be 16-bit (got {sample_width * 8}-bit). "
-                   "Use FFmpeg to pre-convert, or mount FFmpeg and set FFMPEG_PATH.",
-        )
-
-    samples = array("h", raw)
-    if sys.byteorder != "little":
-        samples.byteswap()
-
-    # Stereo → mono (equal weight downmix)
-    if channels == 2:
-        mono = array("h", [0] * (len(samples) // 2))
-        for i in range(len(mono)):
-            left = samples[i * 2]
-            right = samples[i * 2 + 1]
-            val = (left + right) // 2
-            mono[i] = max(-32768, min(32767, val))
-        samples = mono
-    elif channels > 2:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Multi-channel ({channels}) not supported. Export mono or stereo first.",
-        )
-
-    # Resample to 16kHz (linear interpolation)
-    target_rate = 16000
-    if rate != target_rate:
-        ratio = target_rate / rate
-        n_out = int(len(samples) * ratio)
-        resampled = array("h", [0] * n_out)
-        for i in range(n_out):
-            src_pos = i / ratio
-            src_idx = int(src_pos)
-            frac = src_pos - src_idx
-            if src_idx + 1 < len(samples):
-                s1 = samples[src_idx]
-                s2 = samples[src_idx + 1]
-                val = int(s1 + (s2 - s1) * frac)
-            else:
-                val = samples[src_idx] if src_idx < len(samples) else 0
-            resampled[i] = max(-32768, min(32767, val))
-        samples = resampled
-
-    # Write canonical WAV
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(output), "wb") as out:
-        out.setnchannels(1)
-        out.setsampwidth(2)
-        out.setframerate(target_rate)
-        data = array("h", samples)
-        if sys.byteorder != "little":
-            data.byteswap()
-        out.writeframes(data.tobytes())
-
-    return output
+    return HealthResponse(status="ok", version=VERSION)
 
 
 @app.post("/api/analyze", response_model=AnalysisResponse)
@@ -181,112 +97,111 @@ async def analyze(
     timeout_ms: float = Form(5000.0),
     false_endpoint_ms: float = Form(300.0),
 ) -> AnalysisResponse:
-    """Upload a WAV file and run the full analysis pipeline."""
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided")
-
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in (".wav",):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Only WAV is supported directly. For MP3/M4A, pre-convert with FFmpeg "
-                   f"or mount FFmpeg and set FFMPEG_PATH. Got: {suffix}",
-        )
-
-    run_id = "RUN-" + uuid.uuid4().hex[:12]
-    run_dir = OUTPUT_ROOT / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save uploaded file
-    raw_path = run_dir / f"source{suffix}"
-    content = await file.read()
-    raw_path.write_bytes(content)
-
-    # Normalize to canonical WAV
-    canonical_path = run_dir / "normalized.wav"
+    """Import supported recordings without overwriting original evidence."""
+    suffix = Path(file.filename or '').suffix.lower()
+    if suffix not in ('.wav', '.mp3', '.m4a'):
+        raise HTTPException(400, '请选择 WAV、MP3 或 M4A 录音')
+    profile = {key: (value.strip() or None) if value is not None else None for key, value in dict(device=device, hardware=hardware,
+        firmware=firmware, model=model, prompt=prompt, supplier=supplier,
+        environment=environment, notes=notes).items()}
+    if any(value and len(value) > 4000 for value in profile.values()):
+        raise HTTPException(400, '设备信息字段不能超过 4000 字符')
+    # Validate detector configuration before allocating durable artifacts.
     try:
-        _normalize_wav(raw_path, canonical_path)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Normalization failed: {exc}")
-
-    # Save profile
-    profile = {
-        "device": device, "hardware": hardware, "firmware": firmware,
-        "model": model, "prompt": prompt, "supplier": supplier,
-        "environment": environment, "notes": notes,
-    }
-
-    # Run full unified pipeline
-    from .pipeline import run_full_pipeline
-    result = run_full_pipeline(
-        canonical_path, run_dir, profile,
-        frame_ms=frame_ms, hop_ms=hop_ms,
-        min_speech_ms=min_speech_ms, min_silence_ms=min_silence_ms,
-        timeout_ms=timeout_ms, false_endpoint_ms=false_endpoint_ms)
-
-    # Load all outputs for response
-    import json as _json
-    fused_doc = _json.loads((run_dir / "fused-segments.json").read_text(encoding="utf-8")) if (run_dir / "fused-segments.json").exists() else {"segments": []}
-    turns_doc = _json.loads((run_dir / "turns.json").read_text(encoding="utf-8")) if (run_dir / "turns.json").exists() else {"turns": []}
-    timeline_doc = _json.loads((run_dir / "timeline.json").read_text(encoding="utf-8")) if (run_dir / "timeline.json").exists() else {"events": []}
-    metrics_result = _json.loads((run_dir / "metrics.json").read_text(encoding="utf-8")) if (run_dir / "metrics.json").exists() else {"metrics": []}
-    acoustic_doc = _json.loads((run_dir / "acoustic-segments.json").read_text(encoding="utf-8"))
-    judge_data = _json.loads((run_dir / "judge-results.json").read_text(encoding="utf-8")) if (run_dir / "judge-results.json").exists() else {"results": []}
-    findings_data = _json.loads((run_dir / "findings.json").read_text(encoding="utf-8")) if (run_dir / "findings.json").exists() else {"findings": []}
-    report_md = (run_dir / "report.md").read_text(encoding="utf-8") if (run_dir / "report.md").exists() else ""
-
-    return AnalysisResponse(
-        run_id=run_id,
-        status=timeline_doc.get("status", "partial"),
-        fused_segments=fused_doc.get("segments", []),
-        turns=turns_doc.get("turns", []),
-        events=timeline_doc.get("events", []),
-        metrics=metrics_result.get("metrics", []),
-        acoustic_segments=acoustic_doc.get("segments", []),
-        timeline=timeline_doc,
-        judge_results=judge_data.get("results", []),
-        findings=findings_data.get("findings", []),
-        report_md=report_md,
-    )
+        EnergyVadSegmenter(frame_ms=frame_ms, hop_ms=hop_ms,
+            min_speech_ms=min_speech_ms, min_silence_ms=min_silence_ms)
+    except ValueError:
+        raise HTTPException(400, '无效的音频分段参数') from None
+    with tempfile.TemporaryDirectory() as temporary:
+        source = Path(temporary) / ('upload' + suffix)
+        size = 0
+        with source.open('wb') as target:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_INPUT_BYTES:
+                    raise HTTPException(413, '录音不能超过 1 GB')
+                target.write(chunk)
+        run_dir, manifest = await run_in_threadpool(import_recording, source, OUTPUT_ROOT, profile=profile)
+    normalized = next((a for a in manifest['artifacts'] if a['kind'] == 'normalized_audio'), None)
+    if normalized:
+        from .pipeline import run_full_pipeline
+        try:
+            await run_in_threadpool(run_full_pipeline, run_dir / normalized['path'],
+                run_dir / 'web-analysis', profile, frame_ms=frame_ms, hop_ms=hop_ms,
+                min_speech_ms=min_speech_ms, min_silence_ms=min_silence_ms,
+                timeout_ms=timeout_ms, false_endpoint_ms=false_endpoint_ms)
+        except Exception:
+            write_json(run_dir / 'web-status.json', {'status': 'failed',
+                'reason': '分析未完成，原始录音及导入证据已保留'})
+    else:
+        write_json(run_dir / 'web-status.json', {'status': 'failed',
+            'reason': '音频标准化失败，请检查文件格式或转换工具；导入证据已保留'})
+    return AnalysisResponse(**_load_run(run_dir))
 
 
-@app.get("/api/runs")
-def list_runs() -> JSONResponse:
-    """List previous analysis runs from the output directory."""
+def _read(path):
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+
+
+def _run_dir(run_id):
+    import re
+    if not re.fullmatch(r'RUN-[A-Za-z0-9_-]+', run_id):
+        raise HTTPException(404, 'Run not found')
+    path = (OUTPUT_ROOT / run_id).resolve()
+    if not path.is_relative_to(OUTPUT_ROOT.resolve()) or not path.is_dir():
+        raise HTTPException(404, 'Run not found')
+    return path
+
+
+def _load_run(directory):
+    root = directory / 'web-analysis' if (directory / 'web-analysis').is_dir() else directory
+    report = _read(root / 'report.json')
+    manifest = _read(directory / 'manifest.json')
+    timeline = _read(root / 'timeline.json') or report.get('timeline', {})
+    status_doc = _read(directory / 'web-status.json')
+    status = (status_doc.get('status') or report.get('run_summary', {}).get('status')
+              or timeline.get('status') or manifest.get('status') or 'partial')
+    def items(name, key, fallback):
+        doc = _read(root / (name + '.json')) or report.get(fallback, {})
+        return doc if isinstance(doc, list) else doc.get(key, [])
+    result = dict(run_id=directory.name, status=status, reason=status_doc.get('reason'),
+        profile=_read(root / 'profile.json') or manifest.get('profile', {}),
+        fused_segments=items('fused-segments', 'segments', 'fused_segments'),
+        acoustic_segments=items('acoustic-segments', 'segments', 'acoustic_segments'),
+        turns=items('turns', 'turns', 'turns'), events=timeline.get('events', []),
+        timeline=timeline, metrics=items('metrics', 'metrics', 'metrics'),
+        judge_results=items('judge-results', 'results', 'judge_results'),
+        findings=items('findings', 'findings', 'findings'),
+        report_md=(root / 'report.md').read_text(encoding='utf-8') if (root / 'report.md').exists() else '',
+        audio_url='/api/runs/' + directory.name + '/audio')
+    return result
+
+
+@app.get('/api/runs')
+def list_runs():
     runs = []
-    if OUTPUT_ROOT.exists():
-        for entry in sorted(OUTPUT_ROOT.iterdir(), reverse=True):
-            if entry.is_dir() and entry.name.startswith("RUN-"):
-                manifest = entry / "timeline.json"
-                profile_path = entry / "profile.json"
-                profile = {}
-                if profile_path.exists():
-                    profile = json.loads(profile_path.read_text(encoding="utf-8"))
-                status = "unknown"
-                if manifest.exists():
-                    tl = json.loads(manifest.read_text(encoding="utf-8"))
-                    status = tl.get("status", "unknown")
-                runs.append({
-                    "run_id": entry.name,
-                    "status": status,
-                    "device": profile.get("device"),
-                    "created": entry.stat().st_mtime,
-                })
-    return JSONResponse({"runs": runs})
+    for entry in OUTPUT_ROOT.iterdir():
+        if entry.is_dir() and entry.name.startswith('RUN-') and not entry.is_symlink():
+            data = _load_run(entry)
+            runs.append(dict(run_id=entry.name, status=data['status'],
+                device=data['profile'].get('device'), created=entry.stat().st_mtime))
+    return {'runs': sorted(runs, key=lambda r: r['created'], reverse=True)}
 
 
-@app.get("/api/runs/{run_id}")
-def get_run(run_id: str) -> JSONResponse:
-    """Get details of a specific analysis run."""
-    run_dir = OUTPUT_ROOT / run_id
-    if not run_dir.is_dir():
-        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+@app.get('/api/runs/{run_id}')
+def get_run(run_id: str):
+    return _load_run(_run_dir(run_id))
 
-    result = {"run_id": run_id}
-    for name in ("acoustic-segments", "fused-segments", "turns", "timeline", "metrics", "profile"):
-        path = run_dir / f"{name}.json"
-        if path.exists():
-            result[name] = json.loads(path.read_text(encoding="utf-8"))
-    return JSONResponse(result)
+
+@app.get('/api/runs/{run_id}/audio')
+def get_audio(run_id: str):
+    directory = _run_dir(run_id)
+    manifest = _read(directory / 'manifest.json')
+    artifact = next((a for a in manifest.get('artifacts', []) if a['kind'] == 'normalized_audio'), None)
+    path = (directory / artifact['path']).resolve() if artifact else directory / 'normalized.wav'
+    if not path.is_relative_to(directory) or not path.is_file():
+        raise HTTPException(404, 'Audio unavailable')
+    return FileResponse(path, media_type='audio/wav')

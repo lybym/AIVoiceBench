@@ -1,14 +1,14 @@
 # AIVoiceBench — minimal Docker image
-# Python deps only; FFmpeg and models are external (mount or configure)
+# FFmpeg included for recording imports; optional models are external
 
 FROM python:3.12-slim AS base
 
 LABEL maintainer="AIVoiceBench"
 LABEL description="AI Voice Terminal Evaluation — Recording Import, Analysis, LLM Judge, Findings, Report"
 
-# Install only system packages needed for Python audio (no FFmpeg)
+# Install only system packages needed for Python audio including FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ \
+    gcc g++ ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

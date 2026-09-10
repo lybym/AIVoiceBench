@@ -206,7 +206,7 @@ def render_markdown(profile, fused_doc, turns_doc, timeline, metrics_result,
     else:
         lines.append('## Findings')
         lines.append('')
-        lines.append('本次分析未发现需要报告的问题。所有指标在可接受范围内。')
+        lines.append('暂无可确认的问题结论；这不代表设备已通过评测。请结合指标状态与证据完整性复核。')
         lines.append('')
 
     # Evidence
