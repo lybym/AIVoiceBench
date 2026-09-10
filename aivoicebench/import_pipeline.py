@@ -260,20 +260,61 @@ def _metrics(run, timeline_doc, parent_ids):
     return [output], metrics_result, reason
 
 
-def _pending_outputs(run, normalized_ok):
-    """Only judge and findings remain pending in this slice."""
+# Every analysis stage owns exactly one envelope kind. A stage that did not run
+# still has to publish its evidence state; a stage left 'pending' with no output
+# would let the Run imply work that never happened.
+STAGE_KINDS = (
+    ('asr', 'transcript'),
+    ('acoustic', 'acoustic-segments'),
+    ('diarization', 'speaker-assignments'),
+    ('attribution', 'attribution'),
+    ('fusion', 'fused-segments'),
+    ('turns', 'turns'),
+    ('timeline', 'timeline'),
+    ('metrics', 'metrics'),
+    ('judge', 'judge-results'),
+    ('findings', 'findings'),
+)
+UNRUN_REASONS = {
+    'asr': 'No ASR provider configured for this import; transcription was not performed',
+    'acoustic': 'Acoustic segmentation did not run for this import',
+    'diarization': 'Diarization provider or ASR speaker evidence unavailable; speaker clustering unavailable',
+    'attribution': 'Source attribution did not run because upstream speaker evidence is unavailable',
+    'fusion': 'Fusion did not run because acoustic or transcript evidence is unavailable',
+    'turns': 'Turn building did not run because fused speaker segments are unavailable',
+    'timeline': 'Event detection did not run because fused segments or turns are unavailable',
+    'metrics': 'Metric computation did not run because the event timeline is unavailable',
+    'judge': 'Provider or processor is not configured/implemented for this import milestone',
+    'findings': 'Provider or processor is not configured/implemented for this import milestone',
+}
+# Stages gated on upstream speaker/acoustic evidence. By the end of an import they
+# can no longer become available, so they report insufficient_evidence instead of
+# pending. 'pending' is reserved for processors this milestone simply does not run
+# (asr without a configured provider, judge, findings).
+EVIDENCE_GATED_STAGES = ('acoustic', 'diarization', 'attribution', 'fusion', 'turns', 'timeline', 'metrics')
+
+
+def _resolve_unrun_stages(run, normalized_ok):
+    """Publish an evidence state for every stage that did not produce an output.
+
+    A stage without canonical audio is reported as insufficient_evidence. A stage
+    whose processor is simply not configured for this milestone keeps its own
+    status but still publishes an envelope, so no stage is silently absent.
+    Never fabricates data: unrun stages carry data=null.
+    """
     stages = run.manifest['stages']
-    stage_files = {'judge': 'judge-results', 'findings': 'findings'}
-    for stage_name, kind in stage_files.items():
+    for stage_name, kind in STAGE_KINDS:
+        stage = stages[stage_name]
+        if stage['status'] not in ('pending', 'insufficient_evidence'):
+            continue
         if (run.analysis / f'{kind}.json').exists():
             continue
-        stage = stages[stage_name]
         if stage['status'] == 'pending':
-            stage['reason'] = ('Provider or processor is not configured/implemented for this import milestone' if normalized_ok
-                               else 'Canonical audio unavailable; dependent analysis was not run')
-            if not normalized_ok:
-                stage['status'] = 'insufficient_evidence'
-        output = run.envelope(kind, stage['status'], stage['reason'])
+            stage['reason'] = UNRUN_REASONS[stage_name] if normalized_ok \
+                else 'Canonical audio unavailable; dependent analysis was not run'
+        if not normalized_ok or stage_name in EVIDENCE_GATED_STAGES:
+            stage['status'] = 'insufficient_evidence'
+        output = run.envelope(kind, stage['status'], stage['reason'] or UNRUN_REASONS[stage_name])
         stage['output_artifact_ids'].append(output)
 
 
@@ -329,7 +370,7 @@ def _continue_import(run, source, audio_processor, asr_provider_factory, model_s
         run.manifest['status'] = 'failed'
     else:
         _run_evidence_chain(run, normalized, asr_provider_factory is not None, providers)
-    _pending_outputs(run, normalized is not None)
+    _resolve_unrun_stages(run, normalized is not None)
     _retain_failures(run)
     run.checkpoint()
     run.execute('report', [item['artifact_id'] for item in run.manifest['artifacts']], lambda: write_import_report(run))
@@ -528,7 +569,7 @@ def resume_recording(directory, *, providers=None, model_snapshot=None):
             parent, lambda: providers.asr(directory)))
     # Run evidence chain after ASR restore/retry
     _run_evidence_chain_resume(run, directory, normalized, parent)
-    _pending_outputs(run, True)
+    _resolve_unrun_stages(run, True)
     _retain_failures(run)
     run.execute('report', [a['artifact_id'] for a in run.manifest['artifacts']], lambda: write_import_report(run))
     run.checkpoint()
