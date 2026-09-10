@@ -27,9 +27,11 @@ class FusedSegment:
     start_ms: float
     end_ms: float
     speaker_role: str  # tester | device | unknown
-    speaker_confidence: float
-    speaker_source: str  # heuristic | diarization | llm | manual
-    timing_source: str  # acoustic | asr | fused
+    speaker_id: str | None = None  # from diarization: speaker_0, speaker_1, ...
+    speaker_cluster_confidence: float | None = None  # confidence of clustering
+    role_attribution_confidence: float | None = None  # confidence of role mapping
+    speaker_source: str = 'acoustic'  # acoustic | diarization | heuristic | llm | manual
+    timing_source: str = 'acoustic'  # acoustic | asr | fused
     text: str | None = None
     acoustic_segment_id: str | None = None
     asr_segment_id: str | None = None
@@ -40,7 +42,9 @@ class FusedSegment:
             'start_ms': round(self.start_ms, 3),
             'end_ms': round(self.end_ms, 3),
             'speaker_role': self.speaker_role,
-            'speaker_confidence': round(self.speaker_confidence, 4),
+            'speaker_id': self.speaker_id,
+            'speaker_cluster_confidence': round(self.speaker_cluster_confidence, 4) if self.speaker_cluster_confidence is not None else None,
+            'role_attribution_confidence': round(self.role_attribution_confidence, 4) if self.role_attribution_confidence is not None else None,
             'speaker_source': self.speaker_source,
             'timing_source': self.timing_source,
             'text': self.text,
@@ -137,8 +141,10 @@ def fuse(acoustic_doc, transcript_doc=None):
             timing = 'fused'
         fused.append(FusedSegment(
             start_ms=a_start, end_ms=a_end,
-            speaker_role=role,
-            speaker_confidence=0.0,
+            speaker_role='unknown',
+            speaker_id=None,
+            speaker_cluster_confidence=None,
+            role_attribution_confidence=None,
             speaker_source='acoustic',
             timing_source=timing,
             text=text,

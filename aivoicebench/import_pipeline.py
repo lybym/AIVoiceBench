@@ -62,75 +62,104 @@ def _safe_diar_art_id(run, fallback):
     return [fallback]
 
 
-def _diarize(run, norm_path, acoustic_doc, parent):
+def _diarize(run, norm_path, acoustic_doc, parent, diarization_provider=None):
     """Run diarization on acoustic segments.
 
     Outputs speaker clustering (speaker_0, speaker_1, ...) — NOT tester/device.
-    Without a real diarization provider, returns insufficient_evidence.
+    Without a real diarization provider (cloud or explicit test injection),
+    returns insufficient_evidence. MockDiarizationProvider is NEVER used in
+    production — only in tests via dependency injection.
     """
-    from .diarization import MockDiarizationProvider
-    provider = MockDiarizationProvider()
     acoustic_segments = acoustic_doc.get('segments', []) if acoustic_doc else []
-    result = provider.diarize(Path(norm_path).resolve(), acoustic_segments)
+
+    if diarization_provider is None:
+        # No provider configured — not a failure, just unavailable
+        output = run.envelope('speaker-assignments', 'insufficient_evidence',
+                              'Diarization provider not configured; speaker clustering unavailable',
+                              None, [parent])
+        run.manifest['stages']['diarization']['processor'] = {'name': 'none', 'version': '1.0.0'}
+        run.manifest['stages']['diarization']['status'] = 'insufficient_evidence'
+        return [output], None, None  # reason=None so run.execute doesn't override to 'partial'
+
+    result = diarization_provider.diarize(Path(norm_path).resolve(), acoustic_segments)
     doc = result.to_dict()
     status = doc['status']
     output = run.envelope('speaker-assignments', status,
                           'Speaker clustering only; role attribution is separate',
                           _envelope_data(doc, status), [parent])
     run.manifest['stages']['diarization']['processor'] = doc.get('processor', {})
-    reason = None if doc['speaker_segments'] else 'No speaker segments produced'
+    reason = None if doc.get('speaker_segments') else 'No speaker segments produced'
     return [output], doc, reason
 
 
-def _attribute(run, diarization_doc, parent):
-    """Map speaker_id → tester/device/unknown using evidence.
+def _attribute(run, diarization_doc, parent, explicit_mapping=None):
+    """Map speaker_id to tester/device/unknown using evidence.
 
     Without explicit evidence, ALL speakers remain 'unknown'.
     NEVER infers from first-speaker order or speaker count.
     """
     from .diarization import attribute_speakers
-    attr_doc = attribute_speakers(diarization_doc) if diarization_doc else attribute_speakers({'speaker_segments': []})
+    if diarization_doc is None:
+        attr_doc = attribute_speakers({'speaker_segments': []})
+    else:
+        attr_doc = attribute_speakers(diarization_doc, explicit_mapping=explicit_mapping)
     status = attr_doc['status']
-    # Use 'speaker-assignments' kind to stay within existing stage names
-    # if 'attribution' stage doesn't exist, fold into diarization output
     output = run.envelope('attribution', status,
                           attr_doc.get('reason') or 'Source attribution',
                           _envelope_data(attr_doc, status), [parent])
-    # Store attribution in manifest (may need to add 'attribution' to STAGES)
     return [output], attr_doc, None if status == 'complete' else 'Some or all speakers have no role evidence'
 
 
-def _fusion_with_speakers(run, acoustic_doc, transcript_doc, diarization_doc, parent_ids):
-    """Fuse acoustic segments with ASR transcript and speaker clustering.
+def _fusion_with_speakers(run, acoustic_doc, transcript_doc, diarization_doc,
+                          attribution_doc, parent_ids):
+    """Fuse acoustic segments with ASR transcript, diarization and role attribution.
 
-    speaker_role remains unknown unless source attribution provides evidence.
-    speaker_id is set if diarization is available.
+    speaker_id comes from diarization.
+    speaker_role comes from source attribution (explicit/semantic/human/none).
+    They are separate fields — never conflated.
     """
     from .fusion import fuse
     fused_doc = fuse(acoustic_doc, transcript_doc)
 
-    # If diarization is available, add speaker_id to each fused segment
+    # Build role lookup from attribution
+    role_map = {}
+    if attribution_doc and attribution_doc.get('attributions'):
+        for attr in attribution_doc['attributions']:
+            role_map[attr['speaker_id']] = {
+                'role': attr['role'],
+                'confidence': attr['confidence'],
+                'method': attr['method'],
+            }
+
+    # Build speaker_id lookup from diarization
     if diarization_doc and diarization_doc.get('speaker_segments'):
         speaker_segs = diarization_doc['speaker_segments']
         for fseg in fused_doc.get('segments', []):
             # Find overlapping speaker segment
             best_speaker = None
             best_overlap = 0
+            best_conf = None
             for sseg in speaker_segs:
                 overlap = min(fseg['end_ms'], sseg['end_ms']) - max(fseg['start_ms'], sseg['start_ms'])
                 if overlap > best_overlap:
                     best_overlap = overlap
                     best_speaker = sseg.get('speaker_id')
+                    best_conf = sseg.get('confidence')
             if best_speaker:
                 fseg['speaker_id'] = best_speaker
                 fseg['speaker_source'] = 'diarization'
-                fseg['speaker_confidence'] = 0.7  # diarization clustering confidence
-            # speaker_role stays 'unknown' — attribution is separate
+                fseg['speaker_cluster_confidence'] = best_conf  # provider confidence or None
+                # Apply role from attribution if available
+                role_info = role_map.get(best_speaker)
+                if role_info and role_info['role'] != 'unknown':
+                    fseg['speaker_role'] = role_info['role']
+                    fseg['role_attribution_confidence'] = role_info['confidence']
+                # speaker_role stays 'unknown' if no attribution evidence
 
-    # Update attribution note
     fused_doc['attribution']['note'] = (
-        'Fused with diarization speaker clusters; role attribution is separate. '
-        'speaker_role=unknown until explicit/semantic/human attribution provides evidence.')
+        'Fused with diarization + source attribution. '
+        'speaker_id from diarization, speaker_role from attribution. '
+        'Unknown roles remain unknown — no heuristic inference.')
 
     status = fused_doc['status']
     output = run.envelope('fused-segments', status,
@@ -285,7 +314,7 @@ def _continue_import(run, source, audio_processor, asr_provider_factory, model_s
     if normalized is None:
         run.manifest['status'] = 'failed'
     else:
-        _run_evidence_chain(run, normalized, asr_provider_factory is not None)
+        _run_evidence_chain(run, normalized, asr_provider_factory is not None, providers)
     _pending_outputs(run, normalized is not None)
     _retain_failures(run)
     run.checkpoint()
@@ -297,8 +326,8 @@ def _continue_import(run, source, audio_processor, asr_provider_factory, model_s
     return run.directory, run.manifest
 
 
-def _run_evidence_chain(run, normalized, asr_available):
-    """Run acoustic → fusion → turns → timeline → metrics after ASR (or without ASR).
+def _run_evidence_chain(run, normalized, asr_available, providers=None):
+    """Run acoustic → diarization → attribution → fusion → turns → timeline → metrics.
 
     Each stage is independent: failure in one does not prevent the report stage.
     Uses lazy imports so missing modules don't crash the import pipeline.
@@ -314,14 +343,33 @@ def _run_evidence_chain(run, normalized, asr_available):
     if run.manifest['stages']['acoustic']['output_artifact_ids']:
         acoustic_art_id = run.manifest['stages']['acoustic']['output_artifact_ids'][-1]
 
-    # Diarization — parent: acoustic_segments (clusters speech segments by speaker)
-    diarization_result = run.execute('diarization', [acoustic_art_id] if acoustic_art_id else [norm_art_id],
-        lambda: _diarize(run, norm_path, acoustic_result, acoustic_art_id or norm_art_id))
+    # Diarization — parents: acoustic_segments (+ normalized_audio)
+    # Only runs if a real diarization provider is configured
+    diar_provider = None
+    if providers is not None and hasattr(providers, 'diarization') and providers.diarization is not None:
+        diar_provider = providers.diarization(run.directory)
 
-    # Source attribution — parent: speaker_segments (maps speaker_id → tester/device/unknown)
-    attribution_result = run.execute('attribution' if 'attribution' in run.manifest['stages'] else 'diarization',
-        [norm_art_id] if not diarization_result else _safe_diar_art_id(run, acoustic_art_id or norm_art_id),
-        lambda: _attribute(run, diarization_result, acoustic_art_id or norm_art_id))
+    diar_parents = [p for p in [acoustic_art_id, norm_art_id] if p]
+    diarization_result = run.execute('diarization', diar_parents,
+        lambda: _diarize(run, norm_path, acoustic_result, acoustic_art_id or norm_art_id, diar_provider))
+
+    diar_art_id = None
+    if run.manifest['stages']['diarization']['output_artifact_ids']:
+        diar_art_id = run.manifest['stages']['diarization']['output_artifact_ids'][-1]
+
+    # Source attribution — parent: diarization output
+    # Explicit mapping from profile or test context (Level 1 evidence)
+    explicit_mapping = None
+    if hasattr(run, '_explicit_speaker_mapping'):
+        explicit_mapping = run._explicit_speaker_mapping
+
+    attr_parents = [diar_art_id] if diar_art_id else [acoustic_art_id or norm_art_id]
+    attribution_result = run.execute('attribution', attr_parents,
+        lambda: _attribute(run, diarization_result, diar_art_id or (acoustic_art_id or norm_art_id), explicit_mapping))
+
+    attr_art_id = None
+    if run.manifest['stages']['attribution']['output_artifact_ids']:
+        attr_art_id = run.manifest['stages']['attribution']['output_artifact_ids'][-1]
 
     # Load transcript if ASR ran
     transcript_doc = None
@@ -335,26 +383,21 @@ def _run_evidence_chain(run, normalized, asr_available):
             if asr_stage['output_artifact_ids']:
                 asr_art_id = asr_stage['output_artifact_ids'][-1]
 
-    # Fusion — parents: acoustic_segments (+ transcript + speaker segments if available)
+    # Fusion — parents: acoustic + diarization + attribution (+ transcript)
     if acoustic_result and acoustic_result.get('segments'):
         acoustic_doc = acoustic_result
-        fusion_parents = [p for p in [acoustic_art_id, asr_art_id] if p]
-        # Add speaker segments and attribution as dependencies if available
-        diar_art_id = None
-        if run.manifest['stages']['diarization']['output_artifact_ids']:
-            diar_art_id = run.manifest['stages']['diarization']['output_artifact_ids'][-1]
-            if diar_art_id:
-                fusion_parents.append(diar_art_id)
+        fusion_parents = [p for p in [acoustic_art_id, diar_art_id, attr_art_id, asr_art_id] if p]
         if not fusion_parents:
             fusion_parents = [norm_art_id]
         fusion_result = run.execute('fusion', fusion_parents,
-            lambda: _fusion_with_speakers(run, acoustic_doc, transcript_doc, diarization_result, fusion_parents))
+            lambda: _fusion_with_speakers(run, acoustic_doc, transcript_doc,
+                                         diarization_result, attribution_result, fusion_parents))
 
         fusion_art_id = None
         if run.manifest['stages']['fusion']['output_artifact_ids']:
             fusion_art_id = run.manifest['stages']['fusion']['output_artifact_ids'][-1]
 
-        # Turns — parent: fused_segments (not normalized_audio)
+        # Turns — parent: fusion
         if fusion_result and fusion_result.get('segments'):
             fused_doc = fusion_result
             has_roles = any(s.get('speaker_role') in ('tester', 'device')
@@ -367,7 +410,6 @@ def _run_evidence_chain(run, normalized, asr_available):
                 if run.manifest['stages']['turns']['output_artifact_ids']:
                     turns_art_id = run.manifest['stages']['turns']['output_artifact_ids'][-1]
 
-                # Timeline — parents: fused_segments + turns
                 if turns_result and turns_result.get('turns'):
                     turns_doc = turns_result
                     tl_parents = [p for p in [fusion_art_id, turns_art_id] if p]
@@ -378,7 +420,6 @@ def _run_evidence_chain(run, normalized, asr_available):
                     if run.manifest['stages']['timeline']['output_artifact_ids']:
                         timeline_art_id = run.manifest['stages']['timeline']['output_artifact_ids'][-1]
 
-                    # Metrics — parent: timeline
                     if timeline_result and timeline_result.get('events') is not None and timeline_art_id:
                         timeline_doc = timeline_result
                         run.execute('metrics', [timeline_art_id],
@@ -388,7 +429,7 @@ def _run_evidence_chain(run, normalized, asr_available):
                 for stage_name in ('turns', 'timeline', 'metrics'):
                     stage = run.manifest['stages'][stage_name]
                     stage['status'] = 'insufficient_evidence'
-                    stage['reason'] = 'No known speaker roles; diarization not configured'
+                    stage['reason'] = 'No known speaker roles; attribution did not produce tester/device'
                     stage['input_artifact_ids'] = [insuf_parent]
                     output = run.envelope(
                         {'turns': 'turns', 'timeline': 'timeline', 'metrics': 'metrics'}[stage_name],
@@ -404,7 +445,6 @@ def _configuration_refs(run):
 def _run_evidence_chain_resume(run, directory, normalized_artifact, norm_art_id):
     """Run evidence chain during resume (same logic as _run_evidence_chain but for resumed runs)."""
     norm_path = directory / normalized_artifact['path']
-    # Wrap in a compatible structure for _run_evidence_chain
     class _Result:
         def __init__(self, path):
             self.path = path

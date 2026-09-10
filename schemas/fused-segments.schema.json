@@ -88,8 +88,16 @@
           "speaker_role": {
             "enum": ["tester", "device", "unknown"]
           },
-          "speaker_confidence": {
-            "type": "number",
+          "speaker_id": {
+            "type": ["string", "null"]
+          },
+          "speaker_cluster_confidence": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "role_attribution_confidence": {
+            "type": ["number", "null"],
             "minimum": 0,
             "maximum": 1
           },
@@ -114,7 +122,9 @@
           "start_ms",
           "end_ms",
           "speaker_role",
-          "speaker_confidence",
+          "speaker_id",
+          "speaker_cluster_confidence",
+          "role_attribution_confidence",
           "speaker_source",
           "timing_source",
           "text",
