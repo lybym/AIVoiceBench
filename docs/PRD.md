@@ -1,6 +1,6 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.0.2
+prd_version: 1.1.0
 status: consolidated_for_owner_review
 updated: 2026-09-10
 implementation_baseline: v0.1.3@e3c2821a417a1aeea90a7c029290b6f814bf747b
@@ -37,13 +37,55 @@ AIVoiceBench 是可复现、可追溯、可比较、可回归的 **AI Voice Term
 
 主要使用者：测试工程师分析对话和缺陷；产品负责人审阅体验与验收证据；算法/软件工程师定位退化；采购或供应商评估人员在可比条件下对照版本与设备。供应商比较是后续扩展，不挤占导入分析 MVP。
 
-**Primary Workflow：**
+### 两条一级主流程（Primary Workflows）
 
-External Recording → Import → Normalize / Audio QA → Acoustic Segmentation + ASR / Diarization → Source Attribution / Segment Fusion → Turn / Response Association → Automatic Events / Event Timeline → Deterministic Metrics → Structured LLM Evaluation → Findings / Evidence → Human Verification → Report → Regression。
+**Active Voice Test（主动语音测试）与 Recording Analysis（录音分析）均为一级核心能力。** Import First 表示开发顺序：先完成 M1 录音分析，再完成 M2 固定用例主动测试、M3 自由测试 Agent；不能把平台定位缩减为上传录音后的分析工具。
 
-输入通常是手机、录音笔或电脑录下的**单轨混音**，同时包含测试者与 AI 设备。对话可人工驱动、固定音频驱动或由未来 Agent 驱动。测试人员只须提供录音与可选设备资料，不能被要求先手工创建 Timeline、指定全部说话人或准备 TestCase。
+```mermaid
+flowchart TD
+  P[AIVoiceBench] --> A[Active Voice Test 主动语音测试]
+  P --> R[Recording Analysis 录音分析]
+  A --> F[Fixed Case Runner 固定用例]
+  A --> G[Free Voice Test Agent 自由对话]
+  F --> T[TTS / Frozen Audio]
+  G --> T
+  T --> S[本地扬声器播放]
+  S --> D[实体 AI 设备]
+  D --> O[Mic / VAD / ASR 实时观察]
+  O --> C[Controller 下一轮 / 条件触发]
+  C --> F
+  C --> G
+  D -. 另一台设备全程录音 .-> E[External Recording]
+  E --> R
+  R --> I[Import / Audio QA / 声学与语义分析]
+  I --> J[Events / Metrics / LLM Judge]
+  J --> Q[Findings / Evidence / Human Verification / Report]
+  Q --> K[确认并最小化 / 冻结回归 Case]
+  K --> F
+```
 
-交付形态为 **Docker 后端 + 前端、Windows 浏览器访问 Web UI**；前后端可以同一容器提供。Windows EXE/安装包、集群、复杂云端 Control Plane、真实声卡播放录制、自动 SPL 校准、Remote Station 均不是当前 MVP 交付前提。既有 Audio Station/HIL、Runner、Vosk、契约、确定性引擎必须保留并按需扩展。
+**主动语音测试：** 用户选择固定 Case，或指定 Goal、Test Strategy、Coverage、Budget 和 Stop Condition；平台主动向实体设备发问，通过实时观察控制下一轮，生成 Execution Run。固定模式冻结用例、音频、停顿和触发策略，由确定性 Controller 执行；自由模式由受 Harness 约束的 LLM Test Agent 根据观察生成下一步动作。两种 Runner 共享播放、观察和执行审计基础。
+
+**录音分析：** External Recording → Import → Normalize / Audio QA → Acoustic Segmentation + ASR / Diarization → Source Attribution / Segment Fusion → Turn / Response Association → Automatic Events / Event Timeline → Deterministic Metrics → Structured LLM Evaluation → Findings / Evidence → Human Verification → Report → Regression。
+
+输入通常是手机、录音笔或另一台电脑录下的**单轨混音**，同时包含测试者（人或平台播放）与 AI 设备。独立导入仍只需录音及可选设备资料，不要求先创建 TestCase、Execution Run、Timeline 或指定全部说话人。
+
+### 实时控制与正式测量分离
+
+| 证据类别 | 来源和用途 | 产品边界 |
+| --- | --- | --- |
+| Control Evidence | 平台麦克风、实时 VAD/ASR、播放日志、Agent Observation/Action；判断设备是否说完、何时打断、回答大意及下一轮策略 | 允许误差，但保留来源、置信度、时间基准与失败状态；只作为执行决策依据 |
+| Measurement Evidence | 另一台设备全程录音，导入后经高质量离线声学/语义分析及必要人工复核 | 正式响应时延、抢话、Barge-in、上下文和回答质量结论均回溯外部录音，沿用 Evidence First 与不确定性要求 |
+
+播放命令时间不等于真实声学 onset，实时 ASR 不能替代外部录音的正式转写。执行完成不代表设备通过测试；未导入外部录音时显示正式测量待补充，不将 Control Evidence 自动升级为 Measurement Evidence。执行与分析通过身份引用和带不确定性的录音时间映射关联，不直接相减不同设备的时钟（PRD-F024）。
+
+产品闭环：**指定测试策略 → 平台主动与设备对话 → 外部设备记录真实声学表现 → 自动分析 → 发现与复核问题 → 沉淀固定回归 Case → 下一版本重新自动测试。**
+
+### 交付边界
+
+交付形态为 **Docker 后端 + 前端、Windows 浏览器访问 Web UI**。M1 不以现场播放和监听为验收前提；M2 必须支持普通电脑扬声器播放与麦克风实时观察（PRD-F023），不能因专业 HIL 延期而整体排除真实本地音频能力。浏览器音频或本地适配器的具体方案由技术设计确定，不假设 Docker 自动获得 Windows 音频设备。
+
+Windows EXE/安装包、集群、复杂云端 Control Plane 不属于当前交付前提；专业声卡同步、loopback、SPL 校准和 Remote Station 继续作为 P3 扩展（PRD-F022）。既有 Audio Station/HIL、Runner、Vosk、契约和确定性引擎保留并按需扩展。
 
 ### 能力分类（非全部已实现声明）
 
@@ -56,7 +98,8 @@ External Recording → Import → Normalize / Audio QA → Acoustic Segmentation
 3. 文件、Hash、音频元数据、信号时间、公式、CER/WER、统计和验证由确定性代码执行；语义决策由有约束、有证据的模型节点执行。
 4. 原始文件、机器输出和人工修订分层保存；不得以“人工修正”为由覆盖机器原件。
 5. 云 ASR/TTS/音频服务可优先选用，Vosk 保留离线 fallback。实现云接口前核对官方文档，不把历史 endpoint/resource/model/voice/API version 固化为产品要求。
-6. 无设备日志不能宣称已测得内部 VAD/ASR/LLM/TTS 延迟；外部 ASR 不是设备内部 ASR；黑盒回声行为不是 ERLE。疑似层只能带置信度和 requires_log_verification。
+6. Control Evidence 与 Measurement Evidence 分层保存；保留计划动作、实际动作和观测差异，不以执行成功替代正式测量通过。
+7. 无设备日志不能宣称已测得内部 VAD/ASR/LLM/TTS 延迟；外部 ASR 不是设备内部 ASR；黑盒回声行为不是 ERLE。疑似层只能带置信度和 requires_log_verification。
 
 ## 3. 需求总览
 
@@ -75,19 +118,22 @@ External Recording → Import → Normalize / Audio QA → Acoustic Segmentation
 | PRD-F011 | Findings 与问题解释 | P1（MVP 必需） | 🟡 partial | 候选生成已有；完整证据链/人工确认未闭环 |
 | PRD-F012 | 人工修正与有效视图 | P1（MVP 必需） | 🟡 partial | RevisionStore 已有；Web 修订/重算未接通 |
 | PRD-F013 | Markdown + JSON 报告 | P1（MVP 必需） | 🟡 partial | 文件可生成；完整结论级回溯待验收 |
-| PRD-F014 | Web 分析工作台 | P0/P1 | 🟡 partial | main + release；波形、完整 Timeline、人工审核尚缺 |
+| PRD-F014 | Web 测试与分析工作台 | P0/P1 | 🟡 partial | main + release；波形、完整 Timeline、人工审核尚缺 |
 | PRD-F015 | 统一模型配置管理 | P1 | ✅ implemented | main + release；限管理与 Judge 路由 |
-| PRD-F016 | 语音生成/分析适配器实际调用 | P0 ASR / P2 TTS | ⬜ planned | 配置占位不能算适配器；未集成旧云 ASR 分支 |
+| PRD-F016 | 语音生成/分析适配器实际调用 | P0 ASR（M1）/ P1 TTS（M2） | ⬜ planned | 配置占位不能算适配器；未集成旧云 ASR 分支 |
 | PRD-F017 | 同一录音分析修订与重现 | P1 | 🟡 partial | Hash/配置快照已有；同 Run 多版本重算未完成 |
 | PRD-F018 | 版本/设备/供应商 Compare | P2 | ⬜ planned | 无产品比较工作流 |
-| PRD-F019 | Frozen Golden TTS 资产 | P2 | ⬜ planned | 暂停草稿不算可交付能力 |
-| PRD-F020 | 多轮固定测试 Controller | P2 | 🟡 partial | Runner 基础已有，真实多轮控制未完成 |
-| PRD-F021 | Exploratory Voice Agent | P2 | ⬜ planned | 无完整探索→确认→回归链路 |
-| PRD-F022 | Audio Station / HIL / Remote | P3 | ⏸ deferred | Station 代码保留，非当前 MVP 门槛 |
+| PRD-F019 | Frozen Golden Voice 资产 | P1（M2 核心） | ⬜ planned | 暂停草稿不算可交付能力 |
+| PRD-F020 | Active Voice Test Controller / Fixed Runner | P1（M2 核心） | 🟡 partial | Runner 基础已有，真实多轮控制未完成 |
+| PRD-F021 | Free / Exploratory Voice Test Agent | P1（M3 核心） | ⬜ planned | 无完整探索→确认→回归链路 |
+| PRD-F022 | 专业 HIL / 同步校准 / Remote Station | P3 | ⏸ deferred | Station 代码保留，非当前 MVP 门槛 |
+
+| PRD-F023 | 基础本地播放与麦克风观察 | P1（M2 核心） | ⬜ planned | 从 F022 拆出；真实本地音频链路待交付 |
+| PRD-F024 | 执行与外部录音分析 Run 关联 | P1（M2 手动 / M4 自动） | ⬜ planned | 双 Run 引用、录音时间映射及自动匹配待实现 |
 
 ### MVP 范围与排程的关系
 
-P0/P1 表示开发先后，不表示可选与必选。当前 MVP 包含 PRD-F001～F015、PRD-F016 的云 ASR/diarization 与调用审计部分、PRD-F017；各项以第 4 节限定范围和第 7 节验收为准。PRD-F016 的 TTS 部分及 PRD-F018～F022 不阻塞当前 MVP。PRD-F015 的配置管理已实现，不代表 PRD-F016 的语音调用已实现。
+P0/P1 表示开发先后，不表示可选与必选。当前 MVP 专指 M1 录音分析，包含 PRD-F001～F015、PRD-F016 的云 ASR/diarization 与调用审计部分、PRD-F017；各项以第 4 节限定范围和第 7 节验收为准。PRD-F016 的 TTS 部分及 PRD-F018～F024 不阻塞 M1；其中 F016 TTS/F019/F020/F023 与 F024 手动关联为 M2 必需，F021 为 M3 必需，F024 自动关联为 M4 必需。优先级与里程碑共同表达排程：主动测试是 P1 核心能力，但不插队 M1；专业 F022 继续 P3。PRD-F015 的配置管理已实现，不代表 PRD-F016 的语音调用已实现。
 
 同一功能的“代码已实现”“已合入 main”“已发布”“真实录音验收通过”分别记录；本次审阅不升级任何实现或验收状态。
 
@@ -247,14 +293,16 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 依据：[report.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/report.py)、[import_report.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/import_report.py)、[test_findings_report.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_findings_report.py)；Issues #11、#27。
 
-### PRD-F014 — Web 分析工作台
+### PRD-F014 — Web 测试与分析工作台
 
 **代码：🟡 partial；验证：browser_verified、container_verified（局部）；位置：main + release。**
 
-简洁界面，以 Home/Runs、Import、Analysis、Metrics、Findings、模型管理为当前导航；Compare 后续增加。Analysis 应联动 Audio Waveform、Speaker Segments、Transcript、Turn Timeline、Events、Metrics、LLM Findings。不能要求用户读开发实现信息才能正常操作。
+简洁界面，以 Home/Runs、Import、Analysis、Metrics、Findings、模型管理为当前导航；M2 增加与 Recording Analysis 并列的 Active Voice Test 入口，支持固定 Case、音频设备选择、启动/停止和执行轨迹；M3 增加目标、策略、预算和停止条件配置；M4 展示执行与分析关联；Compare 在 M5 增加。Analysis 应联动 Audio Waveform、Speaker Segments、Transcript、Turn Timeline、Events、Metrics、LLM Findings。不能要求用户读开发实现信息才能正常操作。
 
 - [x] 浅色工作台、历史、导入表单、报告状态、音频控件、片段跳转、指标/发现切换。
 - [ ] 波形、完整转写/轮次/事件联动、Finding 区间跳转、人工审核入口及真实长录音体验。
+
+- [ ] M2/M3 主动测试入口可操作，清楚区分执行完成、测量待补充与正式结论；后续范围不计入现有 browser_verified。
 
 依据：[static/](https://github.com/lybym/AIVoiceBench/tree/v0.1.3/aivoicebench/static)、[api.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/api.py)；Issues #27、#42。
 
@@ -270,14 +318,15 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 依据：[model_settings.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/model_settings.py)、[models.js](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/static/models.js)、[test_model_settings.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_model_settings.py)；Issue #44。
 
-### PRD-F016 — 语音服务实际调用
+### PRD-F016 — 语音服务实际调用与主动测试 TTS
 
 **代码：⬜ planned（发布基线的云 speech adapter）；验证：real_recording_pending。**
 
 提供统一 ASRProvider、TTSProvider、AudioProcessingProvider、DiarizationProvider 接入点；核对火山等当前官方 API 后实现真实调用。每次调用记录 provider、model、endpoint/API version、config、prompt_version（适用时）、timestamp、输入/输出 refs、latency、status，不记录 Secret。配置管理不代表调用能力已交付。音频标准化和 Vosk 已有能力分别见 PRD-F003/F005，不在此重复标为未实现。
 
 - [ ] 云 ASR/diarization 原生输出、重试/失败状态、调用审计与 Web 分析集成。
-- [ ] TTS 真实调用与冻结资产出口（P2），效果与成本按服务实际支持能力选择。
+- [ ] TTS 真实调用服务于主动测试（P1/M2）：固定 Runner 执行前生成并冻结音频，运行时重用资产；M3 自由 Agent 可逐轮生成，保存每轮实际播放音频及引用。效果与成本按服务实际支持能力选择。
+- [ ] TTS 失败、预算耗尽或音频无效时明确停止/失败，不标记为已播放；调用记录关联 Execution Run/Turn 和音频资产。
 
 依据：[model_settings.py 的 not_integrated 声明](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/model_settings.py)；Issues #22、#30、#9；关闭未合并的 PR #31/#32 须先做集成审计再复用。
 
@@ -298,19 +347,67 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 ### PRD-F019 — Frozen Golden Voice
 
-**代码：⬜ planned；优先级：P2。** 成熟 TTS API 生成后冻结，保存 text/provider/model/voice/speed/pitch/volume/sample_rate/format/生成时间/hash/响应元数据。回归重用 Frozen Audio，不实时重合成。精确停顿采用 TTS(A) + sample-exact silence + TTS(B)，800 ms 等是 Case 示例，非所有测试的统一阈值。支持可追踪资产版本、缓存和 QA。依据：Issue #9 暂停草稿未纳入发布代码；既有 TestCase/音频资产契约可复用。
+**代码：⬜ planned；优先级：P1（M2 核心）。** 固定 Case 可复现执行的基础。TTS 生成后冻结，保存 text/provider/model/voice/speed/pitch/volume/sample_rate/format/生成时间/hash/响应元数据；回归重用 Frozen Audio，不实时重合成。Golden 表示冻结刺激资产，不代表设备回答的事实真值。
 
-### PRD-F020 — Multi-turn Test Controller
+- [ ] 生成、QA、版本和缓存可追踪；Case 锁定音频 Hash/版本，参数变化生成新版本，不覆盖原件。
+- [ ] 精确停顿采用 TTS(A) + sample-exact silence + TTS(B)，保存片段和静音 sample count；800 ms 是 Case 示例，非统一门槛。文件中精确停顿不代表真实声场没有误差。
+- [ ] 同一 Case 重复执行重用相同资产；资产缺失、损坏或 Hash 不符时拒绝执行并保留原因。
 
-**代码：🟡 partial；优先级：P2；验证：software_verified（Runner 基础）。** 保留固定/交互 Case 与 Run 准备能力；未来控制多轮输入、超时和响应触发，打断资产与提示资产分离。验收要求真实事件驱动、明确响应身份和可冻结复现，不能用预拼接时间近似实时打断。依据：[runner.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/runner.py)、[test_runner.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_runner.py)；Issue #5。
+依据：Issue #9 暂停草稿未纳入发布代码；既有 TestCase/音频资产契约可复用。本次升级优先级，不升级实现状态。
 
-### PRD-F021 — Exploratory Voice Agent
+### PRD-F020 — Active Voice Test Controller / Fixed Case Runner
 
-**代码：⬜ planned；优先级：P2。** 模型规划探索对话，Harness 约束动作与观测；发现经人工确认、最小化后转换成固定回归 Case。不能将探索输出等同于 Golden ground truth。验收需明确探索预算/停止条件、轨迹、证据和回归转换；预算具体数值须配置，不在本文虚构默认 SLA。依据：路线图历史范围，发布基线无完整实现。
+**代码：🟡 partial；优先级：P1（M2 核心）；验证：software_verified（仅 Runner 基础）。** Controller 是主动测试执行核心。Fixed Case Runner 冻结 TestCase、音频、停顿、触发条件和超时策略，由确定性状态机执行，不依赖 LLM 决策。复现指相同刺激和控制策略，设备回答与实际触发时间允许不同且必须留痕。
 
-### PRD-F022 — HIL / Station
+- [ ] 验证 Case/Frozen Audio，创建 Execution Run，保存 Case/策略版本、设备资料、配置快照和音频 Hash；提示资产与打断资产分离。
+- [ ] 支持多轮播放、等待设备响应开始/结束、条件触发、明确 deadline、取消与失败处理；记录状态迁移、计划动作、实际播放开始/结束/取消、Observation、触发依据及 Run/Turn 引用。
+- [ ] 句中停顿用例可播放“我想问一下”+ 800 ms silence +“南京明天天气怎么样”，等待回答结束后问“北京呢”；文本、停顿和等待策略均冻结。
+- [ ] Barge-in 用例先请求长故事，检测设备持续发声后等待 Case 指定时长（如 2 秒）再播放“停，换个问题”；记录实际触发及旧/新回答候选，不能用预拼接时间代替实时触发。未观察到响应时按策略 timeout/停止，不伪造打断成功。
+- [ ] 相同 Case 与相同观察序列重放时控制决策一致；真实设备测试核对播放/触发轨迹。设备回答结束的控制判断与正式 Barge-in/时延/语义判定分开。
+- [ ] 监听中断、低置信度、自身播放误识别或设备断开时按冻结策略等待/停止并记录原因，不无限等待或无记录追加重试；用户可随时停止。
 
-**代码：⏸ deferred；优先级：P3；保留已有局部实现。** 后续提供播放、录制、同步/校准、loopback、physical HIL 与 Remote Station；设备/声卡实测未准备不能阻塞录音导入 MVP。验收须明确真实硬件、同步不确定性与健康观察窗口，不以软件 fixture 冒充硬件测试。依据：[station.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/station.py)、[test_station.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_station.py)；Issue #6。
+依据：[runner.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/runner.py)、[test_runner.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_runner.py)；Issue #5。现有 Run 准备不等于真实多轮执行已交付。
+
+### PRD-F021 — Free / Exploratory Voice Test Agent
+
+**代码：⬜ planned；优先级：P1（M3 核心）。** 面向测试目标的 Voice Test Harness / Test Agent。用户定义 Goal、Test Strategy、Coverage、Budget、Stop Condition 和禁止行为；LLM Planner 根据实时 Observation 决定下一步话术或动作，经 Harness 校验后调用 TTS/播放/观察工具。与 Fixed Runner 分离，复用 F020/F023 执行基础；不同于事后 F010 Judge。
+
+- [ ] 保存版本化目标、策略、允许 Tool、轮次/时长/调用成本预算和停止条件；动作经过结构校验及预算检查，越界动作拒绝执行。预算可配置，15 轮是示例而非默认 SLA。
+- [ ] 支持“建立临时事实 → 间隔若干轮 → 重问 → 切换话题 → 恢复原话题”等策略，遵守“不告知正在测试、不直接提示正确答案”等用户约束。
+- [ ] Mic → VAD → 实时 ASR → Observation → LLM Decision → Action → TTS/Playback 循环保留 Trace：模型/提示版本、观察引用、决策理由、工具调用、实际音频、覆盖进展、消耗与停止原因。
+- [ ] Coverage 区分计划、已尝试、已观察及待正式测量；ASR 不确定、模型/工具失败、预算耗尽或用户停止均有明确处置，不能把控制观察或 Agent 自评当作正式通过。
+- [ ] 设备回复作为被测数据，不能改写 Harness 的目标、工具权限、预算和禁止行为。
+- [ ] M3 保存候选问题与完整轨迹供离线分析/复核；M5 基于 Measurement Evidence 和人工确认最小化用例，冻结音频/策略后交给固定 Runner 复测。探索输出不能直接成为 Golden ground truth。
+
+依据：既有路线图探索目标与本次用户补充；发布基线无完整实现。
+
+### PRD-F022 — 专业 HIL / Station
+
+**代码：⏸ deferred；优先级：P3；保留已有局部实现。** 保留专业声卡播放/录制、同步/校准、loopback、SPL 校准、physical HIL 与 Remote Station 扩展。普通电脑播放与麦克风观察已拆为 PRD-F023，不随本项延期。验收须明确真实硬件、同步不确定性与健康观察窗口，不以软件 fixture 冒充硬件测试。
+
+依据：[station.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/station.py)、[test_station.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_station.py)；Issue #6。保留原编号及拆分追溯关系。
+
+### PRD-F023 — 基础本地播放与麦克风观察
+
+**代码：⬜ planned（可交付基础音频链路）；优先级：P1（M2 核心）。** 普通 Windows 电脑扬声器播放测试语音，麦克风/VAD 提供响应观察；M3 接入实时 ASR 供 Agent 理解回答。复用 Station 接口，不依赖专业 HIL/SPL 校准或 Remote Station 才可用。
+
+- [ ] Web 可选择输入/输出设备、检查可用性、启动/停止；权限拒绝、无设备和音频中断明确显示，失败不生成成功播放记录。
+- [ ] 支持边播放边监听以执行 Barge-in；记录自身播放泄漏、噪声与设备响应归属的不确定性，无法可靠区分时按策略弃权/停止。
+- [ ] 保存实际播放资产、设备/采样配置、观测时间基准及丢帧/中断信息；平台麦克风输入不自动成为正式测量录音。
+- [ ] 真实扬声器、麦克风、实体 AI 设备验证多轮等待和条件打断，由另一台设备全程录音核对；合成测试不替代真实本地链路验收。
+
+依据：本次用户要求从 F022 拆出；既有 Station 软件基础不构成本项已交付证据。
+
+### PRD-F024 — Execution Run 与外部录音 Analysis Run 关联
+
+**代码：⬜ planned；优先级：P1（M2 手动关联，M4 自动关联）。** Execution Run 保存刺激、动作和控制观察；外部录音导入形成独立 Analysis Run，AnalysisRevision 不覆盖执行原件。两者引用关联；独立导入仍不需要执行记录。
+
+- [ ] M2 支持手动将外部录音导入并关联 Execution Run，记录身份、原件 Hash、Case/Turn 引用及关联来源；未关联显示 measurement_pending。
+- [ ] M4 自动提出匹配并建立可追溯关联：保存匹配依据、置信度、执行片段到录音区间映射、时钟偏移/漂移及不确定性。歧义、录音不完整或无可靠映射时转人工确认，不静默绑定。
+- [ ] 更正关联生成新修订并保留历史；重复导入/重试不产生冲突关联；分段录音或一份录音包含多个执行时明确区间范围。
+- [ ] 报告从正式 Finding/Metric 追溯外部音频区间，再关联到 Case/执行动作；指标在外部录音时间轴上计算，不把播放命令或跨设备时钟当声学真值。
+
+依据：本次用户明确提出双证据链和 M4 自动关联；新增编号不表示已有实现。
 
 ## 5. 用户体感指标要求（PRD-F009 的子需求）
 
@@ -351,7 +448,7 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 | PRD-N005 | 5～20 分钟录音可用、依赖错误可诊断、重启恢复不丢历史/配置/原件；资源限制明确 | 🟡 partial；上传上限和持久卷已有，长录音、恢复/中断全流程待验收；不捏造处理时长或准确率 SLA |
 | PRD-N006 | 重要模块有针对性测试；合成/真实分开；每逻辑单元 Issue/branch/PR/work log；不得自动 merge | ✅ implemented（治理与测试基础）；[tests](https://github.com/lybym/AIVoiceBench/tree/v0.1.3/tests)、[AGENTS.md](../AGENTS.md)、[work log](06-work-log.md)。本次 PR 新增 AGENTS/PRD 规则待合并；每次变更仍须执行，不因历史遵守而永久豁免 |
 
-## 7. 整体 MVP 验收门槛（当前未通过）
+## 7. M1 录音分析 MVP 验收门槛（当前未通过）
 
 使用项目所有者提供或明确授权的 **5～20 分钟真实测试者+设备混音录音**，保留本地证据，不提交录音/个人报告到 Git。以下全体通过后，才可将当前 MVP 标为完成：
 
@@ -381,11 +478,29 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 **定量验收策略待确定：** 在正式质量验收前，由项目所有者确认并版本化场景覆盖、最低可计算覆盖率、角色/事件识别质量、边界允许误差及语义复核准则。当前不填写未经确认的数值；缺少对应策略时可以完成实现和采集实测数据，但不能宣称整体质量验收通过。不能看过结果后静默降低门槛。这里验证的是所选真实录音及已覆盖场景，不据单次录音宣称所有设备/供应商普遍适用。
 
-MVP 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不是 Windows 打包、硬件播放录制或 TTS 样式。P1 标记代表排程层次，不代表这些验收项可以从 MVP 删除。
+M1 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不是 Windows 打包、硬件播放录制或 TTS 样式。P1 标记代表排程层次，不代表这些验收项可以从 MVP 删除。
 
 ## 8. 优先级与变更流程
 
-近期顺序：先按授权处理 #43/#45 集成基线 → 统一 PRD-F004 编排/审计与 PRD-F005/F006 音频识别 → PRD-F007/F008 规范事件与关联 → PRD-F009 和 PRD-M001～M010 → PRD-F010/F011 语义与发现 → PRD-F012/F013/F017 审核/修订/报告 → 第 7 节真实验收。相互独立的结构/基础工作可以并行，不能再次形成冗长串行 PR 链。
+### 正式产品里程碑
+
+以下为目标排程，不是已交付声明。**先完成 M1，Fixed Voice Test Runner 是紧接 M1 的下一个主要里程碑。** M2/M3 都是核心交付，专业 HIL 保持 P3 独立扩展。
+
+| 里程碑 | 范围 / PRD refs | 阶段完成门槛 |
+| --- | --- | --- |
+| M1 录音导入分析主链 | F001～F015、F016 ASR/diarization、F017 | 完成第 7 节真实录音验收；继续收尾，不因主动测试调整插入硬件前置依赖 |
+| M2 Fixed Voice Test Runner | F016 TTS、F019、F020、F023、F014 主动测试入口、F024 手动关联 | 冻结 Case/音频；真实扬声器/麦克风/AI 设备完成多轮等待、句中停顿和条件 Barge-in；外部录音手动关联并进入 M1 分析，控制/测量分开；停止与故障轨迹完整 |
+| M3 Free Voice Test Agent | F021、F016/F023 实时语音、F014 Agent 配置 | 真实设备上按目标执行自适应对话，覆盖/预算/约束/停止可验证，Observation/Action/音频 Trace 完整；外部录音独立分析，不以 Agent 自评通过 |
+| M4 执行与分析自动关联 | F024 自动关联、F004/F017 修订溯源 | 自动匹配可复核，歧义可转人工；错配、缺段、时钟偏差有记录，正式结论可追溯执行且不混用时间轴 |
+| M5 Compare / Regression / 自动探索缺陷 | F018、F021 回归转换、F019/F020 重放、F011/F012 复核 | 经外部录音分析和人工确认的问题可最小化成固定 Case；下一版本自动重测，同一冻结刺激下输出可比结果/差异证据，不兼容条件拒绝直接比较 |
+
+M2/M3 的控制误差、播放时序偏差和触发可靠性须记录实测结果，并在正式验收前确认版本化容差，不虚构数值。各阶段分别记录软件验证、真实设备执行与正式测量验收，不互相替代。
+
+M1 近期顺序：在已合并 #43/#45 的基线上，统一 PRD-F004 编排/审计与 PRD-F005/F006 音频识别 → PRD-F007/F008 规范事件与关联 → PRD-F009 和 PRD-M001～M010 → PRD-F010/F011 语义与发现 → PRD-F012/F013/F017 审核/修订/报告 → 第 7 节真实验收。相互独立的结构/基础工作可以并行，不能再次形成冗长串行 PR 链。
+
+2026-09-07 Import First 调整继续约束 M1 执行顺序；将 Controller/TTS/普通本地音频整体长期后置的范围由本次用户明确要求与 M2/M3 排程取代。现有 #5/#9/#6 沿用；历史 Issue 标题/标签不覆盖新的优先级。本次按用户要求只修改 PRD，旧架构、路线图和 AGENTS 中将全部 Station 视为 P3 的口径未同步；后续开发须以本 PRD 的 F022/F023 拆分及里程碑为准。
+
+### 变更流程
 
 1. 修改产品行为先定位 Requirement ID。Issue 写 `PRD refs`、本次范围、验收与依赖；现有 Issue 编号沿用，不按状态机械新建重复任务。
 2. 产品范围、优先级、行为或验收变化在同一 PR 修改本文，并在下表记录原因和用户决定。明确新增用户要求后可执行，不因历史文档冲突再索取已给出的授权；未被授权的产品取舍不得静默猜测。
@@ -395,15 +510,16 @@ MVP 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
+| 1.1.0 | 2026-09-10 | 确立主动测试/录音分析双主流程与双证据链；F019/F020/F021 升 P1 核心，F022 拆出 F023，新增 F024；明确 M1→M5 与阶段验收，保留 M1 收尾顺序和实现状态 | 项目所有者要求按主动测试定位修订，且只修改 PRD |
 | 1.0.2 | 2026-09-10 | 更新 main 基线至 3699587（PR #43/#45 已合并）；F014/F015 状态更新为 main + release；新增附录 A Issue→PRD 交叉引用 | 项目所有者要求检查未实现 Issue 并更新 PRD |
-| 1.0.1 | 2026-09-10 | 审阅第 3/5/7 节：明确 MVP 与排程、指标边界、场景覆盖及弃权验收 | 项目所有者审阅要求 |“按你的建议执行”审阅要求；未代替所有者批准数值门槛 |
+| 1.0.1 | 2026-09-10 | 审阅第 3/5/7 节：明确 MVP 与排程、指标边界、场景覆盖及弃权验收 | 项目所有者审阅要求；未代替所有者批准数值门槛 |
 | 1.0.0 | 2026-09-10 | 从分散文档归集；导入优先、Docker/Web、模型管理、代码/发布/验收三者区分；未添加新的准确率/SLA 要求 | 项目所有者导入优先指令、2026-09-09 Docker/Web 与模型管理要求、2026-09-10 中央 PRD 要求 |
 
 归集映射与旧快照见 [产品文档索引](product/README.md)。用户审阅优先看第 3 节范围、第 5 节指标、第 7 节验收，再按编号修改第 4 节细节。
 
 ## 附录 A — Issue → PRD 交叉引用
 
-20 个 Open Issue 全部映射到 PRD 需求编号。Issue 编号沿用不变；不按状态机械新建重复任务。
+以下保留 1.0.2 审计时的 20 个 Open Issue 映射，并非实时 Issue 状态；新增主动测试排程以第 8 节为准。Issue 编号沿用不变；不按状态机械新建重复任务。
 
 ### P0 Issues（当前 MVP 阻塞项）
 
@@ -432,13 +548,15 @@ MVP 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不
 | #11 | Evidence-linked reports | PRD-F011, F013 | 完整结论级回溯、点击证据音频区间未完成 |
 | #26 | Human annotations + reanalysis | PRD-F012, F017 | 严格修订 schema/引用校验、Web 编辑、重算闭环未完成 |
 
-### P2/P3 Issues（非当前 MVP 阻塞）
+### 主动测试与专业扩展 Issues（非 M1 阻塞）
 
 | Issue | 标题 | PRD 编号 | 状态 |
 | --- | --- | --- | --- |
-| #5 | Scripted Case runner | PRD-F020 | partial：Runner 基础保留，多轮控制未完成 |
-| #6 | Audio Station / HIL | PRD-F022 | deferred：Station 代码保留，非 MVP 门槛 |
-| #9 | Frozen TTS Golden asset | PRD-F019 | planned：暂停草稿，非 MVP |
+| #5 | Scripted Case runner | PRD-F020 | P1/M2 核心；partial：真实多轮控制未完成；历史 P2 标题待实现任务同步 |
+| #6 | Audio Station / HIL | PRD-F022, F023 | 专业 F022 继续 P3 deferred；基础 F023 为 P1/M2 planned，分别排程 |
+| #9 | Frozen TTS Golden asset | PRD-F016, F019 | P1/M2 核心；planned：旧暂停草稿不算已交付 |
+
+F021（M3）与 F024（M2/M4）的实现 Issue 在对应阶段启动时建立有界工作单元；本次仅定义需求，不虚构已创建的任务或实现。
 
 ### 已关闭 Issue（需求已归入 PRD）
 
@@ -451,7 +569,7 @@ MVP 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不
 
 ### 审计结论
 
-**所有 20 个 Open Issue 的功能需求均已映射到 PRD 需求编号，未发现遗漏。** Issue 中的细节要求（如 #25 的负 gap 不截零、#24 的不按先后强制角色、#26 的严格引用校验）已在 PRD 第 4/5 节对应条目的验收条件中体现。
+**1.0.2 审计时的 20 个 Open Issue 已有编号映射；这不代表产品定位完整。1.1.0 补齐主动测试一级工作流、双证据链和正式里程碑。** Issue 中的细节要求（如 #25 的负 gap 不截零、#24 的不按先后强制角色、#26 的严格引用校验）已在 PRD 第 4/5 节对应条目的验收条件中体现。
 
 当前 MVP 未完成的主要阻塞集中在 7 项：
 
