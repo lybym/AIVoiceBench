@@ -10,7 +10,7 @@ from .runner import digest, write_json, contained_file
 from .validation import schema_errors
 
 STAGES = ('ingestion', 'normalization', 'audio_qa', 'asr', 'acoustic', 'diarization',
-          'fusion', 'turns', 'timeline', 'metrics', 'judge', 'findings', 'report')
+          'attribution', 'fusion', 'turns', 'timeline', 'metrics', 'judge', 'findings', 'report')
 PROFILE_KEYS = ('device', 'hardware', 'firmware', 'model', 'prompt', 'supplier', 'environment', 'notes')
 
 
