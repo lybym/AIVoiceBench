@@ -344,11 +344,13 @@ def attribute_speakers(diarization_doc, acoustic_doc=None, transcript_doc=None,
                 'speaker_id': sid,
                 'role': role,
                 'confidence': conf,
+                'confidence_basis': 'explicit_user_evidence' if role != 'unknown' else 'none',
                 'method': 'explicit_evidence' if role != 'unknown' else 'none',
                 'evidence_refs': [],
                 'provider': None,
                 'model': None,
                 'reason': f'Explicitly mapped by user' if role != 'unknown' else 'No explicit evidence for this speaker',
+                'needs_review': role == 'unknown',
             })
         status = 'complete' if all(a['role'] != 'unknown' for a in attributions) else 'partial'
         reason = None if status == 'complete' else 'Some speakers have no role evidence'
@@ -376,11 +378,13 @@ def attribute_speakers(diarization_doc, acoustic_doc=None, transcript_doc=None,
             'speaker_id': sid,
             'role': 'unknown',
             'confidence': 0.0,
+            'confidence_basis': 'none',
             'method': 'none',
             'evidence_refs': [],
             'provider': None,
             'model': None,
             'reason': 'No attribution evidence',
+            'needs_review': False,
         } for sid in speaker_ids],
     }
 

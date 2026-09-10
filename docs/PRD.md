@@ -1,6 +1,6 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.1.1
+prd_version: 1.1.2
 status: consolidated_for_owner_review
 updated: 2026-09-11
 implementation_baseline: v0.1.3@e3c2821a417a1aeea90a7c029290b6f814bf747b
@@ -120,7 +120,7 @@ Windows EXE/安装包、集群、复杂云端 Control Plane 不属于当前交�
 | PRD-F003 | 标准化与 Audio QA | P0 | ✅ implemented | main + release；准确率不由 QA 保证 |
 | PRD-F004 | 全链路可恢复编排 | P0 | 🟡 partial | 导入 ledger 已有，Web 后续阶段未完全统一 |
 | PRD-F005 | 时间戳 ASR 与云服务 | P0 | 🟡 partial | Vosk/Transcript 已有；Web 云 ASR 未接通 |
-| PRD-F006 | 混音说话人/声源归属 | P0 | 🟡 partial | unknown 与数据结构已有；实际 diarization 未接通。本分支进展见第 4 节 PRD-F006 与第 7 节 M1.2（聚类可用，角色识别未完成） |
+| PRD-F006 | 混音说话人/声源归属 | P0 | 🟡 partial | unknown 与数据结构已有；实际 diarization 未接通。本分支进展见第 4 节 PRD-F006 与第 7 节 M1.2（聚类可用 + 语义角色提议待复核；角色识别未完成） |
 | PRD-F007 | Turn / Response 关联 | P0 | 🟡 partial | 显式角色输入可处理；自动语义关联未完成 |
 | PRD-F008 | 自动事件与规范 Timeline | P0 | 🟡 partial | 候选事件已有；证据/命名/契约需统一 |
 | PRD-F009 | 确定性指标集成 | P0 | 🟡 partial | 旧引擎可复用；导入扩展公式与契约有差距。本分支进展：导入 metrics.py 已直接产出规范 MetricResult 3.0.0，Turn Gap 方向与 False Endpoint 候选化已修正（PR #52，未合并） |
@@ -217,7 +217,13 @@ P0/P1 表示开发先后，不表示可选与必选。当前 MVP 专指 M1 录�
 - [ ] 可用 diarization/source Provider 与真实混音角色识别。
 - [ ] 人工角色修订作为新 Evidence/Annotation 参与有效结果。
 
-本分支进展（software_verified，未合并）：speaker clustering 已接真实服务原生说话人标签（复用 ASR 调用、不追加识别），但**角色识别**仍未完成，故上方两条验收项保持未勾选。验证与限制见 [06-work-log.md](06-work-log.md) 的 "Real diarization slice" 条目。
+本分支进展（software_verified，未合并）：
+
+- **speaker clustering** 已接真实服务原生说话人标签（复用同一次 ASR 调用、不追加识别、不追加计费）；聚类与角色严格分离，无角色证据时角色保持 unknown。
+- **语义角色归属（Semantic Attribution）** 已作为独立的角色归属处理器接入 ImportRun → Attribution → Fusion：仅使用既有证据（本次 speaker scope、转写↔说话人关联、时间顺序、可引用片段、已有显式证据与冲突）提出 tester/device/unknown；模型自报置信度按"未经校准的模型自评"记录，不作为准确率，也不参与任何阈值；结果一律 needs_review，显式/人工证据优先且冲突双方都保留；不满足证据或调用/结构/引用失败时保持 unknown 并保留原因，无 Mock 成功回退。它不采用"第一个说话者/提问者=测试者、回答者=设备"等规则，也不把被置疑的转写内容当作指令。
+- 因此"真实混音**角色识别**"仍未完成验收：本分支只达到"聚类可用 + 角色机器提议（待复核）"的软件验证级别，**没有**人工确认、没有真实录音对照、没有真实模型调用。故上方两条验收项继续保持未勾选。接口约定（是否需显式开启说话人分离）仍为 `interface_contract_pending`，未发送任何未经核实的请求参数。
+
+验证与限制见 [06-work-log.md](06-work-log.md) 的 "Real diarization slice" 与 "Semantic attribution slice" 条目。
 
 依据：[fusion.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/fusion.py)、[test_evidence_guards.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_evidence_guards.py)；Issues #22、#24、#26。
 
@@ -506,7 +512,9 @@ M1.1～M1.5 是**产品 M1（录音导入分析主链）内部的工程子阶段
 
 **M1.2 Speaker clustering 子切片（PRD-F005/F006/F016，复用 F004/F015/F017；独立 PR）。** diarization 复用已配置 ASR 的原生说话人标签：一次识别提交同时产出 Transcript 与 speaker segments，不追加第二次识别、上传或计费；每个 segment 保留服务原生标签、`provider_utterance_estimate` 时间来源与调用/原生响应引用，本地 speaker ID 按录音 sha 命名空间隔离，聚类 confidence 留空。缺少标签即 `insufficient_evidence`，不做顺序或轮流补齐。融合时跨多个聚类的声学片段按边界拆分，聚类时间冲突则弃权（`ambiguous_overlap`），不再整段归给重叠最大的说话人。已知聚类不等于已知角色：无角色证据时 `speaker_role` 仍为 `unknown`，角色相关指标继续弃权。
 
-独立导入**不需要**显式角色映射：未提供映射时 speaker segments 仍然产出，全部角色保持 `unknown`，turns/timeline/metrics 按证据缺失弃权，Run 与证据照常保留；显式映射是可选的人工验证/修正路径，Semantic Attribution 是可选自动判断手段，二者都不作为导入的前置条件。据此 PRD-F006 的真实混音**角色识别**仍未完成，其验收项保持未勾选；本子切片仅达到"聚类可用、软件验证"，真实服务参数与真实录音验收见 `06-work-log.md`。上方 v0.1.3 表格仍描述其固定发布基线。
+独立导入**不需要**显式角色映射：未提供映射时 speaker segments 仍然产出，全部角色保持 `unknown`，turns/timeline/metrics 按证据缺失弃权，Run 与证据照常保留；显式映射是可选的人工验证/修正路径，Semantic Attribution 是可选自动判断手段，二者都不作为导入的前置条件。语义判断只在显式证据未覆盖的聚类上调用，不与显式证据竞争。
+
+**M1.2 语义角色归属子切片（PRD-F006，复用 PRD-F010；独立 PR）。** 角色归属处理器读取既有证据并给出 tester/device/unknown 提议，不新增评分能力，也不是 Free Voice Agent。其输出记录角色、方法、依据引用、模型/提示版本、调用记录与"未校准模型自评"置信度；一律标记待复核并向下游传递依据，显式或人工证据优先，冲突双方都保留。模型调用失败、结构非法、引用不存在或输入不足时保持 `unknown` 并保留阶段原因，不启用 Mock 成功回退。机器角色提议可参与自动分析，但不等于人工确认，也不等于设备验收通过。
 
 M1 只验收三格式导入、原件/标准化保留、真实云调用与原生响应、带时间戳的文本、provider/model/latency/invocation 回溯、重启后 Run 可访问、Web 转写和 API 失败不丢 Run。真实录音/API 项待提供授权录音及有效凭据后执行，软件测试不能替代；不要求 M1 产生准确时延或打断结论。版本目标为 v0.2.0-alpha.1，不等于已发布。
 
@@ -515,7 +523,7 @@ M1 内部工程子阶段（非产品里程碑）：
 | 子阶段 | 范围 | 状态 |
 | --- | --- | --- |
 | M1.1 Real Recording Backbone | PRD-F001～F005、F016 ASR、F017 基础；ImportRun 账本、云 ASR 与调用审计 | 本分支部分实现，未合并 |
-| M1.2 Speaker Attribution（diarization + 源归属） | PRD-F006；聚类接入与角色证据分离 | 聚类本分支部分实现；角色识别未完成 |
+| M1.2 Speaker Attribution（diarization + 源归属） | PRD-F006；聚类接入、角色证据分离、可选语义角色归属 | 聚类与语义角色提议在本分支部分实现（均未合并）；角色识别真实验收未完成 |
 | M1.3 Turn / Event / Metrics | PRD-F007/F008/F009、M001～M010 | 契约在本分支收尾；自动关联未闭环 |
 | M1.4 LLM Judge / Findings | PRD-F010/F011 | 未闭环 |
 | M1.5 人工修订 / 重分析 / Web 验收 | PRD-F012/F013/F014/F017；第 7 节真实验收 | 未完成 |
@@ -552,6 +560,7 @@ M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程�
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
+| 1.1.2 | 2026-09-11 | 记录 M1.2 的两个子切片进展：聚类输入证据修正（拆分文本归属改为证据驱动、拆分边界保留估计来源、接口约定与真实调用分开记录且未发送未核实参数）与可选语义角色归属（独立处理器、复用 F010 基础、显式证据优先、输出一律待复核）；F006 两条验收项保持未勾选，未升级为已合并/已发布/真实验收 | 项目所有者要求完善角色判断输入证据并实现可选自动语义角色归属，同时不扩大范围 |
 | 1.1.1 | 2026-09-11 | 消除第 7 节与第 8 节的里程碑编号冲突：第 7 节工程拆分改标为产品 M1 内部子阶段 M1.1～M1.5，正式排程仍以第 8 节 M1～M5 为准；新增第 1 节“需求 / 实现建议 / 实现状态”区分规则；按当前分支代码、测试与提交刷新 F006/F009/F016、M004/M008、Issue #3/#25 的状态描述并标注“本分支进展（未合并）” | 项目所有者要求先校准 PRD 基线、消除里程碑命名冲突、区分需求与实现建议与实现状态 |
 | 1.1.0 | 2026-09-10 | 确立主动测试/录音分析双主流程与双证据链；F019/F020/F021 升 P1 核心，F022 拆出 F023，新增 F024；明确 M1→M5 与阶段验收，保留 M1 收尾顺序和实现状态 | 项目所有者要求按主动测试定位修订，且只修改 PRD |
 | 1.0.2 | 2026-09-10 | 更新 main 基线至 3699587（PR #43/#45 已合并）；F014/F015 状态更新为 main + release；新增附录 A Issue→PRD 交叉引用 | 项目所有者要求检查未实现 Issue 并更新 PRD |

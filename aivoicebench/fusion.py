@@ -33,6 +33,9 @@ class FusedSegment:
     acoustic_boundary_confidence: float | None = None  # confidence of acoustic onset/offset
     acoustic_uncertainty_ms: float | None = None  # acoustic boundary uncertainty
     speaker_source: str = 'acoustic'  # acoustic | diarization | ambiguous | heuristic | llm | manual
+    # How the role was decided and what its confidence number means, carried down to
+    # every downstream result so a model proposal is never mistaken for human evidence.
+    role_attribution: dict | None = None
     timing_source: str = 'acoustic'  # acoustic | asr | fused
     text: str | None = None
     acoustic_segment_id: str | None = None
@@ -64,6 +67,7 @@ class FusedSegment:
             'speaker_id': self.speaker_id,
             'speaker_cluster_confidence': round(self.speaker_cluster_confidence, 4) if self.speaker_cluster_confidence is not None else None,
             'role_attribution_confidence': round(self.role_attribution_confidence, 4) if self.role_attribution_confidence is not None else None,
+            'role_attribution': self.role_attribution,
             'acoustic_boundary_confidence': round(self.acoustic_boundary_confidence, 4) if self.acoustic_boundary_confidence is not None else None,
             'acoustic_uncertainty_ms': round(self.acoustic_uncertainty_ms, 3) if self.acoustic_uncertainty_ms is not None else None,
             'speaker_source': self.speaker_source,
@@ -226,13 +230,28 @@ def fuse(acoustic_doc, transcript_doc=None):
 
 
 def _role_lookup(attribution_doc):
-    """Map speaker_id → {role, confidence, method} from a source attribution document."""
+    """Map speaker_id → role evidence from a source attribution document.
+
+    Carries how the role was decided and what its confidence number means, so a
+    downstream reader can tell an explicit mapping from an uncalibrated model
+    proposal without re-reading the attribution artifact.
+    """
     lookup = {}
     for attr in (attribution_doc or {}).get('attributions') or []:
         lookup[attr['speaker_id']] = {
             'role': attr.get('role', 'unknown'),
             'confidence': attr.get('confidence'),
+            'confidence_basis': attr.get('confidence_basis') or (
+                'explicit_user_evidence' if attr.get('method') == 'explicit_evidence'
+                else 'human_review' if attr.get('method') == 'human_attribution'
+                else 'uncalibrated_model_self_report' if attr.get('method') == 'semantic_attribution'
+                else 'none'),
             'method': attr.get('method'),
+            'provider': attr.get('provider'),
+            'model': attr.get('model'),
+            'prompt_version': attr.get('prompt_version'),
+            'invocation_id': attr.get('invocation_id'),
+            'needs_review': attr.get('needs_review', False),
         }
     return lookup
 
@@ -384,6 +403,12 @@ def _unattributed(seg):
     }
 
 
+# Confidence bases that may be reported as a role confidence number. An uncalibrated
+# model self-report is NOT one of them: it is recorded as evidence, never as a
+# calibrated accuracy that downstream results could read as measured performance.
+CALIBRATED_ROLE_BASES = ('explicit_user_evidence', 'human_review')
+
+
 def _assign_speaker(seg, speaker_id, confidence, roles, evidence):
     seg['speaker_id'] = speaker_id
     seg['speaker_source'] = 'diarization'
@@ -392,11 +417,25 @@ def _assign_speaker(seg, speaker_id, confidence, roles, evidence):
     role = roles.get(speaker_id)
     if role and role['role'] != 'unknown':
         seg['speaker_role'] = role['role']
-        seg['role_attribution_confidence'] = role['confidence']
+        basis = role.get('confidence_basis')
+        # Only calibrated evidence may publish a role confidence number.
+        seg['role_attribution_confidence'] = (role['confidence']
+                                              if basis in CALIBRATED_ROLE_BASES else None)
+        seg['role_attribution'] = {
+            'method': role.get('method'),
+            'basis': basis,
+            'provider': role.get('provider'),
+            'model': role.get('model'),
+            'prompt_version': role.get('prompt_version'),
+            'invocation_id': role.get('invocation_id'),
+            'needs_review': bool(role.get('needs_review')),
+            'reported_confidence': role.get('confidence') if basis not in CALIBRATED_ROLE_BASES else None,
+        }
     else:
         # No role evidence: the cluster is known, the person is not.
         seg['speaker_role'] = 'unknown'
         seg['role_attribution_confidence'] = None
+        seg['role_attribution'] = None
 
 
 def _split_by_speaker(seg, ordered, roles, native_to_local):
