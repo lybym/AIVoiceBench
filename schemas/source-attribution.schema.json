@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/source-attribution.schema.json",
+  "title": "SourceAttribution 1.0.0",
+  "description": "Maps diarization speaker IDs to tester/device/unknown roles using evidence. Separate from diarization — does not infer roles from time order or speaker count.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "document_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+    "speaker_segments_ref": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "status": {
+      "enum": ["complete", "partial", "insufficient_evidence"]
+    },
+    "reason": { "type": ["string", "null"] },
+    "attributions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "speaker_id": { "type": "string", "minLength": 1 },
+          "role": { "enum": ["tester", "device", "unknown"] },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "method": {
+            "enum": ["explicit_evidence", "semantic_attribution", "human_attribution", "none"]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          },
+          "provider": { "type": ["string", "null"] },
+          "model": { "type": ["string", "null"] },
+          "reason": { "type": "string", "minLength": 1 }
+        },
+        "required": ["speaker_id", "role", "confidence", "method",
+                     "evidence_refs", "provider", "model", "reason"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema_version", "document_id", "speaker_segments_ref",
+               "status", "reason", "attributions"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "enum": ["insufficient_evidence"] } } },
+      "then": { "properties": { "attributions": { "maxItems": 0 } } }
+    }
+  ]
+}

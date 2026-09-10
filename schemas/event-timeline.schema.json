@@ -35,7 +35,7 @@
       "type": "object",
       "properties": {
         "kind": {
-          "const": "run_monotonic_ms"
+          "enum": ["run_monotonic_ms", "audio_relative_ms"]
         },
         "origin": {
           "type": "string",

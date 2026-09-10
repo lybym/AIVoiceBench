@@ -1,12 +1,12 @@
 let modelState=null, editingId=null, clearSecret=false;
 const purposes={tts:'语音生成',asr:'语音识别',diarization:'说话人分析',judge:'结果分析'};
 const protocolCaps={openai_chat:['judge'],volcengine_tts:['tts'],volcengine_asr:['asr','diarization'],custom_speech:['tts','asr','diarization']};
-const cleanProfile=p=>Object.fromEntries(Object.entries(p).filter(([k])=>!['credential_configured','adapter_status'].includes(k)));
+const cleanProfile=p=>Object.fromEntries(Object.entries(p).filter(([k])=>!['credential_configured','adapter_status','adapter_capabilities'].includes(k)));
 async function modelsView(){view('models');closeModel();try{modelState=await request('/api/models');drawModels();}catch(e){notify(e.message);}}
 function drawModels(){
 $('settings-revision').textContent='配置版本 '+modelState.revision+' · 下次运行生效';
 $('model-hint').textContent=modelState.revision===0?'尚未保存模型配置，分析仍沿用服务器环境变量。保存后以本页默认模型为准。':'未选择的用途保持未配置；语音接口标为待接入时不会自动调用。';
-$('routes').innerHTML=Object.entries(purposes).map(([k,v])=>`<label>${v}<select id="route-${k}"><option value="">未配置</option>${modelState.profiles.filter(p=>p.enabled&&p.capabilities.includes(k)).map(p=>`<option value="${esc(p.id)}" ${modelState.routes[k]===p.id?'selected':''}>${esc(p.name)}${p.adapter_status==='not_integrated'?' · 待接入':''}</option>`).join('')}</select></label>`).join('');
+$('routes').innerHTML=Object.entries(purposes).map(([k,v])=>`<label>${v}<select id="route-${k}"><option value="">未配置</option>${modelState.profiles.filter(p=>p.enabled&&p.capabilities.includes(k)).map(p=>`<option value="${esc(p.id)}" ${modelState.routes[k]===p.id?'selected':''}>${esc(p.name)}${!p.adapter_capabilities?.includes(k)?' · 待接入':''}</option>`).join('')}</select></label>`).join('');
 $('model-list').innerHTML=modelState.profiles.length?modelState.profiles.map(p=>`<div class="panel model-card"><div class="title-row"><div><h2>${esc(p.name)}</h2><p>${esc(p.provider)} · ${esc(p.model)}</p></div><button class="text-button" data-edit="${esc(p.id)}">编辑 →</button></div><div class="model-tags"><span class="badge">${p.capabilities.map(c=>purposes[c]).join(' / ')}</span>${badge(!p.enabled?'pending':p.adapter_status==='not_integrated'?'pending':p.credential_configured?'complete':'insufficient_evidence')}<span class="quiet">${!p.enabled?'已停用':p.adapter_status==='not_integrated'?'适配器待接入':p.credential_configured?'密钥已配置 · 尚未验证连通':'尚未配置密钥'}</span></div><button class="text-button remove-model" data-delete="${esc(p.id)}">移除配置</button></div>`).join(''):'<div class="panel empty"><strong>还没有模型配置</strong>添加服务与模型，再为任务选择默认模型。</div>';
 $('model-list').querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editModel(b.dataset.edit));$('model-list').querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>deleteModel(b.dataset.delete));}
 function closeModel(){$('model-editor').hidden=true;editingId=null;clearSecret=false;$('model-form').reset();}

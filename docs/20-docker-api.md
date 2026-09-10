@@ -1,5 +1,7 @@
 # Docker / API — 使用说明与版本边界
 
+> M1 实现更新：本分支统一 ImportRun、ASR 路由、调用审计和转写；恢复/契约与当前验证限制见 [Recording Backbone](23-recording-backbone.md)。下文旧版本路径和可用状态以该技术更新为准。
+
 产品要求见 [PRD-F001/F014/F015、PRD-N001](PRD.md)，不以本文件另设交付范围。
 
 ## 选择运行的版本

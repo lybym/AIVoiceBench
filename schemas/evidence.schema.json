@@ -23,7 +23,7 @@
       "minLength": 1
     },
     "time_base": {
-      "const": "run_monotonic_ms"
+      "enum": ["run_monotonic_ms", "audio_relative_ms"]
     },
     "start_ms": {
       "type": "number",
@@ -44,9 +44,14 @@
       ]
     },
     "confidence": {
-      "type": "number",
+      "description": "Confidence of this claim, or null when no defensible value exists. Unknown is not zero; an uncalibrated model self-report must never be promoted to a calibrated number here.",
+      "type": ["number", "null"],
       "minimum": 0,
       "maximum": 1
+    },
+    "confidence_source": {
+      "description": "Which independent dimension the confidence number belongs to. Dimensions are not interchangeable.",
+      "enum": ["acoustic_boundary", "speaker_cluster", "role_attribution", "semantic_event", "none", null]
     },
     "transcript_excerpt": {
       "type": "string",

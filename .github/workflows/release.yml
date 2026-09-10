@@ -57,6 +57,7 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag }}
           target_commitish: ${{ github.sha }}
+          prerelease: ${{ contains(github.event.inputs.tag, '-') }}
           name: AIVoiceBench ${{ github.event.inputs.tag }}
           body: |
             # AIVoiceBench ${{ github.event.inputs.tag }}

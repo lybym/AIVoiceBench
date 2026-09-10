@@ -1,6 +1,8 @@
 # Model management
 
-The browser model manager separates provider profiles from capability routes (TTS, ASR, diarization and result Judge). Profiles declare protocol, endpoint, model ID, parameters and credential reference; default routes select a profile per purpose. Changes apply at the next Run. Unsupported speech adapters are explicitly not_integrated; saving configuration does not invoke a provider or certify connectivity. Only the existing OpenAI-compatible result Judge is wired by this milestone. Vosk and existing ASR infrastructure remain intact; cloud speech transport is a separate integration milestone.
+> M1 实现更新：本分支统一 ImportRun、ASR 路由、调用审计和转写；恢复/契约与当前验证限制见 [Recording Backbone](23-recording-backbone.md)。下文旧版本路径和可用状态以该技术更新为准。
+
+The browser model manager separates provider profiles from capability routes (TTS, ASR, diarization and result Judge). Profiles declare protocol, endpoint, model ID, parameters and credential reference; default routes select a profile per purpose. Changes apply at the next Run. Unsupported speech adapters are explicitly not_integrated; saving configuration does not invoke a provider or certify connectivity. M1 also wires the configured Volcengine ASR route. Diarization/TTS remain unavailable; ASR availability does not imply role attribution. Vosk remains intact.
 
 ## Reference and adaptation
 
@@ -12,7 +14,7 @@ Settings use SQLite transactions in AIVOICEBENCH_OUTPUT/.model-settings/credenti
 
 ## Revisions and Run evidence
 
-Writes require expected_revision; stale editors receive 409 instead of replacing newer settings. Profile/schema validation, route validation, persistence and revision increment share a transaction. Removing a profile removes its local secret; active routes must be cleared. Each Web Run resolves settings once, captures a secret-free model-config.json and registers its SHA256 in the import manifest. Existing Runs retain their snapshot after subsequent edits. Stored settings override legacy LLM environment routing after the first save; before that, environment routing remains available.
+Writes require expected_revision; stale editors receive 409 instead of replacing newer settings. Profile/schema validation, route validation, persistence and revision increment share a transaction. Removing a profile removes its local secret; active routes must be cleared. Each Web Run resolves settings once, captures a secret-free model-config.json and registers its SHA256 in the import manifest. Snapshots live inside the selected analysis revision. Existing revisions retain their snapshot after subsequent edits. Stored settings override legacy LLM environment routing after the first save; before that, environment routing remains available.
 
 ## Verification
 

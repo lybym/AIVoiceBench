@@ -184,7 +184,10 @@ def timeline_errors(timeline):
         previous_time = event['start_ms']
         if event['end_ms'] < event['start_ms']:
             errors.append(f'{location}: end_ms precedes start_ms')
-        if event['type'] not in ('asr_segment', 'custom', 'silence') and event['end_ms'] != event['start_ms']:
+        # A timeout is the observed no-response window, not an instant: PRD-F008
+        # requires a complete observation window for it. Silence and custom spans
+        # are intervals too; the remaining event types are boundary points.
+        if event['type'] not in ('asr_segment', 'custom', 'silence', 'timeout') and event['end_ms'] != event['start_ms']:
             errors.append(f'{location}: boundary event must be a point')
         refs = [evidence.get(key) for key in event['evidence_ids']]
         if any(item is None for item in refs):
@@ -219,6 +222,31 @@ def metric_errors(metric, timeline=None):
     errors = schema_errors(metric, 'metric')
     if errors:
         return errors
+    version = metric.get('schema_version')
+    # Version-specific contract. The shared schema accepts both 2.0.0 and 3.0.0
+    # structurally; each version then enforces its own identity, policy and
+    # traceability rules here. Do not silently normalize one into the other.
+    if version == '3.0.0':
+        if not metric.get('prd_ref'):
+            errors.append('/prd_ref: MetricResult 3.0.0 requires a PRD requirement reference')
+        if metric.get('name') == 'false_endpoint':
+            errors.append('/name: 3.0.0 deterministic output must use false_endpoint_candidate; '
+                          'false_endpoint is the legacy confirmed form and requires explicit '
+                          'semantic/human confirmation evidence')
+        if metric.get('policy') is not None and metric.get('policy_version') is None:
+            errors.append('/policy_version: a declared policy requires its version')
+        if metric.get('confidence') is not None and metric.get('confidence_source') is None:
+            errors.append('/confidence_source: a numeric confidence requires its dimension source')
+    elif version == '2.0.0':
+        # Legacy contract: keep the original required shape so old artifacts stay
+        # interpretable and cannot be retrofitted with 3.0.0 policy fields.
+        if metric.get('case_id') is None:
+            errors.append('/case_id: MetricResult 2.0.0 requires a case identity')
+        if metric.get('confidence') is None:
+            errors.append('/confidence: MetricResult 2.0.0 requires a numeric confidence')
+        if metric.get('prd_ref') is not None or metric.get('policy') is not None:
+            errors.append('/: 2.0.0 documents must not carry 3.0.0 policy fields; '
+                          're-emit under 3.0.0 instead of rewriting history')
     aggregation = metric['aggregation']
     n = aggregation['sample_count']
     if n + aggregation['excluded_count'] != aggregation['total_count']:
@@ -253,8 +281,12 @@ def metric_errors(metric, timeline=None):
     timeline_issues = timeline_errors(timeline)
     if timeline_issues:
         return errors + ['Referenced timeline is invalid: ' + message for message in timeline_issues]
-    if any(metric[key] != timeline[key] for key in ('run_id', 'case_id', 'execution_kind')):
-        errors.append('/: metric and timeline run/case/execution_kind disagree')
+    # 3.0.0 allows nullable case_id for unscripted imported runs; only compare
+    # when both sides carry an identity, so imported metrics stay validatable.
+    for key in ('run_id', 'case_id', 'execution_kind'):
+        left, right = metric.get(key), timeline.get(key)
+        if left is not None and right is not None and left != right:
+            errors.append(f'/: metric and timeline {key} disagree')
     evidence = {item['evidence_id']: item for item in timeline['evidence']}
     events = {item['event_id']: item for item in timeline['events']}
     if any(key not in evidence for key in metric['evidence_ids']):
@@ -344,7 +376,7 @@ def transcript_errors(transcript):
             if word['start_ms'] < word_end - 0.001 or word['end_ms'] < word['start_ms'] or word['end_ms'] > segment['end_ms'] + 0.001:
                 errors.append(f'/segments/{index}/words: timing out of segment bounds or order')
             word_end = word['end_ms']
-        previous_end = segment['end_ms']
+        previous_end = segment['start_ms'] if transcript['schema_version'] == '1.1.0' else segment['end_ms']
     return errors
 
 

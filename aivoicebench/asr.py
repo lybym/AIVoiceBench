@@ -167,7 +167,7 @@ def transcribe_file(source, provider, output_root, source_role='unknown', channe
         # Native strings preserved exactly, including fields unused by normalization.
         write_json(raw_path, {'messages': result.raw_messages})
         segments, gaps = provider.normalize(result.raw_messages, duration)
-        transcript = {'schema_version': '1.0.0', 'transcript_id': output.name, 'run_id': run_id, 'case_id': case_id,
+        transcript = {'schema_version': getattr(provider, 'transcript_version', '1.0.0'), 'transcript_id': output.name, 'run_id': run_id, 'case_id': case_id,
                       'measurement_scope': 'external_asr', 'time_base': 'audio_relative_ms',
                       'time_mapping': {'status': 'unmapped', 'offset_ms': None, 'uncertainty_ms': None},
                       'source': {'path': 'source.wav', 'sha256': digest(output / 'source.wav'), 'role': source_role,

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/provider-invocation.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "invocation_id", "operation_id", "attempt", "provider", "model", "processor_version", "endpoint", "api_version", "prompt_version", "config", "config_schema", "started_at", "finished_at", "latency_ms", "status", "failure_code", "input_artifacts", "output_artifacts"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "invocation_id": {"type": "string", "pattern": "^CALL-[a-f0-9]{32}$"},
+    "operation_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "attempt": {"type": "integer", "minimum": 1},
+    "provider": {"$ref": "#/$defs/identifier"},
+    "model": {"$ref": "#/$defs/identifier"},
+    "processor_version": {"$ref": "#/$defs/identifier"},
+    "endpoint": {"type": ["string", "null"], "format": "uri"},
+    "api_version": {"type": ["string", "null"], "minLength": 1},
+    "prompt_version": {"type": ["string", "null"], "minLength": 1},
+    "config": {"type": "object"},
+    "config_schema": {"type": "object"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": ["string", "null"], "format": "date-time"},
+    "latency_ms": {"type": ["number", "null"], "minimum": 0},
+    "status": {"enum": ["pending", "complete", "partial", "insufficient_evidence", "failed"]},
+    "failure_code": {"enum": [null, "provider_error", "unavailable", "timeout", "invalid_output", "cancelled"]},
+    "input_artifacts": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/artifact"}},
+    "output_artifacts": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/artifact"}}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._/:-]*$"},
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "size_bytes": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "pending"}}}, "then": {"properties": {"finished_at": {"type": "null"}, "latency_ms": {"type": "null"}, "failure_code": {"type": "null"}, "output_artifacts": {"maxItems": 0}}}, "else": {"properties": {"finished_at": {"type": "string"}, "latency_ms": {"type": "number"}}}},
+    {"if": {"properties": {"status": {"const": "complete"}}}, "then": {"properties": {"output_artifacts": {"minItems": 1}, "failure_code": {"type": "null"}}}},
+    {"if": {"properties": {"status": {"const": "failed"}}}, "then": {"properties": {"failure_code": {"type": "string"}}}}
+  ]
+}

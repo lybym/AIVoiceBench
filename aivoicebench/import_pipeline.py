@@ -1,6 +1,10 @@
 """Import orchestrator. Signal, storage, ASR and reporting processors are independent."""
 
 from pathlib import Path
+import json
+
+from .runner import digest, write_json
+from .run_lock import run_lock
 
 from .asr import transcribe_file
 from .audio_processing import FFmpegAudioProcessor, MAX_RECORDING_MS
@@ -24,10 +28,19 @@ def _normalize(run, source, parent, processor):
 def _asr(run, normalized, parent, provider_factory):
     # Model initialization belongs inside its stage so missing models cannot lose the imported Run.
     provider = provider_factory()
-    directory, transcript = transcribe_file(normalized, provider, run.analysis / 'asr-native',
-                                            source_role='room_mix', max_duration_ms=MAX_RECORDING_MS)
+    known = {a['path'] for a in run.manifest['artifacts']}
+    try:
+        directory, transcript = transcribe_file(normalized, provider, run.analysis / 'asr-native',
+                                                source_role='room_mix', max_duration_ms=MAX_RECORDING_MS)
+    finally:
+        for path in sorted((run.directory / 'provider-calls').rglob('*')):
+            if path.is_file() and path.relative_to(run.directory).as_posix() not in known:
+                ref = run.register(path, 'provider_invocation', [parent], 'invocation_audit:1.0.0')
+                if ref not in run.manifest['stages']['asr']['output_artifact_ids']:
+                    run.manifest['stages']['asr']['output_artifact_ids'].append(ref)
+        run.checkpoint()
     mapping = {path.name: run.register(path, 'asr_native', [parent], 'timestamped_asr:1.0.0') for path in sorted(directory.iterdir())}
-    ids = list(mapping.values())
+    ids = list(run.manifest['stages']['asr']['output_artifact_ids']) + list(mapping.values())
     run.manifest['stages']['asr']['processor'] = transcript['provider_profile']
     # Transcript 1.0 pairs run_id with case_id; the envelope binds unscripted imports without a fake Case.
     output = run.envelope('transcript', transcript['status'], 'External ASR; role unknown and acoustic timing unverified',
@@ -35,21 +48,307 @@ def _asr(run, normalized, parent, provider_factory):
     return ids + [output], transcript, 'Provider returned transcript gaps' if transcript['gaps'] else None
 
 
-def _pending_outputs(run, normalized_ok):
+def _envelope_data(doc, status):
+    """Return doc as data for envelope, or None if status requires null data."""
+    if status in ('pending', 'insufficient_evidence', 'failed'):
+        return None
+    return doc
+
+
+def _safe_diar_art_id(run, fallback):
+    """Get diarization output artifact ID, or fallback."""
+    if run.manifest['stages'].get('diarization', {}).get('output_artifact_ids'):
+        return [run.manifest['stages']['diarization']['output_artifact_ids'][-1]]
+    return [fallback]
+
+
+def _diarize(run, norm_path, acoustic_doc, parent, diarization_provider=None,
+             transcript_doc=None, transcript_invocation=None):
+    """Run diarization on the normalized recording.
+
+    Outputs speaker clustering (speaker_0, speaker_1, ...) — NOT tester/device.
+    Without a configured provider, returns insufficient_evidence.
+    MockDiarizationProvider is NEVER used in production — test injection only.
+
+    When the provider derives clusters from an existing ASR native response,
+    no second recognition request is submitted.
+    """
+    acoustic_segments = acoustic_doc.get('segments', []) if acoustic_doc else []
+
+    if diarization_provider is None:
+        # No provider configured — not a failure, just unavailable
+        output = run.envelope('speaker-assignments', 'insufficient_evidence',
+                              'Diarization provider not configured; speaker clustering unavailable',
+                              None, [parent])
+        run.manifest['stages']['diarization']['processor'] = {'name': 'none', 'version': '1.0.0'}
+        run.manifest['stages']['diarization']['status'] = 'insufficient_evidence'
+        return [output], None, None  # reason=None so run.execute doesn't override to 'partial'
+
+    # Prefer deriving from the completed ASR native response: one cloud call
+    # already produced the speaker labels, so do not resubmit recognition.
+    if transcript_doc is not None and hasattr(diarization_provider, 'diarize_from_transcript'):
+        audio_sha256 = (transcript_doc.get('source') or {}).get('sha256') or _audio_sha(run, parent)
+        result = diarization_provider.diarize_from_transcript(
+            transcript_doc,
+            audio_sha256=audio_sha256,
+            invocation_id=(transcript_invocation or {}).get('invocation_id'),
+            native_response_sha256=(transcript_invocation or {}).get('native_response_sha256'),
+            analysis_id=run.manifest.get('analysis_id'))
+    else:
+        result = diarization_provider.diarize(Path(norm_path).resolve(), acoustic_segments)
+
+    doc = result.to_dict()
+    status = doc['status']
+    output = run.envelope('speaker-assignments', status,
+                          doc.get('reason') or 'Speaker clustering only; role attribution is separate',
+                          _envelope_data(doc, status), [parent])
+    run.manifest['stages']['diarization']['processor'] = doc.get('processor', {})
+    reason = None if doc.get('speaker_segments') else doc.get('reason') or 'No speaker segments produced'
+    return [output], doc, reason
+
+
+def _audio_sha(run, artifact_id):
+    """Resolve a registered artifact's sha256."""
+    for item in run.manifest.get('artifacts', []):
+        if item['artifact_id'] == artifact_id:
+            return item.get('sha256')
+    return None
+
+
+def _asr_invocation(run):
+    """Read the ASR provider invocation identity from registered evidence.
+
+    Returns {'invocation_id', 'native_response_sha256'} when available, so
+    derived speaker segments can reference the real call instead of pretending
+    a second cloud request occurred.
+    """
+    info = {'invocation_id': None, 'native_response_sha256': None}
+    recorded = json.loads(run.manifest.get('provider_invocations', 'null') or 'null')
+    directory = run.directory / 'provider-calls'
+    if not directory.is_dir():
+        return info
+    for call_dir in sorted(directory.iterdir()):
+        start = call_dir / 'start.json'
+        result = call_dir / 'result.json'
+        native = call_dir / 'native-response.json'
+        if not start.exists():
+            continue
+        try:
+            record = json.loads(start.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if record.get('provider') != 'volcengine':
+            continue
+        info['invocation_id'] = call_dir.name
+        if native.exists():
+            info['native_response_sha256'] = digest(native)
+        elif result.exists():
+            try:
+                finished = json.loads(result.read_text(encoding='utf-8'))
+                for ref in finished.get('output_artifact_refs', []) or []:
+                    name = Path(ref).name
+                    if name == 'native-response.json':
+                        candidate = call_dir / name
+                        if candidate.exists():
+                            info['native_response_sha256'] = digest(candidate)
+            except (OSError, ValueError):
+                pass
+    return info
+
+
+def _attribute(run, diarization_doc, parent, explicit_mapping=None):
+    """Map speaker_id to tester/device/unknown using evidence.
+
+    Without explicit evidence, ALL speakers remain 'unknown'.
+    NEVER infers from first-speaker order or speaker count.
+    """
+    from .diarization import attribute_speakers
+    if diarization_doc is None:
+        attr_doc = attribute_speakers({'speaker_segments': []})
+    else:
+        attr_doc = attribute_speakers(diarization_doc, explicit_mapping=explicit_mapping)
+    status = attr_doc['status']
+    output = run.envelope('attribution', status,
+                          attr_doc.get('reason') or 'Source attribution',
+                          _envelope_data(attr_doc, status), [parent])
+    return [output], attr_doc, None if status == 'complete' else 'Some or all speakers have no role evidence'
+
+
+def _fusion_with_speakers(run, acoustic_doc, transcript_doc, diarization_doc,
+                          attribution_doc, parent_ids):
+    """Fuse acoustic segments with ASR transcript, diarization and role attribution.
+
+    speaker_id comes from diarization.
+    speaker_role comes from source attribution (explicit/semantic/human/none).
+    They are separate fields — never conflated.
+    """
+    from .fusion import fuse, apply_speakers
+    fused_doc = fuse(acoustic_doc, transcript_doc)
+    apply_speakers(fused_doc, diarization_doc, attribution_doc)
+
+    status = fused_doc['status']
+    output = run.envelope('fused-segments', status,
+                          fused_doc.get('reason') or fused_doc.get('attribution', {}).get('note', 'Fused segments'),
+                          _envelope_data(fused_doc, status), parent_ids)
+    run.manifest['stages']['fusion']['processor'] = {
+        'name': 'fusion', 'version': '1.0.0',
+        'strategy': fused_doc.get('attribution', {}).get('strategy', 'unknown')
+    }
+    reason = None if status == 'complete' else fused_doc.get('reason') or 'Speaker clusters unresolved'
+    return [output], fused_doc, reason
+
+
+def _acoustic(run, normalized_path, parent):
+    """Run energy VAD acoustic segmentation on the normalized audio."""
+    from .acoustic import EnergyVadSegmenter
+    segmenter = EnergyVadSegmenter()
+    result = segmenter.segment(Path(normalized_path).resolve())
+    doc = result.to_dict()
+    status = doc['status']
+    output = run.envelope('acoustic-segments', status,
+                          'Acoustic VAD; signal timing, no speaker role',
+                          _envelope_data(doc, status), [parent])
+    run.manifest['stages']['acoustic']['processor'] = {
+        'name': 'energy_vad', 'version': '1.0.0',
+        'method': 'energy_vad', 'parameters': doc.get('processor', {}).get('parameters', {})
+    }
+    return [output], doc, None if doc['segments'] else 'No speech segments detected'
+
+
+def _fusion(run, acoustic_doc, transcript_doc, parent_ids):
+    """Fuse acoustic segments with optional ASR transcript and attribute speakers."""
+    from .fusion import fuse
+    fused_doc = fuse(acoustic_doc, transcript_doc)
+    status = fused_doc['status']
+    output = run.envelope('fused-segments', status,
+                          fused_doc.get('attribution', {}).get('note', 'Fused segments'),
+                          _envelope_data(fused_doc, status), parent_ids)
+    run.manifest['stages']['fusion']['processor'] = {
+        'name': 'fusion', 'version': '1.0.0',
+        'strategy': fused_doc.get('attribution', {}).get('strategy', 'unknown')
+    }
+    reason = None if fused_doc['segments'] else 'No fused segments produced'
+    return [output], fused_doc, reason
+
+
+def _turns(run, fused_doc, parent_ids):
+    """Build conversational turns from fused segments."""
+    from .fusion import build_turns
+    turns_doc = build_turns(fused_doc)
+    status = turns_doc['status']
+    output = run.envelope('turns', status,
+                          turns_doc.get('reason') or 'Turn builder',
+                          _envelope_data(turns_doc, status), parent_ids)
+    run.manifest['stages']['turns']['processor'] = {'name': 'turn_builder', 'version': '1.0.0'}
+    reason = None if turns_doc['turns'] else 'No turns could be built'
+    return [output], turns_doc, reason
+
+
+def _timeline(run, fused_doc, turns_doc, parent_ids):
+    """Detect events and generate EventTimeline from fused segments and turns.
+
+    The timeline and its events carry this Run's real identity, so the persisted
+    timeline validates on its own and the metrics derived from it agree.
+    """
+    from .fusion import detect_events, generate_timeline
+    identity = {'run_id': run.manifest['run_id'],
+                'case_id': run.manifest.get('case_ref') or 'CASE-auto',
+                'execution_kind': run.manifest['execution_kind']}
+    events, evidence, status, reason = detect_events(
+        fused_doc, turns_doc, run_id=identity['run_id'], case_id=identity['case_id'])
+    timeline_doc = generate_timeline(fused_doc, turns_doc, events, evidence, status, reason,
+                                     **identity)
+    tl_status = timeline_doc['status']
+    output = run.envelope('timeline', tl_status,
+                          reason or 'Automatic event detection',
+                          _envelope_data(timeline_doc, tl_status), parent_ids)
+    run.manifest['stages']['timeline']['processor'] = {'name': 'event_detector', 'version': '1.0.0'}
+    return [output], timeline_doc, reason if not events else None
+
+
+def _metrics(run, timeline_doc, parent_ids):
+    """Compute canonical MetricResult 3.0.0 from the timeline."""
+    from .metrics import compute_timeline_metrics
+    # Bind the timeline to the Run identity so canonical metrics carry
+    # run_id / analysis_id / execution_kind for provenance.
+    scoped = dict(timeline_doc)
+    scoped['run_id'] = run.manifest['run_id']
+    scoped['analysis_id'] = run.manifest['analysis_id']
+    scoped['execution_kind'] = run.manifest['execution_kind']
+    scoped['case_id'] = run.manifest.get('case_ref') or None
+    metrics_result = compute_timeline_metrics(scoped)
+    raw_status = metrics_result.get('status', 'insufficient_evidence')
+    has_metrics = bool(metrics_result.get('metrics'))
+    if raw_status == 'observed':
+        envelope_status = 'complete'
+    elif has_metrics:
+        envelope_status = 'partial'  # Has metric documents, just no observed values
+    else:
+        envelope_status = 'insufficient_evidence'
+    output = run.envelope('metrics', envelope_status,
+                          'Canonical MetricResult 3.0.0 from timeline events',
+                          _envelope_data(metrics_result, envelope_status), parent_ids)
+    run.manifest['stages']['metrics']['processor'] = {'name': 'metrics', 'version': '3.0.0'}
+    counts = metrics_result.get('counts', {})
+    reason = None if counts.get('observed') else 'No observed metrics (insufficient_evidence or not_applicable)'
+    return [output], metrics_result, reason
+
+
+# Every analysis stage owns exactly one envelope kind. A stage that did not run
+# still has to publish its evidence state; a stage left 'pending' with no output
+# would let the Run imply work that never happened.
+STAGE_KINDS = (
+    ('asr', 'transcript'),
+    ('acoustic', 'acoustic-segments'),
+    ('diarization', 'speaker-assignments'),
+    ('attribution', 'attribution'),
+    ('fusion', 'fused-segments'),
+    ('turns', 'turns'),
+    ('timeline', 'timeline'),
+    ('metrics', 'metrics'),
+    ('judge', 'judge-results'),
+    ('findings', 'findings'),
+)
+UNRUN_REASONS = {
+    'asr': 'No ASR provider configured for this import; transcription was not performed',
+    'acoustic': 'Acoustic segmentation did not run for this import',
+    'diarization': 'Diarization provider or ASR speaker evidence unavailable; speaker clustering unavailable',
+    'attribution': 'Source attribution did not run because upstream speaker evidence is unavailable',
+    'fusion': 'Fusion did not run because acoustic or transcript evidence is unavailable',
+    'turns': 'Turn building did not run because fused speaker segments are unavailable',
+    'timeline': 'Event detection did not run because fused segments or turns are unavailable',
+    'metrics': 'Metric computation did not run because the event timeline is unavailable',
+    'judge': 'Provider or processor is not configured/implemented for this import milestone',
+    'findings': 'Provider or processor is not configured/implemented for this import milestone',
+}
+# Stages gated on upstream speaker/acoustic evidence. By the end of an import they
+# can no longer become available, so they report insufficient_evidence instead of
+# pending. 'pending' is reserved for processors this milestone simply does not run
+# (asr without a configured provider, judge, findings).
+EVIDENCE_GATED_STAGES = ('acoustic', 'diarization', 'attribution', 'fusion', 'turns', 'timeline', 'metrics')
+
+
+def _resolve_unrun_stages(run, normalized_ok):
+    """Publish an evidence state for every stage that did not produce an output.
+
+    A stage without canonical audio is reported as insufficient_evidence. A stage
+    whose processor is simply not configured for this milestone keeps its own
+    status but still publishes an envelope, so no stage is silently absent.
+    Never fabricates data: unrun stages carry data=null.
+    """
     stages = run.manifest['stages']
-    stage_files = {'asr': 'transcript', 'acoustic': 'acoustic-segments', 'diarization': 'speaker-assignments',
-                   'fusion': 'fused-segments', 'turns': 'turns', 'timeline': 'timeline',
-                   'metrics': 'metrics', 'judge': 'judge-results', 'findings': 'findings'}
-    for stage_name, kind in stage_files.items():
+    for stage_name, kind in STAGE_KINDS:
+        stage = stages[stage_name]
+        if stage['status'] not in ('pending', 'insufficient_evidence'):
+            continue
         if (run.analysis / f'{kind}.json').exists():
             continue
-        stage = stages[stage_name]
         if stage['status'] == 'pending':
-            stage['reason'] = ('Provider or processor is not configured/implemented for this import milestone' if normalized_ok
-                               else 'Canonical audio unavailable; dependent analysis was not run')
-            if not normalized_ok:
-                stage['status'] = 'insufficient_evidence'
-        output = run.envelope(kind, stage['status'], stage['reason'])
+            stage['reason'] = UNRUN_REASONS[stage_name] if normalized_ok \
+                else 'Canonical audio unavailable; dependent analysis was not run'
+        if not normalized_ok or stage_name in EVIDENCE_GATED_STAGES:
+            stage['status'] = 'insufficient_evidence'
+        output = run.envelope(kind, stage['status'], stage['reason'] or UNRUN_REASONS[stage_name])
         stage['output_artifact_ids'].append(output)
 
 
@@ -68,9 +367,17 @@ def _retain_failures(run):
 
 
 def import_recording(source, output_root='artifacts/imports', *, profile=None, audio_processor=None,
-                     asr_provider_factory=None, synthetic=False):
+                     asr_provider_factory=None, synthetic=False, model_snapshot=None, providers=None):
     """Return a durable Run even when a processor fails. Does not perform cloud or hardware I/O by default."""
     run = ImportRun(output_root, profile, synthetic)
+    with run_lock(run.directory):
+        return _continue_import(run, source, audio_processor, asr_provider_factory, model_snapshot, providers)
+
+
+def _continue_import(run, source, audio_processor, asr_provider_factory, model_snapshot, providers):
+    _save_configuration(run, model_snapshot)
+    if providers is not None and providers.asr is not None:
+        asr_provider_factory = lambda: providers.asr(run.directory)
     original = run.execute('ingestion', [], lambda: ingest_file(run, source))
     normalized = None
     if original:
@@ -88,12 +395,16 @@ def import_recording(source, output_root='artifacts/imports', *, profile=None, a
             return [item], result.metadata['normalized'], None
         run.execute('audio_qa', [artifact_id], emit_qa)
         if asr_provider_factory is not None:
-            run.execute('asr', [artifact_id], lambda: _asr(run, result.path, artifact_id, asr_provider_factory))
+            run.execute('asr', [artifact_id] + _configuration_refs(run), lambda: _asr(run, result.path, artifact_id, asr_provider_factory))
     else:
         stage = run.manifest['stages']['audio_qa']
         stage.update(status='insufficient_evidence', reason='No verified canonical audio')
         stage['output_artifact_ids'] = [run.envelope('audio-qa', stage['status'], stage['reason'])]
-    _pending_outputs(run, normalized is not None)
+    if normalized is None:
+        run.manifest['status'] = 'failed'
+    else:
+        _run_evidence_chain(run, normalized, asr_provider_factory is not None, providers)
+    _resolve_unrun_stages(run, normalized is not None)
     _retain_failures(run)
     run.checkpoint()
     run.execute('report', [item['artifact_id'] for item in run.manifest['artifacts']], lambda: write_import_report(run))
@@ -102,3 +413,205 @@ def import_recording(source, output_root='artifacts/imports', *, profile=None, a
         raise ValueError('Import artifact validation failed: ' + '\n'.join(errors))
     run.checkpoint()
     return run.directory, run.manifest
+
+
+def _run_evidence_chain(run, normalized, asr_available, providers=None):
+    """Run acoustic → diarization → attribution → fusion → turns → timeline → metrics.
+
+    Each stage is independent: failure in one does not prevent the report stage.
+    Uses lazy imports so missing modules don't crash the import pipeline.
+    """
+    result, norm_art_id = normalized
+    norm_path = result.path
+
+    # Acoustic segmentation — parent: normalized_audio
+    acoustic_result = run.execute('acoustic', [norm_art_id],
+        lambda: _acoustic(run, norm_path, norm_art_id))
+
+    acoustic_art_id = None
+    if run.manifest['stages']['acoustic']['output_artifact_ids']:
+        acoustic_art_id = run.manifest['stages']['acoustic']['output_artifact_ids'][-1]
+
+    # Load the completed transcript and its invocation evidence BEFORE diarization
+    # so speaker clusters can be derived from the existing ASR call.
+    transcript_doc = None
+    asr_art_id = None
+    asr_invocation = _asr_invocation(run)
+    asr_stage = run.manifest['stages']['asr']
+    if asr_stage['status'] == 'complete':
+        transcript_path = run.analysis / 'transcript.json'
+        if transcript_path.exists():
+            envelope_data = json.loads(transcript_path.read_text(encoding='utf-8'))
+            transcript_doc = envelope_data.get('data')
+            if asr_stage['output_artifact_ids']:
+                asr_art_id = asr_stage['output_artifact_ids'][-1]
+
+    # Diarization — parents: transcript (preferred) or acoustic_segments
+    # Only runs if a real diarization provider is configured.
+    diar_provider = None
+    if providers is not None and hasattr(providers, 'diarization') and providers.diarization is not None:
+        diar_provider = providers.diarization(run.directory)
+
+    diar_parents = [p for p in [asr_art_id, acoustic_art_id, norm_art_id] if p]
+    diarization_result = run.execute('diarization', diar_parents,
+        lambda: _diarize(run, norm_path, acoustic_result, acoustic_art_id or norm_art_id,
+                         diar_provider, transcript_doc, asr_invocation))
+
+    diar_art_id = None
+    if run.manifest['stages']['diarization']['output_artifact_ids']:
+        diar_art_id = run.manifest['stages']['diarization']['output_artifact_ids'][-1]
+
+    # Source attribution — parent: diarization output
+    # Explicit mapping from profile or test context (Level 1 evidence)
+    explicit_mapping = None
+    if hasattr(run, '_explicit_speaker_mapping'):
+        explicit_mapping = run._explicit_speaker_mapping
+
+    attr_parents = [diar_art_id] if diar_art_id else [acoustic_art_id or norm_art_id]
+    attribution_result = run.execute('attribution', attr_parents,
+        lambda: _attribute(run, diarization_result, diar_art_id or (acoustic_art_id or norm_art_id),
+                           explicit_mapping))
+
+    attr_art_id = None
+    if run.manifest['stages']['attribution']['output_artifact_ids']:
+        attr_art_id = run.manifest['stages']['attribution']['output_artifact_ids'][-1]
+
+    # Fusion — parents: acoustic + diarization + attribution (+ transcript)
+    if acoustic_result and acoustic_result.get('segments'):
+        acoustic_doc = acoustic_result
+        fusion_parents = [p for p in [acoustic_art_id, diar_art_id, attr_art_id, asr_art_id] if p]
+        if not fusion_parents:
+            fusion_parents = [norm_art_id]
+        fusion_result = run.execute('fusion', fusion_parents,
+            lambda: _fusion_with_speakers(run, acoustic_doc, transcript_doc,
+                                         diarization_result, attribution_result, fusion_parents))
+
+        fusion_art_id = None
+        if run.manifest['stages']['fusion']['output_artifact_ids']:
+            fusion_art_id = run.manifest['stages']['fusion']['output_artifact_ids'][-1]
+
+        # Turns — parent: fusion
+        if fusion_result and fusion_result.get('segments'):
+            fused_doc = fusion_result
+            has_roles = any(s.get('speaker_role') in ('tester', 'device')
+                           for s in fused_doc.get('segments', []))
+            if has_roles and fusion_art_id:
+                turns_result = run.execute('turns', [fusion_art_id],
+                    lambda: _turns(run, fused_doc, [fusion_art_id]))
+
+                turns_art_id = None
+                if run.manifest['stages']['turns']['output_artifact_ids']:
+                    turns_art_id = run.manifest['stages']['turns']['output_artifact_ids'][-1]
+
+                if turns_result and turns_result.get('turns'):
+                    turns_doc = turns_result
+                    tl_parents = [p for p in [fusion_art_id, turns_art_id] if p]
+                    timeline_result = run.execute('timeline', tl_parents,
+                        lambda: _timeline(run, fused_doc, turns_doc, tl_parents))
+
+                    timeline_art_id = None
+                    if run.manifest['stages']['timeline']['output_artifact_ids']:
+                        timeline_art_id = run.manifest['stages']['timeline']['output_artifact_ids'][-1]
+
+                    if timeline_result and timeline_result.get('events') is not None and timeline_art_id:
+                        timeline_doc = timeline_result
+                        run.execute('metrics', [timeline_art_id],
+                            lambda: _metrics(run, timeline_doc, [timeline_art_id]))
+            else:
+                insuf_parent = fusion_art_id or norm_art_id
+                for stage_name in ('turns', 'timeline', 'metrics'):
+                    stage = run.manifest['stages'][stage_name]
+                    stage['status'] = 'insufficient_evidence'
+                    stage['reason'] = 'No known speaker roles; attribution did not produce tester/device'
+                    stage['input_artifact_ids'] = [insuf_parent]
+                    output = run.envelope(
+                        {'turns': 'turns', 'timeline': 'timeline', 'metrics': 'metrics'}[stage_name],
+                        'insufficient_evidence', stage['reason'], refs=[insuf_parent])
+                    stage['output_artifact_ids'].append(output)
+
+
+def _configuration_refs(run):
+    return [a['artifact_id'] for a in run.manifest['artifacts']
+            if a['kind'] == 'model_configuration' and a['path'].startswith(run.analysis.relative_to(run.directory).as_posix())]
+
+
+def _run_evidence_chain_resume(run, directory, normalized_artifact, norm_art_id, providers=None):
+    """Run evidence chain during resume (same logic as _run_evidence_chain but for resumed runs)."""
+    norm_path = directory / normalized_artifact['path']
+    class _Result:
+        def __init__(self, path):
+            self.path = path
+    normalized = (_Result(norm_path), norm_art_id)
+    _run_evidence_chain(run, normalized, run.manifest['stages']['asr']['status'] == 'complete', providers)
+
+
+def _save_configuration(run, snapshot):
+    if snapshot is not None:
+        path = run.analysis / 'model-config.json'
+        write_json(path, snapshot)
+        run.register(path, 'model_configuration', processor='model_settings:1.1.0')
+        run.checkpoint()
+
+
+def resume_recording(directory, *, providers=None, model_snapshot=None):
+    """Explicit ASR retry in the same Run; preserve every earlier analysis artifact.
+
+    Caller must hold the Run lock. No automatic retry of a cloud request whose
+    outcome may be unknown. Completed timestamped ASR is idempotently returned.
+    """
+    import copy
+    import uuid
+    directory = Path(directory).resolve()
+    manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+    if recording_run_errors(manifest, directory):
+        raise ValueError('Run evidence failed integrity validation')
+    asr_complete = manifest['stages']['asr']['status'] == 'complete'
+    if asr_complete and manifest['stages']['report']['status'] == 'complete':
+        return directory, manifest
+    normalized = next((a for a in manifest['artifacts'] if a['kind']=='normalized_audio'), None)
+    if normalized is None:
+        raise ValueError('Verified canonical audio is required to resume ASR')
+    if not asr_complete and (providers is None or providers.asr is None):
+        raise ValueError('Configure an ASR route before retrying')
+    run = ImportRun.__new__(ImportRun)
+    run.directory, run.manifest = directory, copy.deepcopy(manifest)
+    old = directory / 'analysis' / manifest['analysis_id'] / 'manifest-snapshot.json'
+    if old.exists():
+        if json.loads(old.read_text(encoding='utf-8')) != manifest:
+            raise ValueError('Conflicting analysis checkpoint')
+    else:
+        write_json(old, manifest)
+    run.register(old, 'analysis_checkpoint', processor='resume:1.0.0')
+    run.manifest['analysis_id'] = 'ANALYSIS-' + uuid.uuid4().hex
+    run.analysis = directory / 'analysis' / run.manifest['analysis_id']
+    run.analysis.mkdir()
+    for name,stage in run.manifest['stages'].items():
+        if name not in ('ingestion','normalization','audio_qa'):
+            stage.update(status='pending', started_at=None, finished_at=None, latency_ms=None,
+                         input_artifact_ids=[], output_artifact_ids=[], reason='Processor not run in this revision')
+    run.manifest['status'] = 'partial'
+    _save_configuration(run, model_snapshot)
+    run.checkpoint()
+    parent = normalized['artifact_id']
+    if asr_complete:
+        old_envelope = directory / 'analysis' / manifest['analysis_id'] / 'transcript.json'
+        data = json.loads(old_envelope.read_text(encoding='utf-8'))
+        def restore_asr():
+            ref=run.envelope('transcript', data['status'], data['reason'], data['data'],
+                             data['artifact_refs'], data['data_artifact_ref'])
+            return data['artifact_refs']+[ref], data['data'], None
+        run.execute('asr', manifest['stages']['asr']['input_artifact_ids'], restore_asr)
+        run.manifest['stages']['asr']['processor']=manifest['stages']['asr']['processor']
+    else:
+        run.execute('asr', [parent]+_configuration_refs(run), lambda: _asr(run, directory / normalized['path'],
+            parent, lambda: providers.asr(directory)))
+    # Run evidence chain after ASR restore/retry. Speaker clusters are rebuilt
+    # from the preserved native response: no re-upload, no second recognition.
+    _run_evidence_chain_resume(run, directory, normalized, parent, providers)
+    _resolve_unrun_stages(run, True)
+    _retain_failures(run)
+    run.execute('report', [a['artifact_id'] for a in run.manifest['artifacts']], lambda: write_import_report(run))
+    run.checkpoint()
+    if recording_run_errors(run.manifest, directory):
+        raise ValueError('Resumed Run evidence failed validation')
+    return directory, run.manifest

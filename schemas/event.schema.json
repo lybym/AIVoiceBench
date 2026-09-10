@@ -81,9 +81,17 @@
       ]
     },
     "confidence": {
-      "type": "number",
+      "type": ["number", "null"],
       "minimum": 0,
       "maximum": 1
+    },
+    "confidence_source": {
+      "type": ["string", "null"],
+      "enum": ["acoustic_boundary", "speaker_cluster", "role_attribution", "semantic_event", "none", null]
+    },
+    "uncertainty_ms": {
+      "type": ["number", "null"],
+      "minimum": 0
     },
     "evidence_ids": {
       "type": "array",

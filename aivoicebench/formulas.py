@@ -98,23 +98,55 @@ def barge_success(stop_success, new_response_success):
     return stop_success and new_response_success
 
 
-def turn_gap_ms(device_speech_end_ms, next_tester_speech_start_ms):
-    """Gap between the end of a device response and the start of the next tester speech."""
+def turn_gap_ms(tester_speech_end_ms, device_speech_start_ms):
+    """Turn Gap: tester final speech end → device effective start.
+
+    PRD-M004: direction is tester_end → device_start (NOT device_end → next_tester_start).
+    Allows negative values (overlap/barge-in): device_start < tester_end means
+    the device started speaking before the tester finished.
+    Negative values indicate overlap, not an error.
+
+    Policy version: device_speech_start (deterministic).
+    Future: meaningful_response_start policy for semantic effective start.
+    Different policies must NOT be silently mixed in aggregation.
+    """
+    start, end = _finite(tester_speech_end_ms), _finite(device_speech_start_ms)
+    if start < 0 or end < 0:
+        raise ValueError('Turn gap requires nonnegative boundaries')
+    return end - start  # May be negative (overlap)
+
+
+def turn_gap_ms_legacy(device_speech_end_ms, next_tester_speech_start_ms):
+    """Legacy Turn Gap formula: device_end → next_tester_start.
+
+    Kept for backward compatibility. PRD-M004 direction has been corrected
+    to tester_end → device_start. This legacy function must not be used
+    for new PRD-M004 computation. Old results using this formula must
+    declare their policy version explicitly.
+    """
     start, end = _finite(device_speech_end_ms), _finite(next_tester_speech_start_ms)
     if start < 0 or end < 0:
         raise ValueError('Turn gap requires nonnegative boundaries')
     if end < start:
-        raise ValueError('Turn gap requires ordered boundaries; overlap is not a gap')
+        raise ValueError('Legacy turn gap requires ordered boundaries; overlap is not a gap')
     return end - start
 
 
 def barge_in_stop_latency_ms(interrupt_start_ms, device_speech_end_ms):
-    """Time from tester interruption start to device speech stop."""
+    """Time from tester interruption start to the interrupted device speech stop.
+
+    PRD-M005: must be associated with the OLD response_id. The device speech
+    end must belong to the response being interrupted.
+
+    A non-negative value is required. If the old response already ended before
+    the interruption began (end < start), there is no stop latency to measure:
+    the caller must report not_applicable, not a negative latency.
+    """
     start, end = _finite(interrupt_start_ms), _finite(device_speech_end_ms)
     if start < 0 or end < 0:
         raise ValueError('Barge-in stop latency requires nonnegative boundaries')
     if end < start:
-        raise ValueError('Barge-in stop latency requires device end after interrupt start')
+        raise ValueError('Old response ended before interruption; not a barge-in stop')
     return end - start
 
 

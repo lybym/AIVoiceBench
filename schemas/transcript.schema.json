@@ -4,7 +4,10 @@
   "type": "object",
   "properties": {
     "schema_version": {
-      "const": "1.0.0"
+      "enum": [
+        "1.0.0",
+        "1.1.0"
+      ]
     },
     "transcript_id": {
       "type": "string",
@@ -119,10 +122,26 @@
           "minLength": 1
         },
         "model_sha256": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[a-f0-9]{64}$"
         },
         "config": {
+          "type": "object"
+        },
+        "interface_contract_verified": {
+          "description": "Request properties this adapter sent because each is backed by an official documented property or example. Interface-contract verification is recorded separately from whether a real call succeeded.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "capability_contract_pending": {
+          "description": "Capabilities whose request contract is NOT verified. Absence of a verified request property is not evidence that the capability is unsupported.",
           "type": "object"
         }
       },
@@ -247,7 +266,10 @@
                   "minimum": 0
                 },
                 "recognition_confidence": {
-                  "type": "number",
+                  "type": [
+                    "number",
+                    "null"
+                  ],
                   "minimum": 0,
                   "maximum": 1
                 }
@@ -260,7 +282,7 @@
               ],
               "additionalProperties": false
             },
-            "minItems": 1
+            "minItems": 0
           }
         },
         "required": [
@@ -338,6 +360,42 @@
           "case_id": {
             "type": "string",
             "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": "1.0.0"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "provider_profile": {
+            "properties": {
+              "model_sha256": {
+                "type": "string"
+              }
+            }
+          },
+          "segments": {
+            "items": {
+              "properties": {
+                "words": {
+                  "minItems": 1,
+                  "items": {
+                    "properties": {
+                      "recognition_confidence": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

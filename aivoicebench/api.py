@@ -19,7 +19,7 @@ from .runner import write_json, digest
 from .version import VERSION
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
-from .import_pipeline import import_recording
+from .import_pipeline import import_recording, resume_recording
 from .audio_processing import MAX_INPUT_BYTES
 
 app = FastAPI(
@@ -66,12 +66,22 @@ class AnalysisResponse(BaseModel):
     metrics: list
     acoustic_segments: list
     timeline: dict
+    transcript: dict = {}
+    stages: dict = {}
+    analysis_id: str = ""
+    invocation_refs: list = []
     judge_results: list = []
     findings: list = []
     report_md: str = ""
     reason: Optional[str] = None
     audio_url: str = ""
     profile: dict = {}
+    # Speaker clustering (speaker_0/speaker_1) and its evidence scope. Roles stay
+    # separate: attribution carries tester/device/unknown and is never inferred
+    # from speaker order or count.
+    speaker_segments: list = []
+    diarization_scope: dict = {}
+    attribution: dict = {}
 
 
 @app.get("/health")
@@ -112,7 +122,7 @@ async def analyze(
             min_speech_ms=min_speech_ms, min_silence_ms=min_silence_ms)
     except ValueError:
         raise HTTPException(400, '无效的音频分段参数') from None
-    snapshot, judge_provider = _model_settings().capture()
+    snapshot, providers = _model_settings().capture()
     with tempfile.TemporaryDirectory() as temporary:
         source = Path(temporary) / ('upload' + suffix)
         size = 0
@@ -122,30 +132,8 @@ async def analyze(
                 if size > MAX_INPUT_BYTES:
                     raise HTTPException(413, '录音不能超过 1 GB')
                 target.write(chunk)
-        run_dir, manifest = await run_in_threadpool(import_recording, source, OUTPUT_ROOT, profile=profile)
-    import uuid
-    from .import_artifacts import utc_now
-    snapshot_path = run_dir / 'model-config.json'
-    write_json(snapshot_path, snapshot)
-    manifest['artifacts'].append({'artifact_id': 'ART-' + uuid.uuid4().hex,
-        'path': 'model-config.json', 'kind': 'model_configuration', 'sha256': digest(snapshot_path),
-        'size_bytes': snapshot_path.stat().st_size, 'parent_artifact_ids': [],
-        'processor': 'model_settings:1.0.0', 'created_at': utc_now()})
-    write_json(run_dir / 'manifest.json', manifest)
-    normalized = next((a for a in manifest['artifacts'] if a['kind'] == 'normalized_audio'), None)
-    if normalized:
-        from .pipeline import run_full_pipeline
-        try:
-            await run_in_threadpool(run_full_pipeline, run_dir / normalized['path'],
-                run_dir / 'web-analysis', profile, provider=judge_provider, frame_ms=frame_ms, hop_ms=hop_ms,
-                min_speech_ms=min_speech_ms, min_silence_ms=min_silence_ms,
-                timeout_ms=timeout_ms, false_endpoint_ms=false_endpoint_ms)
-        except Exception:
-            write_json(run_dir / 'web-status.json', {'status': 'failed',
-                'reason': '分析未完成，原始录音及导入证据已保留'})
-    else:
-        write_json(run_dir / 'web-status.json', {'status': 'failed',
-            'reason': '音频标准化失败，请检查文件格式或转换工具；导入证据已保留'})
+        run_dir, manifest = await run_in_threadpool(import_recording, source, OUTPUT_ROOT,
+            profile=profile, providers=providers, model_snapshot=snapshot)
     return AnalysisResponse(**_load_run(run_dir))
 
 
@@ -167,20 +155,41 @@ def _run_dir(run_id):
 
 
 def _load_run(directory):
-    root = directory / 'web-analysis' if (directory / 'web-analysis').is_dir() else directory
+    manifest = _read(directory / 'manifest.json')
+    unified = manifest.get('workflow') == 'recording_import' and not (directory / 'web-analysis').exists()
+    root = directory / 'analysis' / manifest['analysis_id'] if unified else (
+        directory / 'web-analysis' if (directory / 'web-analysis').is_dir() else directory)
+    if not root.resolve().is_relative_to(directory.resolve()):
+        raise HTTPException(404, 'Invalid analysis path')
     report = _read(root / 'report.json')
     manifest = _read(directory / 'manifest.json')
     timeline = _read(root / 'timeline.json') or report.get('timeline', {})
     status_doc = _read(directory / 'web-status.json')
-    status = (status_doc.get('status') or report.get('run_summary', {}).get('status')
+    status = manifest.get('status') if unified else (status_doc.get('status') or report.get('run_summary', {}).get('status')
               or timeline.get('status') or manifest.get('status') or 'partial')
     def items(name, key, fallback):
         doc = _read(root / (name + '.json')) or report.get(fallback, {})
+        if isinstance(doc, dict) and unified:
+            doc = doc.get('data') or {}
         return doc if isinstance(doc, list) else doc.get(key, [])
-    result = dict(run_id=directory.name, status=status, reason=status_doc.get('reason'),
+    def document(name):
+        doc = _read(root / (name + '.json'))
+        if isinstance(doc, dict) and unified:
+            return doc.get('data') or {}
+        return doc if isinstance(doc, dict) else {}
+    if unified:
+        timeline = timeline.get('data') or {}
+    diarization_doc = document('speaker-assignments')
+    result = dict(transcript=(_read(root / 'transcript.json').get('data') or {}) if unified else {},
+        stages=manifest.get('stages', {}), analysis_id=manifest.get('analysis_id', ''),
+        invocation_refs=[a for a in manifest.get('artifacts', []) if a['kind']=='provider_invocation'],
+        run_id=directory.name, status=status, reason=status_doc.get('reason'),
         profile=_read(root / 'profile.json') or manifest.get('profile', {}),
         fused_segments=items('fused-segments', 'segments', 'fused_segments'),
         acoustic_segments=items('acoustic-segments', 'segments', 'acoustic_segments'),
+        speaker_segments=diarization_doc.get('speaker_segments', []),
+        diarization_scope=diarization_doc.get('scope', {}),
+        attribution=document('attribution'),
         turns=items('turns', 'turns', 'turns'), events=timeline.get('events', []),
         timeline=timeline, metrics=items('metrics', 'metrics', 'metrics'),
         judge_results=items('judge-results', 'results', 'judge_results'),
@@ -204,6 +213,27 @@ def list_runs():
 @app.get('/api/runs/{run_id}')
 def get_run(run_id: str):
     return _load_run(_run_dir(run_id))
+
+
+@app.post('/api/runs/{run_id}/resume', response_model=AnalysisResponse)
+async def resume_run(run_id: str, request: Request):
+    # Explicit retry: a previous timed-out billable request may have succeeded.
+    body = await request.json()
+    if not isinstance(body, dict) or body.get('retry_asr') is not True:
+        raise HTTPException(400, '重试可能再次调用云服务，请明确提交 retry_asr=true')
+    directory = _run_dir(run_id)
+    if (directory / 'web-analysis').exists():
+        raise HTTPException(409, '旧版分析请重新导入；原记录保持不变')
+    snapshot, providers = _model_settings().capture()
+    def retry():
+        from .run_lock import run_lock
+        with run_lock(directory):
+            resume_recording(directory, providers=providers, model_snapshot=snapshot)
+    try:
+        await run_in_threadpool(retry)
+    except Exception:
+        raise HTTPException(409, '无法重试：请检查 ASR 配置、证据完整性或是否已有分析正在执行') from None
+    return AnalysisResponse(**_load_run(directory))
 
 
 @app.get('/api/runs/{run_id}/audio')
