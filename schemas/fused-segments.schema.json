@@ -111,7 +111,7 @@
             "minimum": 0
           },
           "speaker_source": {
-            "enum": ["acoustic", "diarization", "heuristic", "llm", "manual"]
+            "enum": ["acoustic", "diarization", "ambiguous", "heuristic", "llm", "manual"]
           },
           "timing_source": {
             "enum": ["acoustic", "asr", "fused"]
@@ -124,6 +124,31 @@
           },
           "asr_segment_id": {
             "type": ["string", "null"]
+          },
+          "speaker_evidence": {
+            "description": "How speaker_id was obtained. ambiguous_overlap means the acoustic segment overlapped conflicting clusters and the segment abstained.",
+            "enum": ["single_overlap", "split_multiple_speakers", "ambiguous_overlap", "none"]
+          },
+          "speaker_candidates": {
+            "description": "Overlapping speaker clusters with their overlap duration, kept as reviewable evidence for the assignment or abstention.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "speaker_id": {
+                  "type": "string"
+                },
+                "overlap_ms": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": ["speaker_id", "overlap_ms"],
+              "additionalProperties": false
+            }
+          },
+          "segment_origin": {
+            "enum": ["acoustic_segment", "speaker_split"]
           }
         },
         "required": [
@@ -140,7 +165,10 @@
           "timing_source",
           "text",
           "acoustic_segment_id",
-          "asr_segment_id"
+          "asr_segment_id",
+          "speaker_evidence",
+          "speaker_candidates",
+          "segment_origin"
         ],
         "additionalProperties": false
       }

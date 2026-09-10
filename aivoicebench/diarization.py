@@ -28,22 +28,36 @@ from .runner import write_json
 
 @dataclass
 class SpeakerSegment:
-    """A speech segment attributed to a speaker cluster."""
+    """A speech segment attributed to a speaker cluster.
+
+    speaker_id is the local normalized ID; native_speaker_id keeps the raw
+    provider label. Boundary timing comes from provider utterance estimates and
+    is NOT a precise acoustic onset. Confidence is null unless the provider
+    actually supplies a clustering confidence.
+    """
     speaker_id: str
     start_ms: float
     end_ms: float
     confidence: float | None = None
+    native_speaker_id: str | None = None
+    timestamp_source: str = 'provider_utterance_estimate'
+    raw_message_index: int | None = None
+    raw_utterance_index: int | None = None
     evidence_refs: list = field(default_factory=list)
 
     def to_dict(self, segment_id):
         return {
             'segment_id': segment_id,
             'speaker_id': self.speaker_id,
+            'native_speaker_id': self.native_speaker_id,
             'start_ms': round(self.start_ms, 3),
             'end_ms': round(self.end_ms, 3),
             'confidence': round(self.confidence, 4) if self.confidence is not None else None,
             'timing_source': 'audio_relative_ms',
+            'timestamp_source': self.timestamp_source,
             'source': 'diarization',
+            'raw_message_index': self.raw_message_index,
+            'raw_utterance_index': self.raw_utterance_index,
             'evidence_refs': list(self.evidence_refs),
         }
 
@@ -56,12 +70,16 @@ class DiarizationResult:
     source: dict
     processor: dict
     invocation: dict | None = None
+    scope: dict | None = None
 
     def to_dict(self):
         return {
             'schema_version': '1.0.0',
             'document_id': 'DIAR-' + uuid.uuid4().hex,
             'source': self.source,
+            'scope': self.scope or {'recording_sha256': self.source.get('audio_sha256', '0' * 64),
+                                    'invocation_id': (self.invocation or {}).get('invocation_id'),
+                                    'analysis_id': None, 'native_response_sha256': None},
             'processor': self.processor,
             'invocation': self.invocation,
             'status': self.status,
@@ -69,6 +87,126 @@ class DiarizationResult:
             'speaker_segments': [seg.to_dict(f'SPK-{i:04d}')
                                  for i, seg in enumerate(self.speaker_segments)],
         }
+
+
+class ASRNativeDiarizationProvider:
+    """Derive speaker clusters from an already-completed ASR native response.
+
+    This provider performs NO cloud call. It normalizes speaker labels that the
+    configured ASR call already returned, so one recognition submission yields
+    both a Transcript and speaker segments without a second upload or billing.
+
+    Product contract:
+    - Local speaker IDs are namespaced per recording/invocation scope. speaker_0
+      from one recording is never assumed to be the same person as speaker_0
+      from another.
+    - native_speaker_id keeps the raw provider label.
+    - Unknown/missing labels stay unknown. No sequential fill-in, no alternating
+      assignment, no assumption of exactly two speakers.
+    - Confidence is null unless the provider actually returns it. Recognition
+      text confidence is never reused as clustering confidence.
+    - Boundary times are provider utterance estimates, not precise acoustic onsets.
+    """
+
+    def __init__(self, provider_name='volcengine', model='bigmodel',
+                 model_version='service-managed', api_version='v3',
+                 resource_id='volc.bigasr.auc_turbo'):
+        self.provider = provider_name
+        self.model = model
+        self.model_version = model_version
+        self.api_version = api_version
+        self.resource_id = resource_id
+
+    def diarize_from_transcript(self, transcript, *, audio_sha256, invocation_id=None,
+                                native_response_sha256=None, analysis_id=None,
+                                source_name='transcript'):
+        """Build speaker segments from a normalized Transcript's speaker_id field.
+
+        `transcript` is a Transcript 1.x document (or its envelope `data`).
+        Returns a DiarizationResult. No network activity occurs.
+        """
+        segments_in = transcript.get('segments', []) if isinstance(transcript, dict) else []
+        duration_ms = 0
+        if isinstance(transcript, dict):
+            duration_ms = transcript.get('source', {}).get('duration_ms', 0) or 0
+
+        # Namespace local speaker IDs to this recording scope so cross-recording
+        # identity cannot be accidentally merged.
+        scope_prefix = (audio_sha256 or '0' * 64)[:12]
+        native_to_local = {}
+        segments = []
+        unknown_count = 0
+
+        for index, seg in enumerate(segments_in):
+            native = seg.get('speaker_id')
+            native_text = str(native) if native is not None and str(native).strip() else None
+            if native_text is None:
+                unknown_count += 1
+                local = f'{scope_prefix}:unknown'
+            else:
+                if native_text not in native_to_local:
+                    native_to_local[native_text] = f'{scope_prefix}:speaker_{len(native_to_local)}'
+                local = native_to_local[native_text]
+            # Speaker clustering confidence is not supplied by this ASR contract.
+            # Recognition/timestamp confidence must not be reused here.
+            segments.append(SpeakerSegment(
+                speaker_id=local,
+                native_speaker_id=native_text,
+                start_ms=seg['start_ms'],
+                end_ms=seg['end_ms'],
+                confidence=None,
+                timestamp_source='provider_utterance_estimate',
+                raw_message_index=seg.get('raw_message_index'),
+                raw_utterance_index=index,
+                evidence_refs=[],
+            ))
+
+        source = {'audio_sha256': audio_sha256, 'duration_ms': round(float(duration_ms), 3)}
+        scope = {
+            'recording_sha256': audio_sha256,
+            'invocation_id': invocation_id,
+            'analysis_id': analysis_id,
+            'native_response_sha256': native_response_sha256,
+        }
+        processor = {
+            'provider': self.provider,
+            'model': self.model,
+            'api_version': self.api_version,
+            'config': {'derivation': 'asr_native_speaker_labels',
+                       'resource_id': self.resource_id,
+                       'source_document': source_name,
+                       'cloud_call_performed': False,
+                       'note': 'Derived from an existing ASR native response; no additional request'},
+        }
+        invocation = {
+            'invocation_id': invocation_id,
+            'latency_ms': 0.0,
+            'status': 'derived_from_existing_asr_invocation',
+        }
+
+        if not segments:
+            return DiarizationResult(
+                speaker_segments=[], status='insufficient_evidence',
+                reason='ASR native response contained no timestamped utterances to cluster',
+                source=source, processor=processor, invocation=invocation, scope=scope)
+
+        labeled = [s for s in segments if s.native_speaker_id is not None]
+        if not labeled:
+            # Speaker information was absent or not enabled for this call.
+            return DiarizationResult(
+                speaker_segments=[], status='insufficient_evidence',
+                reason='ASR native response carried no speaker labels; '
+                       'enable speaker separation in the configured request to obtain clusters',
+                source=source, processor=processor, invocation=invocation, scope=scope)
+
+        reason = None
+        if unknown_count:
+            reason = (f'{unknown_count} utterance(s) had no speaker label and remain unknown; '
+                      'no sequential or alternating assignment was applied')
+        return DiarizationResult(
+            speaker_segments=segments, status='complete' if not unknown_count else 'partial',
+            reason=reason, source=source, processor=processor,
+            invocation=invocation, scope=scope)
 
 
 class MockDiarizationProvider:

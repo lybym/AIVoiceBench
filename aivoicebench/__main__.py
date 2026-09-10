@@ -8,6 +8,36 @@ import wave
 from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors, transcript_errors, acoustic_errors, fused_errors, turns_errors, judge_result_errors
 
 
+def _print_speaker_summary(directory, manifest):
+    """Print the speaker-clustering slice without claiming a role was resolved.
+
+    Clustering answers "which segments share a speaker". It never answers "who is
+    the tester". The invocation reference shows the clusters came from the ASR
+    response that was already paid for, not from a second recognition request.
+    """
+    import json
+    envelope = directory / 'analysis' / manifest['analysis_id'] / 'speaker-assignments.json'
+    if not envelope.exists():
+        return
+    try:
+        data = json.loads(envelope.read_text(encoding='utf-8')).get('data') or {}
+    except (OSError, ValueError):
+        return
+    segments = data.get('speaker_segments') or []
+    if not segments:
+        print('  speaker clusters: none (no speaker separation evidence in this Run)')
+        return
+    labels = sorted({str(s.get('native_speaker_id')) for s in segments})
+    clusters = {s.get('speaker_id') for s in segments}
+    print(f'  speaker clusters: {len(clusters)} cluster(s), {len(segments)} segment(s), '
+          f'native labels {", ".join(labels)}')
+    print('  speaker roles: unresolved — clustering is not attribution')
+    scope = data.get('scope') or {}
+    if scope.get('invocation_id'):
+        print(f'  diarization evidence: {scope["invocation_id"]} '
+              f'(derived from the existing ASR response; no second recognition request)')
+
+
 def main(argv=None):
     # Keep redirected Windows CLI JSON/text readable across shell code pages.
     for stream in (sys.stdout, sys.stderr):
@@ -153,6 +183,7 @@ def main(argv=None):
             print(f'{manifest["status"].upper()} {directory} ({manifest["execution_kind"]}; retained import Run)')
             for name, stage in manifest['stages'].items():
                 print(f'  {name}: {stage["status"]}')
+            _print_speaker_summary(directory, manifest)
             print(f'Report: {directory / "analysis" / manifest["analysis_id"] / "report.md"}')
             return 1 if any(stage['status'] == 'failed' for stage in manifest['stages'].values()) else 2
         except (OSError, ValueError, yaml.YAMLError) as error:

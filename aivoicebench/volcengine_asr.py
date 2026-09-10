@@ -27,12 +27,17 @@ class VolcengineASRProvider:
         self.root, self.key = Path(root), api_key
         self.transport = transport or HTTPTransport(timeout)
         self.publication = publication
+        # `show_utterances` is the documented property that exposes utterance-level
+        # `additions` (where the speaker label appears). No separate speaker flag is
+        # sent: the exact parameter name for enabling speaker separation in the
+        # current service revision is not verified, and sending an unverified field
+        # could be rejected or silently change the request contract.
         self.config = {'model_name': model, 'resource_id': resource_id,
                        'enable_itn': False, 'enable_punc': True, 'enable_ddc': False,
                        'show_utterances': True, 'timeout_seconds': timeout}
         self.profile = dict(provider='volcengine', model_id=model,
                             model_version='service-managed', model_sha256=None,
-                            library_version='aivoicebench-volcengine-flash:1.0.0', config=self.config)
+                            library_version='aivoicebench-volcengine-flash:1.1.0', config=self.config)
 
     def transcribe(self, mono_wav):
         # Configured signed URLs may address one object. Serialize publication +

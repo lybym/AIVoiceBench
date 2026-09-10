@@ -76,6 +76,12 @@ class AnalysisResponse(BaseModel):
     reason: Optional[str] = None
     audio_url: str = ""
     profile: dict = {}
+    # Speaker clustering (speaker_0/speaker_1) and its evidence scope. Roles stay
+    # separate: attribution carries tester/device/unknown and is never inferred
+    # from speaker order or count.
+    speaker_segments: list = []
+    diarization_scope: dict = {}
+    attribution: dict = {}
 
 
 @app.get("/health")
@@ -166,8 +172,14 @@ def _load_run(directory):
         if isinstance(doc, dict) and unified:
             doc = doc.get('data') or {}
         return doc if isinstance(doc, list) else doc.get(key, [])
+    def document(name):
+        doc = _read(root / (name + '.json'))
+        if isinstance(doc, dict) and unified:
+            return doc.get('data') or {}
+        return doc if isinstance(doc, dict) else {}
     if unified:
         timeline = timeline.get('data') or {}
+    diarization_doc = document('speaker-assignments')
     result = dict(transcript=(_read(root / 'transcript.json').get('data') or {}) if unified else {},
         stages=manifest.get('stages', {}), analysis_id=manifest.get('analysis_id', ''),
         invocation_refs=[a for a in manifest.get('artifacts', []) if a['kind']=='provider_invocation'],
@@ -175,6 +187,9 @@ def _load_run(directory):
         profile=_read(root / 'profile.json') or manifest.get('profile', {}),
         fused_segments=items('fused-segments', 'segments', 'fused_segments'),
         acoustic_segments=items('acoustic-segments', 'segments', 'acoustic_segments'),
+        speaker_segments=diarization_doc.get('speaker_segments', []),
+        diarization_scope=diarization_doc.get('scope', {}),
+        attribution=document('attribution'),
         turns=items('turns', 'turns', 'turns'), events=timeline.get('events', []),
         timeline=timeline, metrics=items('metrics', 'metrics', 'metrics'),
         judge_results=items('judge-results', 'results', 'judge_results'),

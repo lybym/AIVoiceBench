@@ -100,7 +100,64 @@ class BackboneTests(unittest.TestCase):
             self.assertEqual(restarted.get('/api/runs/'+data['run_id']).json()['transcript'],data['transcript'])
             self.assertEqual(restarted.get(data['audio_url']).status_code,200)
         readiness=ModelSettings(self.runs/'.model-settings').capture()[0]['readiness']
-        self.assertEqual(readiness['asr'],'configured');self.assertEqual(readiness['diarization'],'not_integrated')
+        # Diarization is now integrated through the same ASR profile: the single
+        # recognition response already carries speaker labels, so the route is
+        # 'configured' instead of 'not_integrated'.
+        self.assertEqual(readiness['asr'],'configured');self.assertEqual(readiness['diarization'],'configured')
+
+    def test_one_recognition_submission_yields_transcript_and_speaker_segments(self):
+        """A single POST must yield both the Transcript and the speaker clusters."""
+        transport=Transport();data,directory,manifest=self.upload(transport)
+        # Exactly one recognition submission: PUT (upload), GET (verify), POST (recognize).
+        self.assertEqual([m for m,*_ in transport.calls],['PUT','GET','POST'])
+        self.assertEqual(sum(m=='POST' for m,*_ in transport.calls),1)
+        self.assertEqual(data['stages']['asr']['status'],'complete')
+        self.assertEqual(data['stages']['diarization']['status'],'complete')
+        speaker=next(a for a in manifest['artifacts'] if a['kind']=='speaker-assignments')
+        doc=json.loads((directory/speaker['path']).read_text(encoding='utf-8'))
+        self.assertIsNotNone(doc['data'])
+        segments=doc['data']['speaker_segments']
+        self.assertEqual(len(segments),1)
+        self.assertEqual(segments[0]['native_speaker_id'],'1')
+        self.assertEqual(segments[0]['start_ms'],100.0);self.assertEqual(segments[0]['end_ms'],600.0)
+        self.assertIsNone(segments[0]['confidence'])
+        # Clustering only: no role may be claimed from speaker labels alone.
+        attribution=next(a for a in manifest['artifacts'] if a['kind']=='attribution')
+        attribution_doc=json.loads((directory/attribution['path']).read_text(encoding='utf-8'))
+        self.assertTrue(all(x['role']=='unknown' for x in attribution_doc['data']['attributions']))
+        # The speaker segments reference the real ASR invocation evidence.
+        self.assertEqual(doc['data']['scope']['invocation_id'],doc['data']['invocation']['invocation_id'])
+        self.assertFalse(doc['data']['processor']['config']['cloud_call_performed'])
+        self.assertIsNotNone(doc['data']['scope']['native_response_sha256'])
+        self.assertEqual(manifest['stages']['diarization']['output_artifact_ids'][-1],speaker['artifact_id'])
+
+    def test_independent_import_needs_no_explicit_role_mapping(self):
+        """An independent import must produce clusters and a report without any role input.
+
+        Explicit mapping is an optional human verification path, not a precondition.
+        Without it every role stays unknown and role-dependent stages abstain, but
+        the Run, its evidence and its report are all still produced.
+        """
+        transport=Transport();data,directory,manifest=self.upload(transport)
+        # No profile, no explicit mapping, no manual speaker list was supplied.
+        self.assertEqual(data['profile'],{k:None for k in data['profile']})
+        self.assertEqual(len(data['speaker_segments']),1)
+        self.assertEqual(data['attribution']['status'],'partial')
+        self.assertEqual([a['role'] for a in data['attribution']['attributions']],['unknown'])
+        # Abstention is not failure: every stage still publishes its evidence state.
+        for stage in ('diarization','attribution','turns','timeline','metrics'):
+            self.assertIn(data['stages'][stage]['status'],
+                          ('complete','partial','insufficient_evidence'),
+                          f'{stage} must not fail an import that simply lacks role evidence')
+            self.assertNotEqual(data['stages'][stage]['status'],'failed')
+        # The Run keeps its artifacts, an envelope per stage and a readable report.
+        kinds={a['kind'] for a in manifest['artifacts']}
+        for kind in ('speaker-assignments','attribution','fused-segments','timeline','metrics','report_json'):
+            self.assertIn(kind,kinds)
+        self.assertEqual(manifest['status'],'partial')
+        self.assertEqual(recording_run_errors(manifest,directory),[])
+        self.assertTrue((directory/'analysis'/manifest['analysis_id']/'report.md').exists())
+        self.assertTrue(data['report_md'])
 
     def test_failures_preserve_native_and_run(self):
         for mode in ('reject','timeout','bad-time','bad-upload','echo'):
@@ -133,6 +190,61 @@ class BackboneTests(unittest.TestCase):
         self.assertEqual(repeat.status_code,200)
         self.assertEqual(repeat.json()['analysis_id'],latest['analysis_id'])
         current=json.loads((directory/'manifest.json').read_text())
+        self.assertEqual(recording_run_errors(current,directory),[])
+
+    def test_upload_exposes_speaker_segments_and_evidence_refs(self):
+        """The user entry must show clusters, their evidence scope and the stage state."""
+        transport=Transport();data,directory,manifest=self.upload(transport)
+        self.assertEqual(len(data['speaker_segments']),1)
+        segment=data['speaker_segments'][0]
+        self.assertEqual(segment['native_speaker_id'],'1')
+        self.assertEqual(segment['speaker_id'],manifest['original_sha256'][:12]+':speaker_0')
+        self.assertEqual((segment['start_ms'],segment['end_ms']),(100.0,600.0))
+        self.assertEqual(segment['timestamp_source'],'provider_utterance_estimate')
+        # Evidence scope: which recording, which invocation, which native response.
+        scope=data['diarization_scope']
+        self.assertEqual(scope['recording_sha256'],manifest['original_sha256'])
+        self.assertEqual(scope['analysis_id'],manifest['analysis_id'])
+        self.assertTrue(scope['invocation_id'].startswith('CALL-'))
+        self.assertIsNotNone(scope['native_response_sha256'])
+        invocation=next(iter((directory/'provider-calls').glob(scope['invocation_id'])))
+        self.assertEqual(digest(invocation/'native-response.json'),scope['native_response_sha256'])
+        # Stage state and invocation artifact refs are visible without reading files.
+        self.assertEqual(data['stages']['diarization']['status'],'complete')
+        self.assertTrue(data['invocation_refs'])
+        self.assertTrue(all('provider-calls' in a['path'] for a in data['invocation_refs']))
+        # Role attribution is exposed but must not claim a role it has no evidence for.
+        self.assertEqual(data['attribution']['status'],'partial')
+        self.assertEqual([a['role'] for a in data['attribution']['attributions']],['unknown'])
+
+    def test_resume_rebuilds_speaker_segments_without_re_recognition(self):
+        """Resume must rebuild clusters from the preserved native response only."""
+        data,directory,manifest=self.upload(Transport())
+        original=next(a for a in manifest['artifacts'] if a['kind']=='speaker-assignments')
+        original_doc=json.loads((directory/original['path']).read_text(encoding='utf-8'))
+        manifest['stages']['report'].update(status='running',finished_at=None)
+        (directory/'manifest.json').write_text(json.dumps(manifest),encoding='utf-8')
+        with patch('aivoicebench.cloud_transport.HTTPTransport.request',
+                   side_effect=AssertionError('No re-upload or re-recognition on resume')):
+            r=self.client.post('/api/runs/'+data['run_id']+'/resume',json={'retry_asr':True})
+        self.assertEqual(r.status_code,200,r.text)
+        current=json.loads((directory/'manifest.json').read_text(encoding='utf-8'))
+        self.assertNotEqual(current['analysis_id'],manifest['analysis_id'])
+        latest=next(a for a in current['artifacts'] if a['kind']=='speaker-assignments'
+                    and current['analysis_id'] in a['path'])
+        rebuilt=json.loads((directory/latest['path']).read_text(encoding='utf-8'))
+        self.assertEqual(rebuilt['status'],'complete')
+        self.assertIsNotNone(rebuilt['data'])
+        segments=rebuilt['data']['speaker_segments']
+        self.assertEqual([s['native_speaker_id'] for s in segments],
+                         [s['native_speaker_id'] for s in original_doc['data']['speaker_segments']])
+        # Same recording identity, same invocation evidence, no new cloud call.
+        self.assertEqual(rebuilt['data']['scope']['recording_sha256'],
+                         original_doc['data']['scope']['recording_sha256'])
+        self.assertEqual(rebuilt['data']['scope']['native_response_sha256'],
+                         original_doc['data']['scope']['native_response_sha256'])
+        self.assertFalse(rebuilt['data']['processor']['config']['cloud_call_performed'])
+        self.assertEqual(len(list((directory/'provider-calls').iterdir())),2)
         self.assertEqual(recording_run_errors(current,directory),[])
 
     def test_resume_after_report_interruption_reuses_completed_asr(self):

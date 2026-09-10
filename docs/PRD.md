@@ -1,8 +1,8 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.1.0
+prd_version: 1.1.1
 status: consolidated_for_owner_review
-updated: 2026-09-10
+updated: 2026-09-11
 implementation_baseline: v0.1.3@e3c2821a417a1aeea90a7c029290b6f814bf747b
 main_baseline: 3699587ff48d392f127bf7f47d3beaf0a0b27ffa
 ---
@@ -23,6 +23,16 @@ main_baseline: 3699587ff48d392f127bf7f47d3beaf0a0b27ffa
 | ⏸ `deferred` 暂缓 | 非当前 MVP 优先项；保留现有代码，需后续排期 |
 
 验证标识独立记录：`software_verified` 软件/合成数据验证、`container_verified` 镜像验证、`browser_verified` 浏览器操作验证、`real_recording_pending` 真实录音待验收。未给定真实录音与有效服务凭据，**本 PRD 不含任何 real_recording_verified 项**。测试数量不能替代功能覆盖率，不发布“完成百分比”。
+
+### 需求、实现建议与实现状态
+
+三者分开记录，不得互相升级：
+
+- **需求**（本文第 3～6 节）：产品需要什么、用户可操作能力是什么、如何验收。只有项目所有者能修改。
+- **实现建议**（第 9 节索引的架构/技术文档、schema、Issue）：如何实现。具体函数名、字段名、拆分方式、调用次数、Provider 复用方式都属于实现选择，可以由开发者在技术文档中演进，**不能自动成为 PRD 没有提出的产品门槛**。典型误用：把“必须调用两次服务”当成产品要求（复用一次 ASR 原生输出即可满足同一需求）；把某个具体字段名当成验收条件。
+- **实现状态**：截至某次审计或某个分支的事实，必须给出代码入口、测试和 commit/PR/tag 依据。
+
+本文中的代码状态与依据默认指向已发布基线 v0.1.3；**分支上更晚的进展单独标注“本分支进展”，且不改变已合并/已发布/真实验收状态**。发现旧状态已过时时更新状态描述与依据，不据此重复开发，也不把分支实现写成已合并、已发布或真实验收通过。
 
 ### 代码位于哪里
 
@@ -110,17 +120,17 @@ Windows EXE/安装包、集群、复杂云端 Control Plane 不属于当前交�
 | PRD-F003 | 标准化与 Audio QA | P0 | ✅ implemented | main + release；准确率不由 QA 保证 |
 | PRD-F004 | 全链路可恢复编排 | P0 | 🟡 partial | 导入 ledger 已有，Web 后续阶段未完全统一 |
 | PRD-F005 | 时间戳 ASR 与云服务 | P0 | 🟡 partial | Vosk/Transcript 已有；Web 云 ASR 未接通 |
-| PRD-F006 | 混音说话人/声源归属 | P0 | 🟡 partial | unknown 与数据结构已有；实际 diarization 未接通 |
+| PRD-F006 | 混音说话人/声源归属 | P0 | 🟡 partial | unknown 与数据结构已有；实际 diarization 未接通。本分支进展见第 4 节 PRD-F006 与第 7 节 M1.2（聚类可用，角色识别未完成） |
 | PRD-F007 | Turn / Response 关联 | P0 | 🟡 partial | 显式角色输入可处理；自动语义关联未完成 |
 | PRD-F008 | 自动事件与规范 Timeline | P0 | 🟡 partial | 候选事件已有；证据/命名/契约需统一 |
-| PRD-F009 | 确定性指标集成 | P0 | 🟡 partial | 旧引擎可复用；导入扩展公式与契约有差距 |
+| PRD-F009 | 确定性指标集成 | P0 | 🟡 partial | 旧引擎可复用；导入扩展公式与契约有差距。本分支进展：导入 metrics.py 已直接产出规范 MetricResult 3.0.0，Turn Gap 方向与 False Endpoint 候选化已修正（PR #52，未合并） |
 | PRD-F010 | Structured LLM Harness / Judge | P1（MVP 必需） | 🟡 partial | Provider/验证已有；完整工具循环和语义证据未闭环 |
 | PRD-F011 | Findings 与问题解释 | P1（MVP 必需） | 🟡 partial | 候选生成已有；完整证据链/人工确认未闭环 |
 | PRD-F012 | 人工修正与有效视图 | P1（MVP 必需） | 🟡 partial | RevisionStore 已有；Web 修订/重算未接通 |
 | PRD-F013 | Markdown + JSON 报告 | P1（MVP 必需） | 🟡 partial | 文件可生成；完整结论级回溯待验收 |
 | PRD-F014 | Web 测试与分析工作台 | P0/P1 | 🟡 partial | main + release；波形、完整 Timeline、人工审核尚缺 |
 | PRD-F015 | 统一模型配置管理 | P1 | ✅ implemented | main + release；限管理与 Judge 路由 |
-| PRD-F016 | 语音生成/分析适配器实际调用 | P0 ASR（M1）/ P1 TTS（M2） | ⬜ planned | 配置占位不能算适配器；未集成旧云 ASR 分支 |
+| PRD-F016 | 语音生成/分析适配器实际调用 | P0 ASR（M1）/ P1 TTS（M2） | ⬜ planned | 配置占位不能算适配器；未集成旧云 ASR 分支。本分支进展：云 ASR 原生输出/审计/Web 已具备，diarization 复用同一次 ASR 响应（未合并，真实验收待完成） |
 | PRD-F017 | 同一录音分析修订与重现 | P1 | 🟡 partial | Hash/配置快照已有；同 Run 多版本重算未完成 |
 | PRD-F018 | 版本/设备/供应商 Compare | P2 | ⬜ planned | 无产品比较工作流 |
 | PRD-F019 | Frozen Golden Voice 资产 | P1（M2 核心） | ⬜ planned | 暂停草稿不算可交付能力 |
@@ -206,6 +216,8 @@ P0/P1 表示开发先后，不表示可选与必选。当前 MVP 专指 M1 录�
 - [x] 默认未知角色不会生成伪确定的角色时延。
 - [ ] 可用 diarization/source Provider 与真实混音角色识别。
 - [ ] 人工角色修订作为新 Evidence/Annotation 参与有效结果。
+
+本分支进展（software_verified，未合并）：speaker clustering 已接真实服务原生说话人标签（复用 ASR 调用、不追加识别），但**角色识别**仍未完成，故上方两条验收项保持未勾选。验证与限制见 [06-work-log.md](06-work-log.md) 的 "Real diarization slice" 条目。
 
 依据：[fusion.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/fusion.py)、[test_evidence_guards.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_evidence_guards.py)；Issues #22、#24、#26。
 
@@ -325,6 +337,8 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 提供统一 ASRProvider、TTSProvider、AudioProcessingProvider、DiarizationProvider 接入点；核对火山等当前官方 API 后实现真实调用。每次调用记录 provider、model、endpoint/API version、config、prompt_version（适用时）、timestamp、输入/输出 refs、latency、status，不记录 Secret。配置管理不代表调用能力已交付。音频标准化和 Vosk 已有能力分别见 PRD-F003/F005，不在此重复标为未实现。
 
 - [ ] 云 ASR/diarization 原生输出、重试/失败状态、调用审计与 Web 分析集成。
+
+本分支进展（software_verified，未合并）：云 ASR 原生输出/审计/Web 集成已具备；diarization 通过 `DiarizationProvider` 的 ASR-native 实现复用同一次云 ASR 原生响应产出聚类，不新增独立服务端点或第二次识别，聚类结果进入 ImportRun 账本与 Web/CLI。**仍未验证**：供应商是否需在请求中显式开启说话人分离（官方参数表无法离线核实），以及任何真实录音/凭据下的原生标签可用性；因此该项保持未勾选。
 - [ ] TTS 真实调用服务于主动测试（P1/M2）：固定 Runner 执行前生成并冻结音频，运行时重用资产；M3 自由 Agent 可逐轮生成，保存每轮实际播放音频及引用。效果与成本按服务实际支持能力选择。
 - [ ] TTS 失败、预算耗尽或音频无效时明确停止/失败，不标记为已播放；调用记录关联 Execution Run/Turn 和音频资产。
 
@@ -418,11 +432,11 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 | PRD-M001 | Feedback Latency：用户最终结束 → 首次可感知反馈；记录 feedback_type（嗯/好的/thinking cue/提示音等） | 🟡 partial：当前返回 insufficient_evidence；反馈起点及逐 turn 关联未接通，反馈自身时长不是反馈时延 |
 | PRD-M002 | First Speech Latency：同一关联轮次用户最终结束 → 首个设备语音 onset；旧 E2E First Audio 名称的兼容语义见下文 | 🟡 partial：旧引擎/基础公式已有，混音角色及可靠声学边界自动供给未闭环 |
 | PRD-M003 | Meaningful Response Latency：用户结束 → 首个承载答案语义的信息点；ASR+LLM 选择既有锚点并记录证据/confidence | 🟡 partial：已有契约/占位，真实语义锚点未实现；不得将“嗯/让我看看”自动等同答案 |
-| PRD-M004 | Turn Gap：用户说完 → 设备有效开始下一轮；明确有效起点和负 gap/overlap 处理 | 🟡 partial：当前 metrics.py 使用 device end → next tester start，与需求方向不符，必须修复 |
+| PRD-M004 | Turn Gap：用户说完 → 设备有效开始下一轮；明确有效起点和负 gap/overlap 处理 | 🟡 partial：发布基线 metrics.py 使用 device end → next tester start，与需求方向不符，必须修复。本分支已改为 tester_speech_end → device_speech_start 并保留负值（PR #52，未合并）；真实录音对照验收仍待完成 |
 | PRD-M005 | Barge-in Stop Latency：测试者打断开始 → AI 旧 response 停止；必须关联旧 response_id | 🟡 partial：旧引擎有基础，自动打断角色/旧回答关联仍待验证 |
 | PRD-M006 | Barge-in New Intent Latency：新的打断语句结束 → 开始回答新 Intent | ⬜ planned：尚无有效自动语义关联链路，不能用任意下一次设备发声代替 |
 | PRD-M007 | Barge-in Success：停止旧回答 + 接收新输入 + 回答新 Intent + 不再回到旧回答 | 🟡 partial：停止/新回答基础契约存在，完整组合语义未闭环；缺一项证据均不得自动通过 |
-| PRD-M008 | False Endpoint：用户句中停顿时设备错误抢答；结合意图继续证据，possible_false_endpoint 保持候选 | 🟡 partial：旧 planned-pause 公式可用；导入扩展把候选提升为 observed 的逻辑需修复 |
+| PRD-M008 | False Endpoint：用户句中停顿时设备错误抢答；结合意图继续证据，possible_false_endpoint 保持候选 | 🟡 partial：发布基线 planned-pause 公式可用；导入扩展把候选提升为 observed 的逻辑需修复。本分支已改为仅输出 false_endpoint_candidate（policy=candidate_only），确认形式不由确定性层产出（PR #52，未合并） |
 | PRD-M009 | Overlap Duration / Ratio：区间并集交集及明确分母；后续可区分正常 backchannel/主动打断/意外重叠 | 🟡 partial：算术基础已有，混音双声源与多区间/分母一致性待闭环 |
 | PRD-M010 | Timeout、CER/WER、统计：健康窗口+显式 deadline；正确参考文本来源；eligible 样本与分母、P50/P90/P95/P99 | 🟡 partial：旧 engine 的 CER/timeout/分位数已有；WER/导入自动适用性与完整对照待实现 |
 
@@ -480,15 +494,33 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 M1 未完成的主要阻塞是 PRD-F004～F013/F017 的自动证据闭环，不是 Windows 打包、硬件播放录制或 TTS 样式。P1 标记代表排程层次，不代表这些验收项可以从 MVP 删除。
 
-### M1 — Real Recording Backbone（本分支实现，真实验收待完成）
+### 本分支 M1 实现状态（M1.1～M1.5 工程子阶段）
+
+> 原标题为"M1 — Real Recording Backbone"；该工作对应 **M1.1**，其内容与后续 M1.2～M1.5 一并保留在本节，未删除历史依据。
+
+M1.1～M1.5 是**产品 M1（录音导入分析主链）内部的工程子阶段**，仅表示 M1 内部的推进顺序，**不是**第 8 节的正式产品里程碑。正式产品排程仍为 M1 录音分析 → M2 Fixed Voice Test Runner → M3 Free Voice Test Agent → M4 执行与分析自动关联 → M5 Compare / Regression；子阶段编号不得用于重新后置主动测试，也不降低第 7 节任何验收条件。
 
 本轮按所有者最新指令限定 PRD-F004/F005/F016：Web/CLI 导入统一通过 ImportRun 阶段账本；模型配置提供 ASR 路由；云服务原生响应、时间戳 Transcript、调用审计进入同一 Run；失败保留证据，显式重试创建新的分析修订。Web 仅补足转写查看与重试，停止创建第二套 web-analysis。旧录音结果继续可读，既有分析模块保留。
 
-当前分支实现依据：[Import Pipeline](../aivoicebench/import_pipeline.py)、[云 ASR](../aivoicebench/volcengine_asr.py)、[Invocation Audit](../aivoicebench/providers.py)、[M1 验证](../tests/test_recording_backbone.py)。状态限本分支，尚未合并/发布；F004/F005 仍为 partial，F016 云 ASR 部分在本分支为 partial（不再只是配置占位），diarization/TTS 未接入。上方 v0.1.3 表格仍描述其固定发布基线。
+当前分支实现依据：[Import Pipeline](../aivoicebench/import_pipeline.py)、[云 ASR](../aivoicebench/volcengine_asr.py)、[Invocation Audit](../aivoicebench/providers.py)、[M1 验证](../tests/test_recording_backbone.py)。状态限本分支，尚未合并/发布；F004/F005 仍为 partial，F016 云 ASR 部分在本分支为 partial（不再只是配置占位），TTS 未接入。
+
+**M1.2 Speaker clustering 子切片（PRD-F005/F006/F016，复用 F004/F015/F017；独立 PR）。** diarization 复用已配置 ASR 的原生说话人标签：一次识别提交同时产出 Transcript 与 speaker segments，不追加第二次识别、上传或计费；每个 segment 保留服务原生标签、`provider_utterance_estimate` 时间来源与调用/原生响应引用，本地 speaker ID 按录音 sha 命名空间隔离，聚类 confidence 留空。缺少标签即 `insufficient_evidence`，不做顺序或轮流补齐。融合时跨多个聚类的声学片段按边界拆分，聚类时间冲突则弃权（`ambiguous_overlap`），不再整段归给重叠最大的说话人。已知聚类不等于已知角色：无角色证据时 `speaker_role` 仍为 `unknown`，角色相关指标继续弃权。
+
+独立导入**不需要**显式角色映射：未提供映射时 speaker segments 仍然产出，全部角色保持 `unknown`，turns/timeline/metrics 按证据缺失弃权，Run 与证据照常保留；显式映射是可选的人工验证/修正路径，Semantic Attribution 是可选自动判断手段，二者都不作为导入的前置条件。据此 PRD-F006 的真实混音**角色识别**仍未完成，其验收项保持未勾选；本子切片仅达到"聚类可用、软件验证"，真实服务参数与真实录音验收见 `06-work-log.md`。上方 v0.1.3 表格仍描述其固定发布基线。
 
 M1 只验收三格式导入、原件/标准化保留、真实云调用与原生响应、带时间戳的文本、provider/model/latency/invocation 回溯、重启后 Run 可访问、Web 转写和 API 失败不丢 Run。真实录音/API 项待提供授权录音及有效凭据后执行，软件测试不能替代；不要求 M1 产生准确时延或打断结论。版本目标为 v0.2.0-alpha.1，不等于已发布。
 
-后续按 M2 Speaker Attribution → M3 Turn/Event/Metrics → M4 Structured LLM/Findings → M5 人工修订/重分析/Web 验收推进。现阶段暂缓波形、Dashboard、Compare、Golden TTS、Exploratory Agent、HIL 和指标扩张；不改变这些既有需求的长期范围。接入与验证方式见 [M1 技术说明](23-recording-backbone.md)。
+M1 内部工程子阶段（非产品里程碑）：
+
+| 子阶段 | 范围 | 状态 |
+| --- | --- | --- |
+| M1.1 Real Recording Backbone | PRD-F001～F005、F016 ASR、F017 基础；ImportRun 账本、云 ASR 与调用审计 | 本分支部分实现，未合并 |
+| M1.2 Speaker Attribution（diarization + 源归属） | PRD-F006；聚类接入与角色证据分离 | 聚类本分支部分实现；角色识别未完成 |
+| M1.3 Turn / Event / Metrics | PRD-F007/F008/F009、M001～M010 | 契约在本分支收尾；自动关联未闭环 |
+| M1.4 LLM Judge / Findings | PRD-F010/F011 | 未闭环 |
+| M1.5 人工修订 / 重分析 / Web 验收 | PRD-F012/F013/F014/F017；第 7 节真实验收 | 未完成 |
+
+现阶段暂缓波形、Dashboard、Compare、Golden TTS、Exploratory Agent、专业 HIL（F022）和指标扩张；基础主动语音测试（M2/M3，含 F023 本地播放与麦克风观察）**不因专业 HIL 暂缓而延期**。接入与验证方式见 [M1 技术说明](23-recording-backbone.md)。
 
 ## 8. 优先级与变更流程
 
@@ -506,7 +538,7 @@ M1 只验收三格式导入、原件/标准化保留、真实云调用与原生�
 
 M2/M3 的控制误差、播放时序偏差和触发可靠性须记录实测结果，并在正式验收前确认版本化容差，不虚构数值。各阶段分别记录软件验证、真实设备执行与正式测量验收，不互相替代。
 
-M1 近期顺序：在已合并 #43/#45 的基线上，统一 PRD-F004 编排/审计与 PRD-F005/F006 音频识别 → PRD-F007/F008 规范事件与关联 → PRD-F009 和 PRD-M001～M010 → PRD-F010/F011 语义与发现 → PRD-F012/F013/F017 审核/修订/报告 → 第 7 节真实验收。相互独立的结构/基础工作可以并行，不能再次形成冗长串行 PR 链。
+M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程碑）：在已合并 #43/#45 的基线上，M1.1 统一 PRD-F004 编排/审计与 PRD-F005/F016 ASR → M1.2 PRD-F006 说话人聚类与源归属 → M1.3 PRD-F007/F008/F009 事件关联、Timeline 与 PRD-M001～M010 → M1.4 PRD-F010/F011 语义与发现 → M1.5 PRD-F012/F013/F014/F017 审核/修订/报告/Web → 第 7 节真实验收。相互独立的结构/基础工作可以并行，不能再次形成冗长串行 PR 链。完成 M1 后按第 8 节正式进入 M2 Fixed Voice Test Runner。
 
 2026-09-07 Import First 调整继续约束 M1 执行顺序；将 Controller/TTS/普通本地音频整体长期后置的范围由本次用户明确要求与 M2/M3 排程取代。现有 #5/#9/#6 沿用；历史 Issue 标题/标签不覆盖新的优先级。本次按用户要求只修改 PRD，旧架构、路线图和 AGENTS 中将全部 Station 视为 P3 的口径未同步；后续开发须以本 PRD 的 F022/F023 拆分及里程碑为准。
 
@@ -520,6 +552,7 @@ M1 近期顺序：在已合并 #43/#45 的基线上，统一 PRD-F004 编排/审
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
+| 1.1.1 | 2026-09-11 | 消除第 7 节与第 8 节的里程碑编号冲突：第 7 节工程拆分改标为产品 M1 内部子阶段 M1.1～M1.5，正式排程仍以第 8 节 M1～M5 为准；新增第 1 节“需求 / 实现建议 / 实现状态”区分规则；按当前分支代码、测试与提交刷新 F006/F009/F016、M004/M008、Issue #3/#25 的状态描述并标注“本分支进展（未合并）” | 项目所有者要求先校准 PRD 基线、消除里程碑命名冲突、区分需求与实现建议与实现状态 |
 | 1.1.0 | 2026-09-10 | 确立主动测试/录音分析双主流程与双证据链；F019/F020/F021 升 P1 核心，F022 拆出 F023，新增 F024；明确 M1→M5 与阶段验收，保留 M1 收尾顺序和实现状态 | 项目所有者要求按主动测试定位修订，且只修改 PRD |
 | 1.0.2 | 2026-09-10 | 更新 main 基线至 3699587（PR #43/#45 已合并）；F014/F015 状态更新为 main + release；新增附录 A Issue→PRD 交叉引用 | 项目所有者要求检查未实现 Issue 并更新 PRD |
 | 1.0.1 | 2026-09-10 | 审阅第 3/5/7 节：明确 MVP 与排程、指标边界、场景覆盖及弃权验收 | 项目所有者审阅要求；未代替所有者批准数值门槛 |
@@ -537,7 +570,7 @@ M1 近期顺序：在已合并 #43/#45 的基线上，统一 PRD-F004 编排/审
 | --- | --- | --- | --- |
 | #1 | Validate TestCase schema | 基础契约 | 契约验证已实现；Issue 未关闭因等待真实录音验收 |
 | #2 | Event Timeline schema | PRD-F008 | 自动 Timeline 的 schema 全验证未通过 |
-| #3 | MetricResult schema | PRD-F009 | 导入 metrics.py 统一规范 MetricResult 未完成 |
+| #3 | MetricResult schema | PRD-F009 | 发布基线导入 metrics.py 未统一规范 MetricResult；本分支 PR #52 已统一为 MetricResult 3.0.0 并保留 2.0.0 可读，Issue 待真实验收后关闭 |
 | #4 | Finding/Evidence schema | PRD-F011, F002 | 完整证据链/人工确认未闭环 |
 | #7 | Timestamped ASR + cloud | PRD-F005 | Web 真实录音自动调用中文云 ASR 未接通 |
 | #8 | Deterministic engine + event pipeline | PRD-F008, F009 | 导入事件管线与旧引擎统一未完成 |
@@ -546,7 +579,7 @@ M1 近期顺序：在已合并 #43/#45 的基线上，统一 PRD-F004 编排/审
 | #22 | Provider invocation + cloud ASR | PRD-F005, F016 | 云 ASR/diarization 原生输出与调用审计未集成 |
 | #23 | Acoustic segmentation | PRD-F008 | 声学片段已有；与统一阶段账本集成未完成 |
 | #24 | Fuse speaker + turns/events | PRD-F006, F007, F008 | 自动角色/语义关联、打断事件命名统一未完成 |
-| #25 | Expand metrics | PRD-F009, M001-M010 | 导入扩展公式与 MetricResult 契约差距；Turn Gap 方向修复 |
+| #25 | Expand metrics | PRD-F009, M001-M010 | 发布基线仍有导入扩展公式与 MetricResult 契约差距、Turn Gap 方向修复；本分支 PR #52 已收尾契约、Turn Gap 方向与候选化，真实录音对照验收未完成 |
 | #27 | Integration + Docker/Web UI | PRD-F004, F013, F014, S7 | Web 后续阶段未统一接入编排；真实端到端验收未通过 |
 | #30 | Provider invocation audit | PRD-F016 | 统一 invocation 审计与 ASR/cloud 集成未完成 |
 

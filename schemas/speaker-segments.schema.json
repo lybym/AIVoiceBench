@@ -19,6 +19,18 @@
       "required": ["audio_sha256", "duration_ms"],
       "additionalProperties": false
     },
+    "scope": {
+      "type": "object",
+      "description": "Speaker IDs are bound to one recording invocation and analysis revision. speaker_0 in one recording is NOT the same person as speaker_0 in another.",
+      "properties": {
+        "recording_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "invocation_id": { "type": ["string", "null"] },
+        "analysis_id": { "type": ["string", "null"] },
+        "native_response_sha256": { "type": ["string", "null"] }
+      },
+      "required": ["recording_sha256", "invocation_id", "analysis_id", "native_response_sha256"],
+      "additionalProperties": false
+    },
     "processor": {
       "type": "object",
       "properties": {
@@ -50,24 +62,33 @@
         "properties": {
           "segment_id": { "type": "string", "minLength": 1 },
           "speaker_id": { "type": "string", "minLength": 1 },
+          "native_speaker_id": { "type": ["string", "null"] },
           "start_ms": { "type": "number", "minimum": 0 },
           "end_ms": { "type": "number", "minimum": 0 },
           "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
           "timing_source": { "const": "audio_relative_ms" },
+          "timestamp_source": {
+            "type": "string",
+            "description": "How the boundary was estimated. Provider utterance estimates are not precise acoustic onsets.",
+            "minLength": 1
+          },
           "source": { "const": "diarization" },
+          "raw_message_index": { "type": ["integer", "null"], "minimum": 0 },
+          "raw_utterance_index": { "type": ["integer", "null"], "minimum": 0 },
           "evidence_refs": {
             "type": "array",
             "items": { "type": "string", "minLength": 1 },
             "uniqueItems": true
           }
         },
-        "required": ["segment_id", "speaker_id", "start_ms", "end_ms",
-                     "confidence", "timing_source", "source", "evidence_refs"],
+        "required": ["segment_id", "speaker_id", "native_speaker_id", "start_ms", "end_ms",
+                     "confidence", "timing_source", "timestamp_source", "source",
+                     "raw_message_index", "raw_utterance_index", "evidence_refs"],
         "additionalProperties": false
       }
     }
   },
-  "required": ["schema_version", "document_id", "source", "processor",
+  "required": ["schema_version", "document_id", "source", "scope", "processor",
                "invocation", "status", "reason", "speaker_segments"],
   "additionalProperties": false,
   "allOf": [

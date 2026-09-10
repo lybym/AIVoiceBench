@@ -29,7 +29,8 @@ class RunProviders:
 
 def adapter_available(profile, role):
     return ((role == 'judge' and profile['protocol'] == 'openai_chat') or
-            (role == 'asr' and profile['protocol'] == 'volcengine_asr'))
+            (role == 'asr' and profile['protocol'] == 'volcengine_asr') or
+            (role == 'diarization' and profile['protocol'] == 'volcengine_asr'))
 
 class SettingsError(ValueError):
     pass
@@ -174,6 +175,7 @@ class ModelSettings:
             'not_integrated' if not adapter_available(by_id[route], role) else
             'configured' if keys[route] else 'credential_missing') for role,route in doc['routes'].items()}
         asr_factory=None
+        diarization_factory=None
         asr=by_id.get(doc['routes']['asr'])
         if asr and asr['enabled'] and adapter_available(asr, 'asr'):
             from .volcengine_asr import VolcengineASRProvider
@@ -186,9 +188,20 @@ class ModelSettings:
                     publication=lambda: SignedURLPublication(*publication_config))
             doc['asr_publication_configured']=all(bool(os.environ.get(k)) for k in
                 ('AIVOICEBENCH_AUDIO_PUT_URL','AIVOICEBENCH_AUDIO_GET_URL','AIVOICEBENCH_AUDIO_HOST'))
+            # Diarization reuses the same configured ASR profile: the cloud call
+            # already returns speaker labels, so no separate endpoint or second
+            # recognition submission is required.
+            diarization=by_id.get(doc['routes']['diarization'])
+            if diarization and diarization['enabled'] and diarization['protocol']=='volcengine_asr':
+                from .diarization import ASRNativeDiarizationProvider
+                def diarization_factory(root):
+                    return ASRNativeDiarizationProvider(
+                        provider_name=diarization['provider'] or 'volcengine',
+                        model=diarization['model'] or 'bigmodel',
+                        resource_id=diarization['parameters'].get('resource_id','volc.bigasr.auc_turbo'))
         if doc['revision']==0:
             doc['legacy_environment']={'provider':os.environ.get('AIVOICEBENCH_LLM_PROVIDER','none'),
                 'model':os.environ.get('AIVOICEBENCH_LLM_MODEL',''),
                 'note':'Existing environment configuration applies until settings are first saved'}
             provider=None
-        return doc,RunProviders(asr=asr_factory, judge=provider)
+        return doc,RunProviders(asr=asr_factory, diarization=diarization_factory, judge=provider)

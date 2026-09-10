@@ -3,7 +3,7 @@
 from pathlib import Path
 import json
 
-from .runner import write_json
+from .runner import digest, write_json
 from .run_lock import run_lock
 
 from .asr import transcribe_file
@@ -62,13 +62,16 @@ def _safe_diar_art_id(run, fallback):
     return [fallback]
 
 
-def _diarize(run, norm_path, acoustic_doc, parent, diarization_provider=None):
-    """Run diarization on acoustic segments.
+def _diarize(run, norm_path, acoustic_doc, parent, diarization_provider=None,
+             transcript_doc=None, transcript_invocation=None):
+    """Run diarization on the normalized recording.
 
     Outputs speaker clustering (speaker_0, speaker_1, ...) — NOT tester/device.
-    Without a real diarization provider (cloud or explicit test injection),
-    returns insufficient_evidence. MockDiarizationProvider is NEVER used in
-    production — only in tests via dependency injection.
+    Without a configured provider, returns insufficient_evidence.
+    MockDiarizationProvider is NEVER used in production — test injection only.
+
+    When the provider derives clusters from an existing ASR native response,
+    no second recognition request is submitted.
     """
     acoustic_segments = acoustic_doc.get('segments', []) if acoustic_doc else []
 
@@ -81,15 +84,76 @@ def _diarize(run, norm_path, acoustic_doc, parent, diarization_provider=None):
         run.manifest['stages']['diarization']['status'] = 'insufficient_evidence'
         return [output], None, None  # reason=None so run.execute doesn't override to 'partial'
 
-    result = diarization_provider.diarize(Path(norm_path).resolve(), acoustic_segments)
+    # Prefer deriving from the completed ASR native response: one cloud call
+    # already produced the speaker labels, so do not resubmit recognition.
+    if transcript_doc is not None and hasattr(diarization_provider, 'diarize_from_transcript'):
+        audio_sha256 = (transcript_doc.get('source') or {}).get('sha256') or _audio_sha(run, parent)
+        result = diarization_provider.diarize_from_transcript(
+            transcript_doc,
+            audio_sha256=audio_sha256,
+            invocation_id=(transcript_invocation or {}).get('invocation_id'),
+            native_response_sha256=(transcript_invocation or {}).get('native_response_sha256'),
+            analysis_id=run.manifest.get('analysis_id'))
+    else:
+        result = diarization_provider.diarize(Path(norm_path).resolve(), acoustic_segments)
+
     doc = result.to_dict()
     status = doc['status']
     output = run.envelope('speaker-assignments', status,
-                          'Speaker clustering only; role attribution is separate',
+                          doc.get('reason') or 'Speaker clustering only; role attribution is separate',
                           _envelope_data(doc, status), [parent])
     run.manifest['stages']['diarization']['processor'] = doc.get('processor', {})
-    reason = None if doc.get('speaker_segments') else 'No speaker segments produced'
+    reason = None if doc.get('speaker_segments') else doc.get('reason') or 'No speaker segments produced'
     return [output], doc, reason
+
+
+def _audio_sha(run, artifact_id):
+    """Resolve a registered artifact's sha256."""
+    for item in run.manifest.get('artifacts', []):
+        if item['artifact_id'] == artifact_id:
+            return item.get('sha256')
+    return None
+
+
+def _asr_invocation(run):
+    """Read the ASR provider invocation identity from registered evidence.
+
+    Returns {'invocation_id', 'native_response_sha256'} when available, so
+    derived speaker segments can reference the real call instead of pretending
+    a second cloud request occurred.
+    """
+    info = {'invocation_id': None, 'native_response_sha256': None}
+    recorded = json.loads(run.manifest.get('provider_invocations', 'null') or 'null')
+    directory = run.directory / 'provider-calls'
+    if not directory.is_dir():
+        return info
+    for call_dir in sorted(directory.iterdir()):
+        start = call_dir / 'start.json'
+        result = call_dir / 'result.json'
+        native = call_dir / 'native-response.json'
+        if not start.exists():
+            continue
+        try:
+            record = json.loads(start.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if record.get('provider') != 'volcengine':
+            continue
+        info['invocation_id'] = call_dir.name
+        if native.exists():
+            info['native_response_sha256'] = digest(native)
+        elif result.exists():
+            try:
+                finished = json.loads(result.read_text(encoding='utf-8'))
+                for ref in finished.get('output_artifact_refs', []) or []:
+                    name = Path(ref).name
+                    if name == 'native-response.json':
+                        candidate = call_dir / name
+                        if candidate.exists():
+                            info['native_response_sha256'] = digest(candidate)
+            except (OSError, ValueError):
+                pass
+    return info
 
 
 def _attribute(run, diarization_doc, parent, explicit_mapping=None):
@@ -118,58 +182,19 @@ def _fusion_with_speakers(run, acoustic_doc, transcript_doc, diarization_doc,
     speaker_role comes from source attribution (explicit/semantic/human/none).
     They are separate fields — never conflated.
     """
-    from .fusion import fuse
+    from .fusion import fuse, apply_speakers
     fused_doc = fuse(acoustic_doc, transcript_doc)
-
-    # Build role lookup from attribution
-    role_map = {}
-    if attribution_doc and attribution_doc.get('attributions'):
-        for attr in attribution_doc['attributions']:
-            role_map[attr['speaker_id']] = {
-                'role': attr['role'],
-                'confidence': attr['confidence'],
-                'method': attr['method'],
-            }
-
-    # Build speaker_id lookup from diarization
-    if diarization_doc and diarization_doc.get('speaker_segments'):
-        speaker_segs = diarization_doc['speaker_segments']
-        for fseg in fused_doc.get('segments', []):
-            # Find overlapping speaker segment
-            best_speaker = None
-            best_overlap = 0
-            best_conf = None
-            for sseg in speaker_segs:
-                overlap = min(fseg['end_ms'], sseg['end_ms']) - max(fseg['start_ms'], sseg['start_ms'])
-                if overlap > best_overlap:
-                    best_overlap = overlap
-                    best_speaker = sseg.get('speaker_id')
-                    best_conf = sseg.get('confidence')
-            if best_speaker:
-                fseg['speaker_id'] = best_speaker
-                fseg['speaker_source'] = 'diarization'
-                fseg['speaker_cluster_confidence'] = best_conf  # provider confidence or None
-                # Apply role from attribution if available
-                role_info = role_map.get(best_speaker)
-                if role_info and role_info['role'] != 'unknown':
-                    fseg['speaker_role'] = role_info['role']
-                    fseg['role_attribution_confidence'] = role_info['confidence']
-                # speaker_role stays 'unknown' if no attribution evidence
-
-    fused_doc['attribution']['note'] = (
-        'Fused with diarization + source attribution. '
-        'speaker_id from diarization, speaker_role from attribution. '
-        'Unknown roles remain unknown — no heuristic inference.')
+    apply_speakers(fused_doc, diarization_doc, attribution_doc)
 
     status = fused_doc['status']
     output = run.envelope('fused-segments', status,
-                          fused_doc.get('attribution', {}).get('note', 'Fused segments'),
+                          fused_doc.get('reason') or fused_doc.get('attribution', {}).get('note', 'Fused segments'),
                           _envelope_data(fused_doc, status), parent_ids)
     run.manifest['stages']['fusion']['processor'] = {
         'name': 'fusion', 'version': '1.0.0',
         'strategy': fused_doc.get('attribution', {}).get('strategy', 'unknown')
     }
-    reason = None if fused_doc['segments'] else 'No fused segments produced'
+    reason = None if status == 'complete' else fused_doc.get('reason') or 'Speaker clusters unresolved'
     return [output], fused_doc, reason
 
 
@@ -398,15 +423,30 @@ def _run_evidence_chain(run, normalized, asr_available, providers=None):
     if run.manifest['stages']['acoustic']['output_artifact_ids']:
         acoustic_art_id = run.manifest['stages']['acoustic']['output_artifact_ids'][-1]
 
-    # Diarization — parents: acoustic_segments (+ normalized_audio)
-    # Only runs if a real diarization provider is configured
+    # Load the completed transcript and its invocation evidence BEFORE diarization
+    # so speaker clusters can be derived from the existing ASR call.
+    transcript_doc = None
+    asr_art_id = None
+    asr_invocation = _asr_invocation(run)
+    asr_stage = run.manifest['stages']['asr']
+    if asr_stage['status'] == 'complete':
+        transcript_path = run.analysis / 'transcript.json'
+        if transcript_path.exists():
+            envelope_data = json.loads(transcript_path.read_text(encoding='utf-8'))
+            transcript_doc = envelope_data.get('data')
+            if asr_stage['output_artifact_ids']:
+                asr_art_id = asr_stage['output_artifact_ids'][-1]
+
+    # Diarization — parents: transcript (preferred) or acoustic_segments
+    # Only runs if a real diarization provider is configured.
     diar_provider = None
     if providers is not None and hasattr(providers, 'diarization') and providers.diarization is not None:
         diar_provider = providers.diarization(run.directory)
 
-    diar_parents = [p for p in [acoustic_art_id, norm_art_id] if p]
+    diar_parents = [p for p in [asr_art_id, acoustic_art_id, norm_art_id] if p]
     diarization_result = run.execute('diarization', diar_parents,
-        lambda: _diarize(run, norm_path, acoustic_result, acoustic_art_id or norm_art_id, diar_provider))
+        lambda: _diarize(run, norm_path, acoustic_result, acoustic_art_id or norm_art_id,
+                         diar_provider, transcript_doc, asr_invocation))
 
     diar_art_id = None
     if run.manifest['stages']['diarization']['output_artifact_ids']:
@@ -425,18 +465,6 @@ def _run_evidence_chain(run, normalized, asr_available, providers=None):
     attr_art_id = None
     if run.manifest['stages']['attribution']['output_artifact_ids']:
         attr_art_id = run.manifest['stages']['attribution']['output_artifact_ids'][-1]
-
-    # Load transcript if ASR ran
-    transcript_doc = None
-    asr_art_id = None
-    asr_stage = run.manifest['stages']['asr']
-    if asr_stage['status'] == 'complete':
-        transcript_path = run.analysis / 'transcript.json'
-        if transcript_path.exists():
-            envelope_data = json.loads(transcript_path.read_text(encoding='utf-8'))
-            transcript_doc = envelope_data.get('data')
-            if asr_stage['output_artifact_ids']:
-                asr_art_id = asr_stage['output_artifact_ids'][-1]
 
     # Fusion — parents: acoustic + diarization + attribution (+ transcript)
     if acoustic_result and acoustic_result.get('segments'):
@@ -497,14 +525,14 @@ def _configuration_refs(run):
             if a['kind'] == 'model_configuration' and a['path'].startswith(run.analysis.relative_to(run.directory).as_posix())]
 
 
-def _run_evidence_chain_resume(run, directory, normalized_artifact, norm_art_id):
+def _run_evidence_chain_resume(run, directory, normalized_artifact, norm_art_id, providers=None):
     """Run evidence chain during resume (same logic as _run_evidence_chain but for resumed runs)."""
     norm_path = directory / normalized_artifact['path']
     class _Result:
         def __init__(self, path):
             self.path = path
     normalized = (_Result(norm_path), norm_art_id)
-    _run_evidence_chain(run, normalized, run.manifest['stages']['asr']['status'] == 'complete')
+    _run_evidence_chain(run, normalized, run.manifest['stages']['asr']['status'] == 'complete', providers)
 
 
 def _save_configuration(run, snapshot):
@@ -567,8 +595,9 @@ def resume_recording(directory, *, providers=None, model_snapshot=None):
     else:
         run.execute('asr', [parent]+_configuration_refs(run), lambda: _asr(run, directory / normalized['path'],
             parent, lambda: providers.asr(directory)))
-    # Run evidence chain after ASR restore/retry
-    _run_evidence_chain_resume(run, directory, normalized, parent)
+    # Run evidence chain after ASR restore/retry. Speaker clusters are rebuilt
+    # from the preserved native response: no re-upload, no second recognition.
+    _run_evidence_chain_resume(run, directory, normalized, parent, providers)
     _resolve_unrun_stages(run, True)
     _retain_failures(run)
     run.execute('report', [a['artifact_id'] for a in run.manifest['artifacts']], lambda: write_import_report(run))

@@ -32,11 +32,15 @@ class FusedSegment:
     role_attribution_confidence: float | None = None  # confidence of role mapping
     acoustic_boundary_confidence: float | None = None  # confidence of acoustic onset/offset
     acoustic_uncertainty_ms: float | None = None  # acoustic boundary uncertainty
-    speaker_source: str = 'acoustic'  # acoustic | diarization | heuristic | llm | manual
+    speaker_source: str = 'acoustic'  # acoustic | diarization | ambiguous | heuristic | llm | manual
     timing_source: str = 'acoustic'  # acoustic | asr | fused
     text: str | None = None
     acoustic_segment_id: str | None = None
     asr_segment_id: str | None = None
+    # How the speaker_id was obtained, kept as reviewable evidence.
+    speaker_evidence: str = 'none'  # single_overlap | split_multiple_speakers | ambiguous_overlap | none
+    speaker_candidates: list = field(default_factory=list)  # [{speaker_id, overlap_ms}]
+    segment_origin: str = 'acoustic_segment'  # acoustic_segment | speaker_split
 
     def to_dict(self, segment_id):
         return {
@@ -54,6 +58,12 @@ class FusedSegment:
             'text': self.text,
             'acoustic_segment_id': self.acoustic_segment_id,
             'asr_segment_id': self.asr_segment_id,
+            'speaker_evidence': self.speaker_evidence,
+            'speaker_candidates': [
+                {'speaker_id': c['speaker_id'], 'overlap_ms': round(c['overlap_ms'], 3)}
+                for c in self.speaker_candidates
+            ],
+            'segment_origin': self.segment_origin,
         }
 
 
@@ -181,6 +191,176 @@ def fuse(acoustic_doc, transcript_doc=None):
         'reason': 'Speaker roles are unresolved',
         'segments': [seg.to_dict(f'FSEG-{i:04d}') for i, seg in enumerate(fused)],
     }
+
+
+def _role_lookup(attribution_doc):
+    """Map speaker_id → {role, confidence, method} from a source attribution document."""
+    lookup = {}
+    for attr in (attribution_doc or {}).get('attributions') or []:
+        lookup[attr['speaker_id']] = {
+            'role': attr.get('role', 'unknown'),
+            'confidence': attr.get('confidence'),
+            'method': attr.get('method'),
+        }
+    return lookup
+
+
+def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
+    """Attach diarization speaker clusters and attribution roles to fused segments.
+
+    Speaker clustering (which segments share a speaker) and source attribution
+    (which speaker is the tester) are separate evidence. This function only
+    copies evidence that exists; it never infers a role from speaker order,
+    speaker count, or which cluster spoke first.
+
+    When one acoustic segment overlaps several speaker clusters, the segment is
+    split at the cluster boundaries so each part keeps its own speaker evidence.
+    If the overlapping clusters conflict in time (mutually exclusive labels for
+    the same instant), the segment abstains: speaker_id stays null and the
+    candidates are recorded for review. A whole segment is never blanket-assigned
+    to "the most overlapping" speaker.
+
+    Mutates and returns fused_doc.
+    """
+    segments = fused_doc.get('segments', [])
+    speaker_segments = (diarization_doc or {}).get('speaker_segments') or []
+    roles = _role_lookup(attribution_doc)
+
+    if not speaker_segments:
+        fused_doc['attribution']['note'] = (
+            'No speaker clustering evidence; speaker_id remains null. '
+            'Role attribution requires diarization or human review, and is never '
+            'inferred from acoustic order.')
+        return fused_doc
+
+    fused_doc['attribution']['strategy'] = 'diarization_provider'
+    fused_doc['attribution']['provider'] = (diarization_doc.get('processor') or {}).get('provider')
+    fused_doc['attribution']['note'] = (
+        'Fused with diarization + source attribution. speaker_id from diarization, '
+        'speaker_role from attribution. Multi-speaker acoustic segments are split or '
+        'abstained, never assigned to the largest overlap.')
+
+    output = []
+    abstained = 0
+    for seg in segments:
+        start, end = seg['start_ms'], seg['end_ms']
+        if end <= start:
+            output.append(seg)
+            continue
+
+        clipped = []
+        for speaker in speaker_segments:
+            overlap = min(end, speaker['end_ms']) - max(start, speaker['start_ms'])
+            if overlap > 0:
+                clipped.append({
+                    'start_ms': max(start, speaker['start_ms']),
+                    'end_ms': min(end, speaker['end_ms']),
+                    'speaker_id': speaker['speaker_id'],
+                    'confidence': speaker.get('confidence'),
+                })
+        if not clipped:
+            output.append(seg)
+            continue
+
+        candidates = {}
+        for item in clipped:
+            key = item['speaker_id']
+            candidates[key] = max(candidates.get(key, 0.0), item['end_ms'] - item['start_ms'])
+        seg['speaker_candidates'] = [
+            {'speaker_id': key, 'overlap_ms': value}
+            for key, value in sorted(candidates.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+
+        if len(candidates) == 1:
+            speaker_id = next(iter(candidates))
+            _assign_speaker(seg, speaker_id, clipped[0]['confidence'], roles, 'single_overlap')
+            output.append(seg)
+            continue
+
+        # Conflicting clusters: two differently labeled speaker segments claim the
+        # same instant. That is a clustering contradiction, not a close call.
+        ordered = sorted(clipped, key=lambda item: (item['start_ms'], item['end_ms']))
+        conflict = any(
+            ordered[i]['end_ms'] > ordered[i + 1]['start_ms']
+            and ordered[i]['speaker_id'] != ordered[i + 1]['speaker_id']
+            for i in range(len(ordered) - 1)
+        )
+        if conflict:
+            abstained += 1
+            seg['speaker_id'] = None
+            seg['speaker_role'] = 'unknown'
+            seg['speaker_cluster_confidence'] = None
+            seg['role_attribution_confidence'] = None
+            seg['speaker_source'] = 'ambiguous'
+            seg['speaker_evidence'] = 'ambiguous_overlap'
+            output.append(seg)
+            continue
+
+        # Non-conflicting: split the acoustic segment at cluster boundaries.
+        output.extend(_split_by_speaker(seg, ordered, roles))
+        continue
+
+    fused_doc['segments'] = output
+    unclustered = sum(1 for seg in output if seg.get('speaker_id') is None)
+    unroled = sum(1 for seg in output if seg.get('speaker_role') == 'unknown')
+    if not unclustered and not unroled:
+        fused_doc['status'] = 'complete'
+        fused_doc['reason'] = None
+    else:
+        fused_doc['status'] = 'partial'
+        notes = []
+        if unclustered:
+            notes.append(f'{unclustered} segment(s) have no speaker cluster')
+        if abstained:
+            notes.append(f'{abstained} abstained on conflicting speaker overlaps')
+        if unroled:
+            notes.append(f'{unroled} segment(s) have no role evidence')
+        fused_doc['reason'] = '; '.join(notes)
+    return fused_doc
+
+
+def _assign_speaker(seg, speaker_id, confidence, roles, evidence):
+    seg['speaker_id'] = speaker_id
+    seg['speaker_source'] = 'diarization'
+    seg['speaker_cluster_confidence'] = confidence
+    seg['speaker_evidence'] = evidence
+    role = roles.get(speaker_id)
+    if role and role['role'] != 'unknown':
+        seg['speaker_role'] = role['role']
+        seg['role_attribution_confidence'] = role['confidence']
+    else:
+        # No role evidence: the cluster is known, the person is not.
+        seg['speaker_role'] = 'unknown'
+        seg['role_attribution_confidence'] = None
+
+
+def _split_by_speaker(seg, ordered, roles):
+    """Split one fused segment into per-speaker sub-segments.
+
+    The ASR text is kept on the longest sub-segment only, so the same utterance
+    cannot be counted twice downstream. Every sub-segment keeps the parent
+    acoustic_segment_id and asr_segment_id so provenance still resolves.
+    """
+    pieces = []
+    for item in ordered:
+        if pieces and pieces[-1]['speaker_id'] == item['speaker_id'] and pieces[-1]['end_ms'] >= item['start_ms']:
+            pieces[-1]['end_ms'] = max(pieces[-1]['end_ms'], item['end_ms'])
+        else:
+            pieces.append({'start_ms': item['start_ms'], 'end_ms': item['end_ms'],
+                           'speaker_id': item['speaker_id'], 'confidence': item['confidence']})
+    longest = max(range(len(pieces)), key=lambda i: pieces[i]['end_ms'] - pieces[i]['start_ms'])
+    results = []
+    for index, piece in enumerate(pieces):
+        sub = dict(seg)
+        sub['start_ms'] = piece['start_ms']
+        sub['end_ms'] = piece['end_ms']
+        sub['text'] = seg.get('text') if index == longest else None
+        sub['segment_origin'] = 'speaker_split'
+        sub['speaker_candidates'] = [{'speaker_id': piece['speaker_id'],
+                                      'overlap_ms': piece['end_ms'] - piece['start_ms']}]
+        _assign_speaker(sub, piece['speaker_id'], piece['confidence'], roles, 'split_multiple_speakers')
+        results.append(sub)
+    return results
 
 
 def build_turns(fused_doc):
