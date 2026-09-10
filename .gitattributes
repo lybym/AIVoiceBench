@@ -1,0 +1,13 @@
+# Line-ending and encoding policy for release assets.
+#
+# Windows PowerShell 5.1 (the default `powershell.exe`) decodes a script using the
+# ANSI code page unless the file carries a UTF-8 BOM, so release scripts are stored
+# with a BOM and must keep CRLF in the working tree on *every* platform. Without
+# `eol=crlf`, git normalises the line endings to LF on checkout elsewhere and the
+# shipped launcher no longer matches what Windows users receive.
+*.ps1 text eol=crlf
+
+# Shell/CI helpers stay LF everywhere.
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

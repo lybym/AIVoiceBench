@@ -9,6 +9,7 @@ coming back.
 import importlib.util
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import unittest
@@ -140,8 +141,66 @@ class PreviewPackagingTests(unittest.TestCase):
         for name in SIGNED_URL_VARS:
             self.assertIn(name, text)
 
+    def test_launcher_carries_a_utf8_bom(self):
+        """Windows PowerShell 5.1 decodes a BOM-less file as ANSI and fails to parse it.
+
+        The first preview launcher shipped as UTF-8 without a BOM; because it contains
+        Chinese text, `powershell.exe` mis-decoded it and reported "Missing closing '}'".
+        The default Windows shell is 5.1, so a BOM (or ASCII-only content) is required.
+        """
+        raw = (ROOT / 'docs/releases/start-aivoicebench-preview.ps1').read_bytes()
+        self.assertEqual(raw[:3], b'\xef\xbb\xbf',
+                         'release scripts with non-ASCII text must be UTF-8 with BOM')
+        self.assertIn(b'\r\n', raw, 'Windows script line endings expected')
+
+    def test_launcher_handles_native_command_stderr(self):
+        """`docker` writes warnings to stderr; 'Stop' makes PS 5.1 fail the whole script.
+
+        The first preview launcher set $ErrorActionPreference='Stop' and then ran
+        `docker info *> $null`; Windows PowerShell 5.1 surfaced the docker warning as a
+        terminating NativeCommandError, so the script died before doing anything. Native
+        calls must be checked through $LASTEXITCODE instead.
+        """
+        text = (ROOT / 'docs/releases/start-aivoicebench-preview.ps1').read_text(encoding='utf-8-sig')
+        self.assertNotIn("$ErrorActionPreference = 'Stop'", text)
+        self.assertIn('$LASTEXITCODE', text)
+        # A helper with ValueFromRemainingArguments cannot accept docker's `-a` style flags.
+        self.assertNotIn('ValueFromRemainingArguments', text)
+
+    def test_launcher_parses_under_windows_powershell(self):
+        """Parse with the real Windows PowerShell when it is available."""
+        if sys.platform != 'win32' or shutil.which('powershell') is None:
+            self.skipTest('Windows PowerShell not available')
+        script = str(ROOT / 'docs/releases/start-aivoicebench-preview.ps1')
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-Command',
+             f"$e=$null;$t=$null;"
+             f"[void][System.Management.Automation.Language.Parser]::ParseFile('{script}',"
+             f"[ref]$t,[ref]$e);"
+             "if ($e.Count -gt 0) { $e | ForEach-Object { $_.Message }; exit 1 } else { 'ok' }"],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_every_asset_is_pinned_to_the_current_version(self):
+        """Executable release assets must be pinned to this build, never a superseded one.
+
+        The release notes are exempt from the "no superseded version" rule because they
+        deliberately record what the superseded build got wrong.
+        """
+        current = re.fullmatch(r'0\.2\.0-alpha\.(\d+)', VERSION)
+        self.assertIsNotNone(current, VERSION)
+        for relative in ('docs/releases/docker-compose.preview.yml',
+                         'docs/releases/start-aivoicebench-preview.ps1'):
+            text = (ROOT / relative).read_text(encoding='utf-8-sig')
+            self.assertIn(VERSION, text, relative)
+            found = set(re.findall(r'0\.2\.0-alpha\.(\d+)', text))
+            self.assertEqual(found, {current.group(1)},
+                             f'{relative} references a superseded alpha build: {sorted(found)}')
+        notes = (ROOT / 'docs/releases' / f'{VERSION}.md').read_text(encoding='utf-8')
+        self.assertIn(VERSION, notes)
+
     def test_version_is_the_preview_version(self):
-        self.assertEqual(VERSION, '0.2.0-alpha.1')
+        self.assertTrue(VERSION.startswith('0.2.0-alpha.'), VERSION)
 
 
 if __name__ == '__main__':

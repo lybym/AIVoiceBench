@@ -243,6 +243,19 @@
 - **发布说明与真实范围不符**：旧 body 宣称"LLM 语义评估/Finding 生成/人工修正契约"等笼统能力。现改为 `body_path` 指向随版本发布的 `docs/releases/<version>.md`，内容为本次真实范围、配置条件、已知限制与验证状态。
 - **版本/Tag/源码一致性校验前移**：工作流在构建前校验 `tag == 'v' + VERSION`、发布说明文件存在且标注为预览版；tag 与 `target_commitish` 绑定到显式 `ref` 解析出的 SHA。
 - **附件可用性而非"构建成功"**：新增"保存镜像后删除再从 tar.gz 重新 load 并跑 smoke"步骤；容器 smoke 覆盖 `/health` 版本、三格式导入、历史/详情/音频、密钥不回显，并做重启后历史与哈希校验。
+### 预览启动脚本的两个真实缺陷（公开发布前发现并修复，改用 0.2.0-alpha.2）
+
+第一次构建（`v0.2.0-alpha.1`，tag 保留未移动）产出的 Draft Release 附件中，PowerShell 启动脚本在本机默认 shell 下不可用。两个缺陷都是在本机按"用户实际用法"运行**下载到的附件**时暴露的，而不是靠阅读代码：
+
+1. **UTF-8 无 BOM 导致 Windows PowerShell 5.1 解析失败。** 脚本含中文，而 `powershell.exe`（5.1，Windows 默认）在无 BOM 时按 ANSI 解码，报 `Missing closing '}'`——3 个解析错误，脚本根本无法执行。PowerShell 7 能正确解析，因此只测 pwsh 会漏掉。
+2. **`$ErrorActionPreference = 'Stop'` 与原生命令 stderr 冲突。** 即使解析通过，`docker info *> $null` 会在 5.1 下把 docker 的 stderr 警告升级为终止性 `NativeCommandError`，脚本在任何实际动作前就退出。此外用 `ValueFromRemainingArguments` 包装 docker 调用会与 `docker ps -a` 这类单横线标志冲突。
+
+修复：脚本以 **UTF-8 BOM + CRLF** 写入；不再使用 `Stop` 偏好，改为对每次原生调用显式检查 `$LASTEXITCODE`；去掉包装函数。已验证：`powershell.exe` 5.1 解析 0 错误，且缺镜像包、缺镜像、`-SkipLoad` 三条失败路径都给出明确中文提示。
+
+**版本处理：** `v0.2.0-alpha.1` 的 tag 与其 Draft Release 已存在，按"不覆盖已有 Release、不移动已有 Tag"的约束不复用该版本号；改用下一个未占用版本 **`v0.2.0-alpha.2`**，并同步版本文件（`aivoicebench/version.py`、Dockerfile label、compose、启动脚本、发布说明）。alpha.1 的 Draft Release 未公开发布，已删除；tag 保留不动。
+
+以上两个缺陷已加入 `tests/test_release_packaging.py` 作为回归防护（BOM/CRLF 断言、5.1 解析断言、禁止 `Stop` 与 `ValueFromRemainingArguments` 断言）。
+
 - **预览部署资产**：`docs/releases/docker-compose.preview.yml`（独立容器名 `aivoicebench-preview`、独立卷、仅绑定 `127.0.0.1`、预留三个签名 URL 变量）与 `docs/releases/start-aivoicebench-preview.ps1`（从发布镜像 `docker load`、版本一致性校验、端口/同名容器冲突明确提示、**不删除任何已有容器或数据卷**）。
 - **Dockerfile 元数据不再过度声明**：`description` 与新增 `version` label 对齐真实范围。
 - 新增 `scripts/check_release_workflow.py` 与 `tests/test_release_packaging.py`（13 项），后者已证明能捕获原始的重复 `prerelease` 缺陷。
