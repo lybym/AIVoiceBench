@@ -48,11 +48,91 @@ def _asr(run, normalized, parent, provider_factory):
     return ids + [output], transcript, 'Provider returned transcript gaps' if transcript['gaps'] else None
 
 
+def _envelope_data(doc, status):
+    """Return doc as data for envelope, or None if status requires null data."""
+    if status in ('pending', 'insufficient_evidence', 'failed'):
+        return None
+    return doc
+
+
+def _acoustic(run, normalized_path, parent):
+    """Run energy VAD acoustic segmentation on the normalized audio."""
+    from .acoustic import EnergyVadSegmenter
+    segmenter = EnergyVadSegmenter()
+    result = segmenter.segment(Path(normalized_path).resolve())
+    doc = result.to_dict()
+    status = doc['status']
+    output = run.envelope('acoustic-segments', status,
+                          'Acoustic VAD; signal timing, no speaker role',
+                          _envelope_data(doc, status), [parent])
+    run.manifest['stages']['acoustic']['processor'] = {
+        'name': 'energy_vad', 'version': '1.0.0',
+        'method': 'energy_vad', 'parameters': doc.get('processor', {}).get('parameters', {})
+    }
+    return [output], doc, None if doc['segments'] else 'No speech segments detected'
+
+
+def _fusion(run, acoustic_doc, transcript_doc, parent_ids):
+    """Fuse acoustic segments with optional ASR transcript and attribute speakers."""
+    from .fusion import fuse
+    fused_doc = fuse(acoustic_doc, transcript_doc)
+    status = fused_doc['status']
+    output = run.envelope('fused-segments', status,
+                          fused_doc.get('attribution', {}).get('note', 'Fused segments'),
+                          _envelope_data(fused_doc, status), parent_ids)
+    run.manifest['stages']['fusion']['processor'] = {
+        'name': 'fusion', 'version': '1.0.0',
+        'strategy': fused_doc.get('attribution', {}).get('strategy', 'unknown')
+    }
+    reason = None if fused_doc['segments'] else 'No fused segments produced'
+    return [output], fused_doc, reason
+
+
+def _turns(run, fused_doc, parent_ids):
+    """Build conversational turns from fused segments."""
+    from .fusion import build_turns
+    turns_doc = build_turns(fused_doc)
+    status = turns_doc['status']
+    output = run.envelope('turns', status,
+                          turns_doc.get('reason') or 'Turn builder',
+                          _envelope_data(turns_doc, status), parent_ids)
+    run.manifest['stages']['turns']['processor'] = {'name': 'turn_builder', 'version': '1.0.0'}
+    reason = None if turns_doc['turns'] else 'No turns could be built'
+    return [output], turns_doc, reason
+
+
+def _timeline(run, fused_doc, turns_doc, parent_ids):
+    """Detect events and generate EventTimeline from fused segments and turns."""
+    from .fusion import detect_events, generate_timeline
+    events, evidence, status, reason = detect_events(fused_doc, turns_doc)
+    timeline_doc = generate_timeline(fused_doc, turns_doc, events, evidence, status, reason)
+    tl_status = timeline_doc['status']
+    output = run.envelope('timeline', tl_status,
+                          reason or 'Automatic event detection',
+                          _envelope_data(timeline_doc, tl_status), parent_ids)
+    run.manifest['stages']['timeline']['processor'] = {'name': 'event_detector', 'version': '1.0.0'}
+    return [output], timeline_doc, reason if not events else None
+
+
+def _metrics(run, timeline_doc, parent_ids):
+    """Compute deterministic metrics from the timeline."""
+    from .metrics import compute_timeline_metrics
+    metrics_result = compute_timeline_metrics(timeline_doc)
+    status = metrics_result.get('status', 'partial')
+    output = run.envelope('metrics', status,
+                          'Deterministic metrics from timeline events',
+                          _envelope_data(metrics_result, status), parent_ids)
+    run.manifest['stages']['metrics']['processor'] = {'name': 'metrics', 'version': '1.0.0'}
+    observed = [m for m in metrics_result.get('metrics', []) if m.get('status') == 'observed']
+    reason = None if observed else 'No observed metrics'
+    return [output], metrics_result, reason
+
+
 def _pending_outputs(run, normalized_ok):
+    """Only diarization, judge and findings remain pending in this slice."""
     stages = run.manifest['stages']
-    stage_files = {'asr': 'transcript', 'acoustic': 'acoustic-segments', 'diarization': 'speaker-assignments',
-                   'fusion': 'fused-segments', 'turns': 'turns', 'timeline': 'timeline',
-                   'metrics': 'metrics', 'judge': 'judge-results', 'findings': 'findings'}
+    # diarization, judge, findings are not wired in this slice
+    stage_files = {'diarization': 'speaker-assignments', 'judge': 'judge-results', 'findings': 'findings'}
     for stage_name, kind in stage_files.items():
         if (run.analysis / f'{kind}.json').exists():
             continue
@@ -116,6 +196,8 @@ def _continue_import(run, source, audio_processor, asr_provider_factory, model_s
         stage['output_artifact_ids'] = [run.envelope('audio-qa', stage['status'], stage['reason'])]
     if normalized is None:
         run.manifest['status'] = 'failed'
+    else:
+        _run_evidence_chain(run, normalized, asr_provider_factory is not None)
     _pending_outputs(run, normalized is not None)
     _retain_failures(run)
     run.checkpoint()
@@ -127,9 +209,79 @@ def _continue_import(run, source, audio_processor, asr_provider_factory, model_s
     return run.directory, run.manifest
 
 
+def _run_evidence_chain(run, normalized, asr_available):
+    """Run acoustic → fusion → turns → timeline → metrics after ASR (or without ASR).
+
+    Each stage is independent: failure in one does not prevent the report stage.
+    Uses lazy imports so missing modules don't crash the import pipeline.
+    """
+    result, norm_art_id = normalized
+    norm_path = result.path
+
+    # Acoustic segmentation — always runs if normalized audio exists
+    acoustic_result = run.execute('acoustic', [norm_art_id],
+        lambda: _acoustic(run, norm_path, norm_art_id))
+
+    # Load transcript if ASR ran
+    transcript_doc = None
+    asr_stage = run.manifest['stages']['asr']
+    if asr_stage['status'] == 'complete':
+        transcript_path = run.analysis / 'transcript.json'
+        if transcript_path.exists():
+            envelope_data = json.loads(transcript_path.read_text(encoding='utf-8'))
+            transcript_doc = envelope_data.get('data')
+
+    # Fusion — needs acoustic segments
+    if acoustic_result and acoustic_result.get('segments'):
+        acoustic_doc = acoustic_result
+        fusion_result = run.execute('fusion', [norm_art_id],
+            lambda: _fusion(run, acoustic_doc, transcript_doc, [norm_art_id]))
+
+        # Turns — needs fused segments with known roles
+        if fusion_result and fusion_result.get('segments'):
+            fused_doc = fusion_result
+            # Only build turns if any segment has a known role
+            has_roles = any(s.get('speaker_role') in ('tester', 'device')
+                           for s in fused_doc.get('segments', []))
+            if has_roles:
+                turns_result = run.execute('turns', [norm_art_id],
+                    lambda: _turns(run, fused_doc, [norm_art_id]))
+
+                if turns_result and turns_result.get('turns'):
+                    turns_doc = turns_result
+                    timeline_result = run.execute('timeline', [norm_art_id],
+                        lambda: _timeline(run, fused_doc, turns_doc, [norm_art_id]))
+
+                    if timeline_result and timeline_result.get('events') is not None:
+                        timeline_doc = timeline_result
+                        run.execute('metrics', [norm_art_id],
+                            lambda: _metrics(run, timeline_doc, [norm_art_id]))
+            else:
+                # No known speaker roles — turns/timeline/metrics can't be built
+                for stage_name in ('turns', 'timeline', 'metrics'):
+                    stage = run.manifest['stages'][stage_name]
+                    stage['status'] = 'insufficient_evidence'
+                    stage['reason'] = 'No known speaker roles; diarization not configured'
+                    output = run.envelope(
+                        {'turns': 'turns', 'timeline': 'timeline', 'metrics': 'metrics'}[stage_name],
+                        'insufficient_evidence', stage['reason'])
+                    stage['output_artifact_ids'].append(output)
+
+
 def _configuration_refs(run):
     return [a['artifact_id'] for a in run.manifest['artifacts']
             if a['kind'] == 'model_configuration' and a['path'].startswith(run.analysis.relative_to(run.directory).as_posix())]
+
+
+def _run_evidence_chain_resume(run, directory, normalized_artifact, norm_art_id):
+    """Run evidence chain during resume (same logic as _run_evidence_chain but for resumed runs)."""
+    norm_path = directory / normalized_artifact['path']
+    # Wrap in a compatible structure for _run_evidence_chain
+    class _Result:
+        def __init__(self, path):
+            self.path = path
+    normalized = (_Result(norm_path), norm_art_id)
+    _run_evidence_chain(run, normalized, run.manifest['stages']['asr']['status'] == 'complete')
 
 
 def _save_configuration(run, snapshot):
@@ -192,6 +344,8 @@ def resume_recording(directory, *, providers=None, model_snapshot=None):
     else:
         run.execute('asr', [parent]+_configuration_refs(run), lambda: _asr(run, directory / normalized['path'],
             parent, lambda: providers.asr(directory)))
+    # Run evidence chain after ASR restore/retry
+    _run_evidence_chain_resume(run, directory, normalized, parent)
     _pending_outputs(run, True)
     _retain_failures(run)
     run.execute('report', [a['artifact_id'] for a in run.manifest['artifacts']], lambda: write_import_report(run))
