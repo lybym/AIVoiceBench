@@ -1,0 +1,55 @@
+# AIVoiceBench v0.2.0-alpha.1 — 预览版 Compose 配置
+#
+# 用途：用发布镜像启动一个与既有版本完全隔离的预览实例。
+#   - 独立容器名：aivoicebench-preview
+#   - 独立数据卷：aivoicebench-preview-data
+#   - 默认仅绑定本机 127.0.0.1，不暴露到外网
+#
+# 使用前请先加载镜像（二选一）：
+#   docker load < aivoicebench-v0.2.0-alpha.1.tar.gz
+#   或让 start-aivoicebench-preview.ps1 代为加载。
+#
+# 启动：
+#   docker compose -f docker-compose.preview.yml up -d
+# 停止（保留数据）：
+#   docker compose -f docker-compose.preview.yml down
+# 停止并删除预览数据（仅影响预览卷，不影响旧版本）：
+#   docker compose -f docker-compose.preview.yml down -v
+
+services:
+  aivoicebench-preview:
+    image: aivoicebench:v0.2.0-alpha.1
+    container_name: aivoicebench-preview
+    # 仅绑定本机回环地址；如需改端口，改这一行的左侧（例如 8001:8000）。
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # 持久化输出与证据。命名卷使预览数据与任何旧版本目录隔离。
+      - aivoicebench-preview-data:/data/output
+      - aivoicebench-preview-cache:/data/cache
+    environment:
+      - AIVOICEBENCH_OUTPUT=/data/output
+      - AIVOICEBENCH_CACHE=/data/cache
+      # === 云 ASR 前置条件（不配置则云 ASR 与说话人标签不可用，导入仍可用）===
+      # 三个变量必须同时设置；PUT 与 GET 必须指向同一个对象；HOST 必须与两者 hostname 一致。
+      # 这三个签名 URL 通常需要在对象存储/网关侧预先签发，无法仅在网页内完成。
+      - AIVOICEBENCH_AUDIO_PUT_URL=${AIVOICEBENCH_AUDIO_PUT_URL:-}
+      - AIVOICEBENCH_AUDIO_GET_URL=${AIVOICEBENCH_AUDIO_GET_URL:-}
+      - AIVOICEBENCH_AUDIO_HOST=${AIVOICEBENCH_AUDIO_HOST:-}
+      # === 语义服务（可选；本预览版不包含语义角色归属）===
+      # 保持 none 时，需要语义证据的指标会明确显示为 insufficient_evidence（正确行为）。
+      - AIVOICEBENCH_LLM_PROVIDER=${AIVOICEBENCH_LLM_PROVIDER:-none}
+      # 在 .env 或 shell 环境中提供，不要写进本文件、不要提交到 Git：
+      #   ARK_API_KEY=<火山引擎 API Key>
+      #   AIVOICEBENCH_LLM_MODEL=<endpoint/model id>
+      - ARK_API_KEY=${ARK_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - AIVOICEBENCH_LLM_MODEL=${AIVOICEBENCH_LLM_MODEL:-}
+    # 预览版使用 unless-stopped 之外的显式策略，避免意外开机自启影响旧环境。
+    restart: "no"
+
+volumes:
+  aivoicebench-preview-data:
+    name: aivoicebench-preview-data
+  aivoicebench-preview-cache:
+    name: aivoicebench-preview-cache

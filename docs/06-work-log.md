@@ -218,3 +218,56 @@
 - **Requirement vs implementation suggestion vs implementation status.** Section 1 gained an explicit rule: the PRD defines what the product needs and how it is accepted; architecture, schemas, interfaces and provider-reuse choices define how it is implemented, and concrete function names, field names, split order or call counts are implementation suggestions that cannot become product gates the PRD never set. A worked example is recorded (reusing one ASR native response satisfies the same requirement as a second dedicated service call; a specific field name is not an acceptance condition).
 - **Stale status refreshed with branch evidence.** F006/F009/F016 rows, the M004/M008 metric rows, and the Issue #3/#25 rows had described pre-fix gaps as current. Each was updated to keep the original gap statement for the published v0.1.3 baseline and add a clearly labelled "本分支进展（未合并）" note with its code/test evidence. No status was upgraded to merged, released or real-recording-verified.
 - PRD version raised to **1.1.1** with a changelog row recording the change and its source. This recalibration changes documentation only; it does not alter tested code or expand scope.
+
+## 2026-09-11 — v0.2.0-alpha.1 预览发布（M1 现有能力收敛）
+
+所有者本轮目标：暂停新增功能，把已完成能力交付为可下载、可安装、可实际操作的预览版。授权范围仅限本次发布（合并必要 PR、创建 Tag、发布 Pre-release、上传附件），不改变"以后所有 PR 可自动合并"的规则。
+
+### 基线确认与 PR 集成
+
+- 开工确认：分支 `m1-semantic-attribution`、HEAD `82fbf0c`、PRD **1.1.2**（`main` 上为 1.1.1）、`VERSION=0.2.0-alpha.1`、Tag 仅到 `v0.1.3`（`v0.2.0-alpha.1` 未被占用）。
+- **按祖先关系而非 PR 编号集成。** `git merge-base --is-ancestor` 证明 `m1-real-diarization`（#53）已包含 `main` + #48 + #49 + #50 + #51 + #52 的全部提交；`git rev-list --count origin/main..<分支>` 对 #51/#52 均为 **0**，三点差异为空。因此把 #53 的 base 从 `m1-metrics-contract` 调整为 `main` 后合并（merge commit `36a98a1`），一次带入整条已验证链路，未重复 cherry-pick、未引入旧实现、未回退 PRD。
+- #48/#49/#50 由 GitHub 自动标记 MERGED；#51/#52 因 base 指向中间分支而未被自动标记，已附"祖先关系 + 提交计数 + 三点差异"证据后关闭。#54（Semantic Attribution）**有意保留未合并**：本轮范围是录音分析预览，且在没有人工复核的情况下不应把语义角色推断当作正式测量展示。
+- 在独立工作树 `_avb_release_verify`（新检出 `03f5583`，不使用主工作区）运行全量测试：**428 tests, 0 failures**。
+
+### 发布范围冻结（只把真正接到入口的能力算作可用）
+
+可用（无需云端）：三格式导入、原件/标准化资产与 Hash/provenance、阶段账本、Audio QA、能量 VAD、历史、详情四标签页、音频回放与片段跳转、报告（Markdown+JSON）、失败信息与显式重试、容器重启后持久化、模型配置管理。
+需配置：云 ASR 真实调用与时间戳转写（API Key **加三个签名 URL 环境变量**）、说话人标签展示（依赖服务是否返回标签）。
+实验性/未真实验证：云 ASR 与标签（接口约定待确认）、确定性指标（未与人工标注对照）、说话人聚类（≠角色）。
+未实现：TTS/Golden Voice、Fixed Runner、Free Agent、Compare、专业 HIL、F023 本地播放与麦克风、F024 关联、Waveform、人工修订工作台、语义角色归属。
+
+### 发布阻塞修复（集中在 `release/0.2.0-alpha.1` 一个工作单元）
+
+- **`release.yml` 重复 `prerelease` 键**：原先同一 `with` 内先写动态表达式、末尾又写 `prerelease: false`，YAML 重复键使后者覆盖前者，任何版本都会被发成正式版。现只保留一处、由 tag 推导（`-` 即 pre-release），并显式 `make_latest: false`，保证预览版不夺走稳定版的 Latest 定位。
+- **发布说明与真实范围不符**：旧 body 宣称"LLM 语义评估/Finding 生成/人工修正契约"等笼统能力。现改为 `body_path` 指向随版本发布的 `docs/releases/<version>.md`，内容为本次真实范围、配置条件、已知限制与验证状态。
+- **版本/Tag/源码一致性校验前移**：工作流在构建前校验 `tag == 'v' + VERSION`、发布说明文件存在且标注为预览版；tag 与 `target_commitish` 绑定到显式 `ref` 解析出的 SHA。
+- **附件可用性而非"构建成功"**：新增"保存镜像后删除再从 tar.gz 重新 load 并跑 smoke"步骤；容器 smoke 覆盖 `/health` 版本、三格式导入、历史/详情/音频、密钥不回显，并做重启后历史与哈希校验。
+- **预览部署资产**：`docs/releases/docker-compose.preview.yml`（独立容器名 `aivoicebench-preview`、独立卷、仅绑定 `127.0.0.1`、预留三个签名 URL 变量）与 `docs/releases/start-aivoicebench-preview.ps1`（从发布镜像 `docker load`、版本一致性校验、端口/同名容器冲突明确提示、**不删除任何已有容器或数据卷**）。
+- **Dockerfile 元数据不再过度声明**：`description` 与新增 `version` label 对齐真实范围。
+- 新增 `scripts/check_release_workflow.py` 与 `tests/test_release_packaging.py`（13 项），后者已证明能捕获原始的重复 `prerelease` 缺陷。
+
+### 发布前验收（在候选提交上执行）
+
+| 项目 | 结果 | 位置 |
+| --- | --- | --- |
+| 项目全量测试 | ✅ 441 tests, 0 failures（含 FFmpeg 三格式） | 本地 + CI（Linux/Windows contracts） |
+| PR 集成候选全量测试 | ✅ 428 tests, 0 failures | 独立工作树 `_avb_release_verify` @ `03f5583` |
+| 镜像构建 | ✅ | GitHub Actions（本地 Docker Hub 拉取 `python:3.12-slim` 持续 EOF，见下"环境限制"） |
+| 从镜像启动 + `/health` | ✅ 版本 `0.2.0-alpha.1` | 发布工作流容器 smoke |
+| WAV/MP3/M4A 导入 | ✅ 25/25 检查 | 本地 API 实例 + 隔离输出根目录 |
+| 历史 / 详情 / 音频读取 / 报告 | ✅ | 同上 |
+| 缺凭据时阶段状态明确、原件与 Run 不丢失 | ✅ ASR 阶段 `pending` 并给出原因 | 同上 |
+| 云服务失败 | ✅ 10/10 检查：ASR 阶段 `failed`、原因保留、不伪造转写、原件保留、报告仍生成、失败 Run 仍是有效 Run、密钥不泄露 | 本地 API 实例（配置无效的合成发布地址） |
+| 容器/服务重启后历史、配置、录音、证据 | ✅ 11/11 检查；确认是**新进程**（PID 变更）后重新查询，且注册资产 Hash 仍有效 | 本地 API 实例 |
+| 预览环境不污染已有数据 | ✅ 验收使用独立输出根目录与独立命名空间；期间未创建或删除任何 Docker 容器/数据卷 | 同上 |
+
+第一次执行"重启后"检查时，被验证的进程实际上仍是旧进程（新进程因端口占用未能绑定），该次结果**作废并重做**；上表结果来自确认 PID 变更后的重跑。
+
+### 环境限制（不隐瞒）
+
+本机 Docker 无法从 Docker Hub 拉取 `python:3.12-slim` 基础层（`production.cloudfront.docker.com` 持续 EOF），因此**镜像构建与容器内 smoke 在 GitHub Actions 上执行**；镜像产出后下载回本地，`docker load` 与容器启动/基础 smoke 再在本地复核。这不改变结论，但记录构建发生的位置。
+
+### 验证边界
+
+真实云调用、真实录音与人工标注对照**均未进行**；预览发布门槛与 PRD 第 7 节完整 M1 验收分别记录，本版不主张任何真实验收通过。
