@@ -110,12 +110,18 @@ class ASRNativeDiarizationProvider:
 
     def __init__(self, provider_name='volcengine', model='bigmodel',
                  model_version='service-managed', api_version='v3',
-                 resource_id='volc.bigasr.auc_turbo'):
+                 resource_id='volc.bigasr.auc_turbo',
+                 contract_status='interface_contract_pending'):
         self.provider = provider_name
         self.model = model
         self.model_version = model_version
         self.api_version = api_version
         self.resource_id = resource_id
+        # Whether the *request contract* for speaker separation is verified is a
+        # different fact from whether a real call returned labels. This provider
+        # only reads labels that a verified request already returned, so as of this
+        # revision the contract stays pending and must be reported as such.
+        self.contract_status = contract_status
 
     def diarize_from_transcript(self, transcript, *, audio_sha256, invocation_id=None,
                                 native_response_sha256=None, analysis_id=None,
@@ -168,6 +174,7 @@ class ASRNativeDiarizationProvider:
             'analysis_id': analysis_id,
             'native_response_sha256': native_response_sha256,
         }
+        labeled = [s for s in segments if s.native_speaker_id is not None]
         processor = {
             'provider': self.provider,
             'model': self.model,
@@ -176,7 +183,12 @@ class ASRNativeDiarizationProvider:
                        'resource_id': self.resource_id,
                        'source_document': source_name,
                        'cloud_call_performed': False,
-                       'note': 'Derived from an existing ASR native response; no additional request'},
+                       'interface_contract_status': self.contract_status,
+                       'labeled_utterances_observed': bool(labeled),
+                       'note': 'Derived from an existing ASR native response; no additional request. '
+                               'Whether the service needs an explicit request property to enable '
+                               'speaker separation is unverified, so this reads labels only when the '
+                               'verified request happened to return them.'},
         }
         invocation = {
             'invocation_id': invocation_id,
@@ -190,13 +202,14 @@ class ASRNativeDiarizationProvider:
                 reason='ASR native response contained no timestamped utterances to cluster',
                 source=source, processor=processor, invocation=invocation, scope=scope)
 
-        labeled = [s for s in segments if s.native_speaker_id is not None]
         if not labeled:
-            # Speaker information was absent or not enabled for this call.
+            # Speaker information was absent, or the verified request did not ask
+            # for it and the request contract for asking is still unverified.
             return DiarizationResult(
                 speaker_segments=[], status='insufficient_evidence',
-                reason='ASR native response carried no speaker labels; '
-                       'enable speaker separation in the configured request to obtain clusters',
+                reason='ASR native response carried no speaker labels; the request contract for '
+                       'enabling speaker separation is unverified (interface_contract_pending), '
+                       'so no unverified request property was sent',
                 source=source, processor=processor, invocation=invocation, scope=scope)
 
         reason = None

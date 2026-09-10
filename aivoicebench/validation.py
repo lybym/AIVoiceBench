@@ -184,7 +184,10 @@ def timeline_errors(timeline):
         previous_time = event['start_ms']
         if event['end_ms'] < event['start_ms']:
             errors.append(f'{location}: end_ms precedes start_ms')
-        if event['type'] not in ('asr_segment', 'custom', 'silence') and event['end_ms'] != event['start_ms']:
+        # A timeout is the observed no-response window, not an instant: PRD-F008
+        # requires a complete observation window for it. Silence and custom spans
+        # are intervals too; the remaining event types are boundary points.
+        if event['type'] not in ('asr_segment', 'custom', 'silence', 'timeout') and event['end_ms'] != event['start_ms']:
             errors.append(f'{location}: boundary event must be a point')
         refs = [evidence.get(key) for key in event['evidence_ids']]
         if any(item is None for item in refs):

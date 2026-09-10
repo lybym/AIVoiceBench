@@ -149,6 +149,30 @@
           },
           "segment_origin": {
             "enum": ["acoustic_segment", "speaker_split"]
+          },
+          "asr_start_ms": {
+            "type": ["number", "null"],
+            "minimum": 0
+          },
+          "asr_end_ms": {
+            "type": ["number", "null"],
+            "minimum": 0
+          },
+          "asr_speaker_id": {
+            "description": "Speaker label the recognition service reported for the utterance that supplied this text. Only meaningful inside this speaker output scope.",
+            "type": ["string", "null"]
+          },
+          "text_attribution": {
+            "description": "How this segment's text was tied to a speaker. ambiguous_spans_speakers means the utterance crossed a speaker boundary and was withheld from every segment; single_segment means no split was needed; utterance_speaker means the recognition service labeled the utterance; contained_in_sub_segment means the utterance interval sat inside exactly one sub-segment. Text is never assigned by segment length.",
+            "enum": ["none", "single_segment", "utterance_speaker", "contained_in_sub_segment", "ambiguous_spans_speakers"]
+          },
+          "start_boundary_source": {
+            "description": "Origin of start_ms. provider_speaker_estimate edges must not carry acoustic boundary confidence or uncertainty.",
+            "enum": ["acoustic_segment", "provider_speaker_estimate"]
+          },
+          "end_boundary_source": {
+            "type": "string",
+            "enum": ["acoustic_segment", "provider_speaker_estimate"]
           }
         },
         "required": [
@@ -166,10 +190,48 @@
           "text",
           "acoustic_segment_id",
           "asr_segment_id",
+          "asr_start_ms",
+          "asr_end_ms",
+          "asr_speaker_id",
+          "text_attribution",
+          "start_boundary_source",
+          "end_boundary_source",
           "speaker_evidence",
           "speaker_candidates",
           "segment_origin"
         ],
+        "additionalProperties": false
+      }
+    },
+    "unattributed_texts": {
+      "description": "Utterances that provably span more than one speaker cluster. They are withheld from every segment rather than guessed onto one speaker, and kept here for human review. The original transcript artifact is unchanged.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "asr_segment_id": {
+            "type": ["string", "null"]
+          },
+          "acoustic_segment_id": {
+            "type": ["string", "null"]
+          },
+          "start_ms": {
+            "type": ["number", "null"],
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": ["number", "null"],
+            "minimum": 0
+          },
+          "text": {
+            "type": ["string", "null"]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["asr_segment_id", "acoustic_segment_id", "start_ms", "end_ms", "text", "reason"],
         "additionalProperties": false
       }
     }
@@ -181,6 +243,7 @@
     "attribution",
     "status",
     "reason",
+    "unattributed_texts",
     "segments"
   ],
   "additionalProperties": false,

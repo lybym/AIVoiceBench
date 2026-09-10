@@ -159,6 +159,45 @@ class BackboneTests(unittest.TestCase):
         self.assertTrue((directory/'analysis'/manifest['analysis_id']/'report.md').exists())
         self.assertTrue(data['report_md'])
 
+    def test_request_body_contains_only_contract_verified_properties(self):
+        """Assert the bytes actually sent, not just how the response is parsed.
+
+        Interface-contract verification is recorded separately from real-call
+        verification. Every property on the wire must be one this adapter can back
+        with an official documented property or example, and the request snapshot
+        filed in the Run must equal what was sent.
+        """
+        from aivoicebench.volcengine_asr import VERIFIED_REQUEST_FIELDS, UNVERIFIED_CAPABILITIES
+        transport=Transport();data,directory,manifest=self.upload(transport)
+        body=json.loads(transport.calls[-1][3])
+        self.assertEqual(sorted(body['request']),sorted(VERIFIED_REQUEST_FIELDS))
+        # The unverified capability must never appear on the wire under any name.
+        pending=UNVERIFIED_CAPABILITIES['speaker_separation']
+        for key in body['request']:
+            self.assertNotIn('speaker',key.lower(),'no unverified speaker property may be sent')
+            self.assertNotIn('diariz',key.lower())
+        self.assertEqual(pending['interface_contract'] ,'pending')
+        self.assertEqual(pending['real_call'],'not_attempted')
+        # The filed invocation snapshot equals the outgoing request; the contract
+        # status is recorded alongside it rather than being sent.
+        call=next((directory/'provider-calls').glob('*/request.json'))
+        snapshot=json.loads(call.read_text(encoding='utf-8'))
+        self.assertEqual(snapshot['request'],body['request'])
+        profile=data['transcript']['provider_profile']
+        self.assertEqual(sorted(profile['interface_contract_verified']),sorted(VERIFIED_REQUEST_FIELDS))
+        self.assertEqual(profile['capability_contract_pending']['speaker_separation']['interface_contract'],'pending')
+        for key in profile['config']:
+            self.assertNotIn('contract',key.lower())
+        # A real call was attempted with a synthetic transport only; the Run must not
+        # claim a verified live contract.
+        self.assertEqual(data['stages']['asr']['status'],'complete')
+        self.assertFalse(profile['capability_contract_pending']['speaker_separation']['real_call']=='verified')
+
+    def test_missing_speaker_labels_report_pending_contract_not_enable_hint(self):
+        """With no labels the reason must not pretend a known flag would fix it."""
+        from aivoicebench.volcengine_asr import UNVERIFIED_CAPABILITIES
+        self.assertEqual(next(iter(UNVERIFIED_CAPABILITIES)),'speaker_separation')
+
     def test_failures_preserve_native_and_run(self):
         for mode in ('reject','timeout','bad-time','bad-upload','echo'):
             with self.subTest(mode=mode):

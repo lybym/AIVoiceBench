@@ -245,10 +245,19 @@ def _turns(run, fused_doc, parent_ids):
 
 
 def _timeline(run, fused_doc, turns_doc, parent_ids):
-    """Detect events and generate EventTimeline from fused segments and turns."""
+    """Detect events and generate EventTimeline from fused segments and turns.
+
+    The timeline and its events carry this Run's real identity, so the persisted
+    timeline validates on its own and the metrics derived from it agree.
+    """
     from .fusion import detect_events, generate_timeline
-    events, evidence, status, reason = detect_events(fused_doc, turns_doc)
-    timeline_doc = generate_timeline(fused_doc, turns_doc, events, evidence, status, reason)
+    identity = {'run_id': run.manifest['run_id'],
+                'case_id': run.manifest.get('case_ref') or 'CASE-auto',
+                'execution_kind': run.manifest['execution_kind']}
+    events, evidence, status, reason = detect_events(
+        fused_doc, turns_doc, run_id=identity['run_id'], case_id=identity['case_id'])
+    timeline_doc = generate_timeline(fused_doc, turns_doc, events, evidence, status, reason,
+                                     **identity)
     tl_status = timeline_doc['status']
     output = run.envelope('timeline', tl_status,
                           reason or 'Automatic event detection',
@@ -460,7 +469,8 @@ def _run_evidence_chain(run, normalized, asr_available, providers=None):
 
     attr_parents = [diar_art_id] if diar_art_id else [acoustic_art_id or norm_art_id]
     attribution_result = run.execute('attribution', attr_parents,
-        lambda: _attribute(run, diarization_result, diar_art_id or (acoustic_art_id or norm_art_id), explicit_mapping))
+        lambda: _attribute(run, diarization_result, diar_art_id or (acoustic_art_id or norm_art_id),
+                           explicit_mapping))
 
     attr_art_id = None
     if run.manifest['stages']['attribution']['output_artifact_ids']:

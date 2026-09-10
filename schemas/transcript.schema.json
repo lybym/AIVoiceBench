@@ -130,6 +130,19 @@
         },
         "config": {
           "type": "object"
+        },
+        "interface_contract_verified": {
+          "description": "Request properties this adapter sent because each is backed by an official documented property or example. Interface-contract verification is recorded separately from whether a real call succeeded.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "capability_contract_pending": {
+          "description": "Capabilities whose request contract is NOT verified. Absence of a verified request property is not evidence that the capability is unsupported.",
+          "type": "object"
         }
       },
       "required": [

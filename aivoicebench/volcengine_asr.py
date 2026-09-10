@@ -2,6 +2,12 @@
 
 Contract verified 2026-09-10: docs/6561/2608628 (updated 2026-09-09).
 URL publication is explicit. Never retry a potentially billable call silently.
+
+Interface-contract verification and real-call verification are recorded
+separately. `show_utterances` is a verified request property; whether speaker
+separation needs its own request flag is NOT verified, so no such flag is sent
+(see UNVERIFIED_CAPABILITIES). Sending an unknown field could be rejected or
+silently change the request contract.
 """
 import json
 import math
@@ -13,6 +19,31 @@ from .asr import ProviderOutput
 from .cloud_transport import (API, HTTPTransport, SignedURLPublication,
                               canonical_audio, closed_config)
 from .providers import InvocationAudit, ProviderIdentity, ProviderFailure, immutable_json
+
+# The exact request properties this adapter is allowed to send, because each one
+# is backed by an official documented property or example we could verify.
+# Tests assert the outgoing body against this list, so an unverified field cannot
+# be introduced without deliberately changing this declaration.
+VERIFIED_REQUEST_FIELDS = ('model_name', 'enable_itn', 'enable_punc', 'enable_ddc', 'show_utterances')
+
+# Capabilities whose request contract is NOT verified. Absence of a verified flag
+# is not evidence that the capability is unsupported; it is evidence that we have
+# not confirmed how to ask for it.
+UNVERIFIED_CAPABILITIES = {
+    'speaker_separation': {
+        'interface_contract': 'pending',
+        'read_path': 'utterances[].additions.speaker',
+        'detail': (
+            'Not verified: whether the current service revision requires an explicit '
+            'request property to enable speaker separation, the exact property name, the '
+            'label field type and its unknown value, the time unit and boundary meaning of '
+            'the label interval, and whether this model/resource type supports the '
+            'capability. The official parameter tables are JS-rendered and did not render '
+            'as text when checked on 2026-09-11, so reading the label path remains an '
+            'unverified code fact and no unverified request property is sent.'),
+        'real_call': 'not_attempted',
+    },
+}
 
 
 class VolcengineASRProvider:
@@ -27,17 +58,14 @@ class VolcengineASRProvider:
         self.root, self.key = Path(root), api_key
         self.transport = transport or HTTPTransport(timeout)
         self.publication = publication
-        # `show_utterances` is the documented property that exposes utterance-level
-        # `additions` (where the speaker label appears). No separate speaker flag is
-        # sent: the exact parameter name for enabling speaker separation in the
-        # current service revision is not verified, and sending an unverified field
-        # could be rejected or silently change the request contract.
         self.config = {'model_name': model, 'resource_id': resource_id,
                        'enable_itn': False, 'enable_punc': True, 'enable_ddc': False,
                        'show_utterances': True, 'timeout_seconds': timeout}
         self.profile = dict(provider='volcengine', model_id=model,
                             model_version='service-managed', model_sha256=None,
-                            library_version='aivoicebench-volcengine-flash:1.1.0', config=self.config)
+                            library_version='aivoicebench-volcengine-flash:1.1.0', config=self.config,
+                            interface_contract_verified=list(VERIFIED_REQUEST_FIELDS),
+                            capability_contract_pending=json.loads(json.dumps(UNVERIFIED_CAPABILITIES)))
 
     def transcribe(self, mono_wav):
         # Configured signed URLs may address one object. Serialize publication +

@@ -41,6 +41,19 @@ class FusedSegment:
     speaker_evidence: str = 'none'  # single_overlap | split_multiple_speakers | ambiguous_overlap | none
     speaker_candidates: list = field(default_factory=list)  # [{speaker_id, overlap_ms}]
     segment_origin: str = 'acoustic_segment'  # acoustic_segment | speaker_split
+    # ASR utterance evidence: which utterance supplied the text, over what interval,
+    # and which speaker label the recognition service itself reported for it.
+    asr_start_ms: float | None = None
+    asr_end_ms: float | None = None
+    asr_speaker_id: str | None = None
+    # Text attribution stays explicit so no reader assumes the text belongs to this
+    # segment's speaker. 'ambiguous_spans_speakers' means the utterance crossed a
+    # speaker boundary and was therefore withheld from every sub-segment.
+    text_attribution: str = 'none'  # none | single_segment | utterance_speaker | contained_in_sub_segment | ambiguous_spans_speakers
+    # Boundary provenance per edge. A split introduces provider-estimated boundaries,
+    # which must not inherit the acoustic segmenter's confidence or uncertainty.
+    start_boundary_source: str = 'acoustic_segment'  # acoustic_segment | provider_speaker_estimate
+    end_boundary_source: str = 'acoustic_segment'  # acoustic_segment | provider_speaker_estimate
 
     def to_dict(self, segment_id):
         return {
@@ -58,6 +71,12 @@ class FusedSegment:
             'text': self.text,
             'acoustic_segment_id': self.acoustic_segment_id,
             'asr_segment_id': self.asr_segment_id,
+            'asr_start_ms': round(self.asr_start_ms, 3) if self.asr_start_ms is not None else None,
+            'asr_end_ms': round(self.asr_end_ms, 3) if self.asr_end_ms is not None else None,
+            'asr_speaker_id': self.asr_speaker_id,
+            'text_attribution': self.text_attribution,
+            'start_boundary_source': self.start_boundary_source,
+            'end_boundary_source': self.end_boundary_source,
             'speaker_evidence': self.speaker_evidence,
             'speaker_candidates': [
                 {'speaker_id': c['speaker_id'], 'overlap_ms': round(c['overlap_ms'], 3)}
@@ -119,7 +138,11 @@ def fuse(acoustic_doc, transcript_doc=None):
             'segments': [],
         }
 
-    # Build ASR lookup: map overlapping time ranges to text
+    # Build ASR lookup: map overlapping time ranges to text.
+    # The ASR utterance keeps its own speaker label and interval, because that is
+    # the only defensible basis for saying WHO said a piece of text. A fused
+    # segment's boundaries come from acoustic segmentation and may later be split
+    # at diarization boundaries; text is never re-attributed by segment length.
     asr_segments = []
     transcript_doc_id = None
     if transcript_doc and transcript_doc.get('segments'):
@@ -130,6 +153,7 @@ def fuse(acoustic_doc, transcript_doc=None):
                 'start_ms': seg['start_ms'],
                 'end_ms': seg['end_ms'],
                 'text': seg.get('text', ''),
+                'speaker_id': seg.get('speaker_id'),
             })
 
     def find_asr_overlap(start, end):
@@ -153,9 +177,13 @@ def fuse(acoustic_doc, transcript_doc=None):
         timing = 'acoustic'
         text = None
         asr_id = None
+        asr_start = asr_end = None
+        asr_speaker = None
         if asr and asr.get('text'):
             text = asr['text']
             asr_id = asr.get('segment_id')
+            asr_start, asr_end = asr['start_ms'], asr['end_ms']
+            asr_speaker = asr.get('speaker_id')
             timing = 'fused'
         fused.append(FusedSegment(
             start_ms=a_start, end_ms=a_end,
@@ -170,6 +198,9 @@ def fuse(acoustic_doc, transcript_doc=None):
             text=text,
             acoustic_segment_id=aseg.get('segment_id'),
             asr_segment_id=asr_id,
+            asr_start_ms=asr_start,
+            asr_end_ms=asr_end,
+            asr_speaker_id=asr_speaker,
         ))
 
     return {
@@ -189,6 +220,7 @@ def fuse(acoustic_doc, transcript_doc=None):
         },
         'status': 'partial',
         'reason': 'Speaker roles are unresolved',
+        'unattributed_texts': [],
         'segments': [seg.to_dict(f'FSEG-{i:04d}') for i, seg in enumerate(fused)],
     }
 
@@ -218,13 +250,20 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
     If the overlapping clusters conflict in time (mutually exclusive labels for
     the same instant), the segment abstains: speaker_id stays null and the
     candidates are recorded for review. A whole segment is never blanket-assigned
-    to "the most overlapping" speaker.
+    to "the most overlapping" speaker, and the ASR text is never handed to a
+    speaker because that speaker's piece happened to be the longest.
 
     Mutates and returns fused_doc.
     """
     segments = fused_doc.get('segments', [])
     speaker_segments = (diarization_doc or {}).get('speaker_segments') or []
     roles = _role_lookup(attribution_doc)
+    # Native provider labels are only meaningful inside this speaker output scope.
+    native_to_local = {}
+    for speaker in speaker_segments:
+        native = speaker.get('native_speaker_id')
+        if native is not None:
+            native_to_local[str(native)] = speaker['speaker_id']
 
     if not speaker_segments:
         fused_doc['attribution']['note'] = (
@@ -242,6 +281,7 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
 
     output = []
     abstained = 0
+    unattributed = list(fused_doc.get('unattributed_texts') or [])
     for seg in segments:
         start, end = seg['start_ms'], seg['end_ms']
         if end <= start:
@@ -274,6 +314,8 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
         if len(candidates) == 1:
             speaker_id = next(iter(candidates))
             _assign_speaker(seg, speaker_id, clipped[0]['confidence'], roles, 'single_overlap')
+            if seg.get('text'):
+                seg['text_attribution'] = 'single_segment'
             output.append(seg)
             continue
 
@@ -293,14 +335,24 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
             seg['role_attribution_confidence'] = None
             seg['speaker_source'] = 'ambiguous'
             seg['speaker_evidence'] = 'ambiguous_overlap'
+            # The segment spans contradictory clusters, so its text cannot be
+            # attributed to a speaker either. Withhold it rather than guess.
+            if seg.get('text'):
+                seg['text_attribution'] = 'ambiguous_spans_speakers'
+                unattributed.append(_unattributed(seg))
+                seg['text'] = None
             output.append(seg)
             continue
 
         # Non-conflicting: split the acoustic segment at cluster boundaries.
-        output.extend(_split_by_speaker(seg, ordered, roles))
+        pieces, attribution, text = _split_by_speaker(seg, ordered, roles, native_to_local)
+        if text and attribution == 'ambiguous_spans_speakers':
+            unattributed.append(_unattributed(seg))
+        output.extend(pieces)
         continue
 
     fused_doc['segments'] = output
+    fused_doc['unattributed_texts'] = unattributed
     unclustered = sum(1 for seg in output if seg.get('speaker_id') is None)
     unroled = sum(1 for seg in output if seg.get('speaker_role') == 'unknown')
     if not unclustered and not unroled:
@@ -319,6 +371,19 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
     return fused_doc
 
 
+def _unattributed(seg):
+    """Record a withheld utterance so it stays reviewable instead of silently lost."""
+    return {
+        'asr_segment_id': seg.get('asr_segment_id'),
+        'acoustic_segment_id': seg.get('acoustic_segment_id'),
+        'start_ms': seg.get('asr_start_ms'),
+        'end_ms': seg.get('asr_end_ms'),
+        'text': seg.get('text'),
+        'reason': 'Utterance spans more than one speaker cluster; it is not '
+                  'attributed to any speaker without further evidence',
+    }
+
+
 def _assign_speaker(seg, speaker_id, confidence, roles, evidence):
     seg['speaker_id'] = speaker_id
     seg['speaker_source'] = 'diarization'
@@ -334,12 +399,23 @@ def _assign_speaker(seg, speaker_id, confidence, roles, evidence):
         seg['role_attribution_confidence'] = None
 
 
-def _split_by_speaker(seg, ordered, roles):
+def _split_by_speaker(seg, ordered, roles, native_to_local):
     """Split one fused segment into per-speaker sub-segments.
 
-    The ASR text is kept on the longest sub-segment only, so the same utterance
-    cannot be counted twice downstream. Every sub-segment keeps the parent
-    acoustic_segment_id and asr_segment_id so provenance still resolves.
+    Text attribution is evidence-based, never positional or length-based:
+
+    1. If the recognition service itself labeled the utterance with a speaker,
+       the text goes to that speaker's sub-segment (`utterance_speaker`).
+    2. Else if the utterance interval falls entirely inside one sub-segment, the
+       text goes there (`contained_in_sub_segment`).
+    3. Else the utterance provably crosses a speaker boundary, so it is withheld
+       from every sub-segment (`ambiguous_spans_speakers`) and recorded in the
+       document-level `unattributed_texts` for human review. It is never copied to
+       several speakers.
+
+    Boundary provenance is tracked per edge: a sub-segment edge that comes from the
+    provider's speaker estimate must not inherit the acoustic segmenter's
+    confidence or uncertainty.
     """
     pieces = []
     for item in ordered:
@@ -348,19 +424,53 @@ def _split_by_speaker(seg, ordered, roles):
         else:
             pieces.append({'start_ms': item['start_ms'], 'end_ms': item['end_ms'],
                            'speaker_id': item['speaker_id'], 'confidence': item['confidence']})
-    longest = max(range(len(pieces)), key=lambda i: pieces[i]['end_ms'] - pieces[i]['start_ms'])
+
+    parent_start, parent_end = seg['start_ms'], seg['end_ms']
+    text = seg.get('text')
+    asr_start, asr_end = seg.get('asr_start_ms'), seg.get('asr_end_ms')
+    native = seg.get('asr_speaker_id')
+    owner_index = None
+    attribution = 'none'
+    if text:
+        # 1. Trust the service's own label for this utterance when it resolves here.
+        local = native_to_local.get(str(native)) if native is not None else None
+        if local is not None:
+            for index, piece in enumerate(pieces):
+                if piece['speaker_id'] == local:
+                    owner_index, attribution = index, 'utterance_speaker'
+                    break
+        # 2. Otherwise require the utterance to sit inside exactly one sub-segment.
+        if owner_index is None and asr_start is not None and asr_end is not None:
+            inside = [index for index, piece in enumerate(pieces)
+                      if asr_start >= piece['start_ms'] and asr_end <= piece['end_ms']]
+            if len(inside) == 1:
+                owner_index, attribution = inside[0], 'contained_in_sub_segment'
+        if owner_index is None:
+            attribution = 'ambiguous_spans_speakers'
+
     results = []
     for index, piece in enumerate(pieces):
         sub = dict(seg)
         sub['start_ms'] = piece['start_ms']
         sub['end_ms'] = piece['end_ms']
-        sub['text'] = seg.get('text') if index == longest else None
+        sub['text'] = text if index == owner_index else None
+        sub['text_attribution'] = attribution if text else 'none'
         sub['segment_origin'] = 'speaker_split'
         sub['speaker_candidates'] = [{'speaker_id': piece['speaker_id'],
                                       'overlap_ms': piece['end_ms'] - piece['start_ms']}]
+        # Boundary provenance: only an edge that is still the acoustic edge may
+        # carry acoustic confidence and uncertainty.
+        sub['start_boundary_source'] = ('acoustic_segment' if piece['start_ms'] <= parent_start
+                                        else 'provider_speaker_estimate')
+        sub['end_boundary_source'] = ('acoustic_segment' if piece['end_ms'] >= parent_end
+                                      else 'provider_speaker_estimate')
+        if (sub['start_boundary_source'] != 'acoustic_segment'
+                or sub['end_boundary_source'] != 'acoustic_segment'):
+            sub['acoustic_boundary_confidence'] = None
+            sub['acoustic_uncertainty_ms'] = None
         _assign_speaker(sub, piece['speaker_id'], piece['confidence'], roles, 'split_multiple_speakers')
         results.append(sub)
-    return results
+    return results, attribution, text
 
 
 def build_turns(fused_doc):
@@ -510,11 +620,16 @@ def _finalize_turn(t):
 
 def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
                   false_endpoint_ms=DEFAULT_FALSE_ENDPOINT_MS,
-                  overlap_min_ms=DEFAULT_OVERLAP_MIN_MS):
+                  overlap_min_ms=DEFAULT_OVERLAP_MIN_MS,
+                  run_id='RUN-auto', case_id='CASE-auto'):
     """Detect events from fused segments and turns.
 
     Returns a list of event dicts (Event 2.0.0 schema).
     Events carry source=audio_signal or derived, confidence, and evidence refs.
+
+    `run_id`/`case_id` must be the identity of the Run the events belong to. The
+    defaults exist only for standalone CLI use; an imported Run passes its own
+    identity so the timeline, its events and its metrics agree.
     """
     segments = fused_doc.get('segments', [])
     turns = turns_doc.get('turns', [])
@@ -535,6 +650,16 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
     ev_map = {}  # segment_id -> evidence_id
     for seg in segments:
         eid = f'EV-{evidence_num + 1:04d}'
+        # Confidence stays None when no defensible number exists. A semantic role
+        # proposal publishes no role confidence, so it must not become 0.0 here.
+        role_conf = seg.get('role_attribution_confidence')
+        cluster_conf = seg.get('speaker_cluster_confidence')
+        if role_conf is not None:
+            confidence, confidence_source = role_conf, 'role_attribution'
+        elif cluster_conf is not None:
+            confidence, confidence_source = cluster_conf, 'speaker_cluster'
+        else:
+            confidence, confidence_source = None, 'none'
         evidence.append({
             'schema_version': '1.0.0',
             'evidence_id': eid,
@@ -544,8 +669,8 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
             'start_ms': seg['start_ms'],
             'end_ms': seg['end_ms'],
             'source': 'audio_signal',
-            'confidence': seg.get('role_attribution_confidence') if seg.get('role_attribution_confidence') is not None
-                else seg.get('speaker_cluster_confidence'),
+            'confidence': confidence,
+            'confidence_source': confidence_source,
         })
         ev_map[seg['segment_id']] = eid
         evidence_num += 1
@@ -606,13 +731,29 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
                                          acoustic_source, acoustic_uncertainty))
                     event_num += 1
 
-    # Detect silence between segments
+    # Detect silence between segments. A gap is a derived interval, so it gets its own
+    # evidence snippet covering the gap. Citing a neighbouring speech segment would
+    # not cover the interval the event claims, and the timeline contract rejects it.
     for i in range(1, len(segments)):
         gap_start = segments[i - 1]['end_ms']
         gap_end = segments[i]['start_ms']
         if gap_end > gap_start + 1:
-            sid = segments[i - 1]['segment_id']
-            eid = ev_map[sid]
+            eid = f'EV-{evidence_num + 1:04d}'
+            evidence.append({
+                'schema_version': '1.0.0',
+                'evidence_id': eid,
+                'artifact_id': 'ART-audio',
+                'track_id': 'TRACK-mix',
+                'time_base': 'audio_relative_ms',
+                'start_ms': round(gap_start, 3),
+                'end_ms': round(gap_end, 3),
+                # Derived from two acoustic boundaries rather than measured as a
+                # signal, so it publishes no confidence number of its own.
+                'source': 'derived',
+                'confidence': None,
+                'confidence_source': 'none',
+            })
+            evidence_num += 1
             # Check if it's a timeout
             gap_duration = gap_end - gap_start
             if gap_duration >= timeout_ms:
@@ -671,6 +812,12 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
     # Sort events by start_ms
     events.sort(key=lambda e: e['start_ms'])
 
+    # Stamp the owning Run identity on every event. Events and the timeline they
+    # belong to must agree, otherwise the timeline is not a valid measurement record.
+    for event in events:
+        event['run_id'] = run_id
+        event['case_id'] = case_id
+
     status = 'complete' if events else 'insufficient_evidence'
     reason = None if events else 'No events could be detected'
     return events, evidence, status, reason
@@ -704,18 +851,23 @@ def _event(event_id, event_type, start_ms, end_ms, turn_id, response_id,
     }
 
 
-def generate_timeline(fused_doc, turns_doc, events, evidence, status, reason):
-    """Build an EventTimeline 2.0.0 from detected events and evidence."""
+def generate_timeline(fused_doc, turns_doc, events, evidence, status, reason,
+                      run_id='RUN-auto', case_id='CASE-auto', execution_kind='imported'):
+    """Build an EventTimeline 2.0.0 from detected events and evidence.
+
+    The Run identity is a parameter, not a placeholder: an imported Run must be able
+    to validate its own timeline, and metrics computed from it must agree.
+    """
     duration_ms = fused_doc.get('source', {}).get('duration_ms', 0)
     audio_sha = fused_doc.get('source', {}).get('audio_sha256', '0' * 64)
 
     timeline = {
         'schema_version': '2.0.0',
-        'run_id': 'RUN-auto',
-        'case_id': 'CASE-auto',
+        'run_id': run_id,
+        'case_id': case_id,
         'case_version': '0.0.0',
         'attempt': 1,
-        'execution_kind': 'imported',
+        'execution_kind': execution_kind,
         'time_base': {'kind': 'audio_relative_ms', 'origin': 'first_decoded_sample'},
         'run_snapshot': {
             'device': None, 'hardware': None, 'firmware': None,
