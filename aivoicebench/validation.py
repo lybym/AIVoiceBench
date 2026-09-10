@@ -219,6 +219,31 @@ def metric_errors(metric, timeline=None):
     errors = schema_errors(metric, 'metric')
     if errors:
         return errors
+    version = metric.get('schema_version')
+    # Version-specific contract. The shared schema accepts both 2.0.0 and 3.0.0
+    # structurally; each version then enforces its own identity, policy and
+    # traceability rules here. Do not silently normalize one into the other.
+    if version == '3.0.0':
+        if not metric.get('prd_ref'):
+            errors.append('/prd_ref: MetricResult 3.0.0 requires a PRD requirement reference')
+        if metric.get('name') == 'false_endpoint':
+            errors.append('/name: 3.0.0 deterministic output must use false_endpoint_candidate; '
+                          'false_endpoint is the legacy confirmed form and requires explicit '
+                          'semantic/human confirmation evidence')
+        if metric.get('policy') is not None and metric.get('policy_version') is None:
+            errors.append('/policy_version: a declared policy requires its version')
+        if metric.get('confidence') is not None and metric.get('confidence_source') is None:
+            errors.append('/confidence_source: a numeric confidence requires its dimension source')
+    elif version == '2.0.0':
+        # Legacy contract: keep the original required shape so old artifacts stay
+        # interpretable and cannot be retrofitted with 3.0.0 policy fields.
+        if metric.get('case_id') is None:
+            errors.append('/case_id: MetricResult 2.0.0 requires a case identity')
+        if metric.get('confidence') is None:
+            errors.append('/confidence: MetricResult 2.0.0 requires a numeric confidence')
+        if metric.get('prd_ref') is not None or metric.get('policy') is not None:
+            errors.append('/: 2.0.0 documents must not carry 3.0.0 policy fields; '
+                          're-emit under 3.0.0 instead of rewriting history')
     aggregation = metric['aggregation']
     n = aggregation['sample_count']
     if n + aggregation['excluded_count'] != aggregation['total_count']:
