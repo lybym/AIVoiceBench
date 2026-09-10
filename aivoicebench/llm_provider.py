@@ -37,7 +37,7 @@ class OpenAICompatibleProvider:
 
     def __init__(self, provider_name, base_url, model,
                  api_key_env="ARK_API_KEY", api_key=None,
-                 temperature=0.3, max_tokens=4096,
+                 temperature=0.3, max_tokens=4096, timeout_seconds=30,
                  prompt_version="openai-compatible-v1.0.0"):
         self.provider = provider_name
         self.base_url = base_url.rstrip("/")
@@ -46,6 +46,7 @@ class OpenAICompatibleProvider:
         self.api_key_env = api_key_env
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.timeout_seconds = timeout_seconds
         self.prompt_version = prompt_version
 
     def _check_key(self):
@@ -108,7 +109,8 @@ class OpenAICompatibleProvider:
             f"{self.base_url}/chat/completions",
             headers=headers,
             json=payload,
-            timeout=30,
+            timeout=self.timeout_seconds,
+            allow_redirects=False,
         )
         resp.raise_for_status()
         data = resp.json()

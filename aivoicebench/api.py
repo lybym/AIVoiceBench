@@ -8,14 +8,14 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .acoustic import EnergyVadSegmenter
-from .runner import write_json
+from .runner import write_json, digest
 from .version import VERSION
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
@@ -112,6 +112,7 @@ async def analyze(
             min_speech_ms=min_speech_ms, min_silence_ms=min_silence_ms)
     except ValueError:
         raise HTTPException(400, '无效的音频分段参数') from None
+    snapshot, judge_provider = _model_settings().capture()
     with tempfile.TemporaryDirectory() as temporary:
         source = Path(temporary) / ('upload' + suffix)
         size = 0
@@ -122,12 +123,21 @@ async def analyze(
                     raise HTTPException(413, '录音不能超过 1 GB')
                 target.write(chunk)
         run_dir, manifest = await run_in_threadpool(import_recording, source, OUTPUT_ROOT, profile=profile)
+    import uuid
+    from .import_artifacts import utc_now
+    snapshot_path = run_dir / 'model-config.json'
+    write_json(snapshot_path, snapshot)
+    manifest['artifacts'].append({'artifact_id': 'ART-' + uuid.uuid4().hex,
+        'path': 'model-config.json', 'kind': 'model_configuration', 'sha256': digest(snapshot_path),
+        'size_bytes': snapshot_path.stat().st_size, 'parent_artifact_ids': [],
+        'processor': 'model_settings:1.0.0', 'created_at': utc_now()})
+    write_json(run_dir / 'manifest.json', manifest)
     normalized = next((a for a in manifest['artifacts'] if a['kind'] == 'normalized_audio'), None)
     if normalized:
         from .pipeline import run_full_pipeline
         try:
             await run_in_threadpool(run_full_pipeline, run_dir / normalized['path'],
-                run_dir / 'web-analysis', profile, frame_ms=frame_ms, hop_ms=hop_ms,
+                run_dir / 'web-analysis', profile, provider=judge_provider, frame_ms=frame_ms, hop_ms=hop_ms,
                 min_speech_ms=min_speech_ms, min_silence_ms=min_silence_ms,
                 timeout_ms=timeout_ms, false_endpoint_ms=false_endpoint_ms)
         except Exception:
@@ -205,3 +215,33 @@ def get_audio(run_id: str):
     if not path.is_relative_to(directory) or not path.is_file():
         raise HTTPException(404, 'Audio unavailable')
     return FileResponse(path, media_type='audio/wav')
+
+
+
+def _model_settings():
+    from .model_settings import ModelSettings
+    return ModelSettings(OUTPUT_ROOT / '.model-settings')
+
+
+@app.get('/api/models')
+def model_settings():
+    return _model_settings().describe()
+
+
+@app.post('/api/models')
+async def update_models(request: Request):
+    from urllib.parse import urlsplit
+    from .model_settings import SettingsError, RevisionConflict
+    origin = request.headers.get('origin')
+    if origin and (urlsplit(origin).netloc != request.url.netloc or urlsplit(origin).scheme != request.url.scheme):
+        raise HTTPException(403, '请从当前服务页面修改模型配置')
+    if len(await request.body()) > 128 * 1024:
+        raise HTTPException(413, '配置请求过大')
+    try:
+        payload = await request.json()
+        return _model_settings().update(payload)
+    except RevisionConflict as error:
+        raise HTTPException(409, str(error)) from None
+    except (SettingsError, ValueError):
+        # Validation errors must never echo write-only credentials or arbitrary input.
+        raise HTTPException(400, '配置无效，请检查服务地址、用途、参数和默认模型') from None
