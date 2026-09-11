@@ -135,84 +135,76 @@ class TTSProviderTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def _wav_bytes(self):
+        import io
+        import wave
+        buf = io.BytesIO()
+        with wave.open(buf, 'wb') as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+            w.writeframes(b'\x00\x00' * 1600)
+        return buf.getvalue()
+
+    def _provider(self, transport):
+        return VolcengineTTSProvider(
+            self.root, 'test-key', transport=transport, model='configured-model',
+            resource_id='configured-resource', voice_type='configured-voice',
+            speech_rate=25, loudness_rate=3, pitch_rate=-2)
+
     def test_unavailable_provider_raises(self):
-        provider = UnavailableTTSProvider()
         with self.assertRaises(ProviderFailure):
-            provider.synthesize('test', self.root / 'out.wav')
+            UnavailableTTSProvider().synthesize('test', self.root / 'out.wav')
 
     def test_missing_key_raises(self):
-        provider = VolcengineTTSProvider(self.root, '')
         with self.assertRaises(ProviderFailure):
-            provider.synthesize('test', self.root / 'out.wav')
+            VolcengineTTSProvider(self.root, '').synthesize('test', self.root / 'out.wav')
 
-    def test_synthesize_with_mock_transport(self):
-        """The TTS provider calls the transport and saves the returned audio."""
+    def test_synthesize_v3_sse_with_mock_transport(self):
+        """V3 SSE frames become one verified WAV and carry no legacy auth."""
         import base64
-        import hashlib
-
-        # Create a minimal WAV file as the "synthesized audio"
-        import wave
-        wav_buf = b''
-        import io
-        buf = io.BytesIO()
-        with wave.open(buf, 'wb') as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            w.writeframes(b'\x00\x00' * 1600)
-        wav_bytes = buf.getvalue()
-
+        wav_bytes = self._wav_bytes()
+        midpoint = len(wav_bytes) // 2
+        event_a = json.dumps({'code': 0, 'data': base64.b64encode(wav_bytes[:midpoint]).decode()})
+        event_b = json.dumps({'code': 20000000, 'data': base64.b64encode(wav_bytes[midpoint:]).decode()})
         mock_transport = MagicMock()
         mock_transport.request.return_value = HTTPReply(
-            200, {'Content-Type': 'application/json'},
-            json.dumps({'code': '3000', 'data': base64.b64encode(wav_bytes).decode()}).encode())
-
-        provider = VolcengineTTSProvider(
-            self.root, 'test-key', transport=mock_transport,
-            voice_type='BV001_streaming')
+            200, {'content-type': 'text/event-stream'},
+            f'event: message\ndata: {event_a}\n\ndata: {event_b}\n\ndata: [DONE]\n'.encode())
         dest = self.root / 'phrase-0001.wav'
-        result = provider.synthesize('你好', dest)
-
-        self.assertTrue(dest.is_file())
+        result = self._provider(mock_transport).synthesize('你好', dest)
         self.assertEqual(dest.read_bytes(), wav_bytes)
-        self.assertEqual(result['text'], '你好')
-        self.assertEqual(result['voice_type'], 'BV001_streaming')
-        # The transport was called exactly once
-        mock_transport.request.assert_called_once()
+        self.assertEqual(result['voice_type'], 'configured-voice')
+        method, endpoint, headers, raw_body = mock_transport.request.call_args.args
+        self.assertEqual(method, 'POST')
+        self.assertIn('/api/v3/tts/unidirectional/sse', endpoint)
+        self.assertEqual(headers['X-Api-Key'], 'test-key')
+        self.assertEqual(headers['X-Api-Resource-Id'], 'configured-resource')
+        self.assertTrue(headers['X-Api-Request-Id'])
+        self.assertNotIn('Authorization', headers)
+        body = json.loads(raw_body.decode())
+        self.assertEqual(body['req_params']['speaker'], 'configured-voice')
+        self.assertEqual(body['req_params']['audio_params'], {
+            'format': 'wav', 'sample_rate': 16000,
+            'speech_rate': 25, 'loudness_rate': 3})
+        self.assertEqual(json.loads(body['req_params']['additions'])['post_process']['pitch'], -2)
+        audit = json.loads((self.root / 'phrase-0001-tts-audit.json').read_text(encoding='utf-8'))
+        self.assertEqual(audit['status'], 'complete')
+        self.assertEqual(audit['config']['api_version'], 'v3_sse_unidirectional')
+        self.assertNotIn('test-key', json.dumps(audit))
 
-    def test_synthesize_raw_audio_response(self):
-        """If the response is raw audio (content-type audio/), use it directly."""
-        import wave
-        import io
-        buf = io.BytesIO()
-        with wave.open(buf, 'wb') as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            w.writeframes(b'\x01\x02' * 1600)
-        wav_bytes = buf.getvalue()
-
+    def test_rejected_sse_writes_redacted_failure_audit(self):
         mock_transport = MagicMock()
         mock_transport.request.return_value = HTTPReply(
-            200, {'Content-Type': 'audio/wav'}, wav_bytes)
-
-        provider = VolcengineTTSProvider(
-            self.root, 'test-key', transport=mock_transport)
-        dest = self.root / 'raw.wav'
-        result = provider.synthesize('test', dest)
-
-        self.assertEqual(dest.read_bytes(), wav_bytes)
-
-    def test_error_response_raises(self):
-        mock_transport = MagicMock()
-        mock_transport.request.return_value = HTTPReply(
-            200, {'Content-Type': 'application/json'},
-            json.dumps({'code': '9999', 'message': 'Invalid voice'}).encode())
-
-        provider = VolcengineTTSProvider(
-            self.root, 'test-key', transport=mock_transport)
+            200, {'content-type': 'text/event-stream'},
+            b'data: {"code":3003,"message":"secret-looking provider detail"}\n')
+        destination = self.root / 'rejected.wav'
         with self.assertRaises(ProviderFailure):
-            provider.synthesize('test', self.root / 'err.wav')
+            self._provider(mock_transport).synthesize('test', destination)
+        self.assertFalse(destination.exists())
+        audit = json.loads((self.root / 'rejected-tts-audit.json').read_text(encoding='utf-8'))
+        self.assertEqual(audit['status'], 'failed')
+        self.assertEqual(audit['failure_code'], 'provider_rejected')
+        self.assertNotIn('test-key', json.dumps(audit))
+        self.assertNotIn('secret-looking', json.dumps(audit))
 
 
 if __name__ == '__main__':

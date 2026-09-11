@@ -284,3 +284,32 @@
 ### 验证边界
 
 真实云调用、真实录音与人工标注对照**均未进行**；预览发布门槛与 PRD 第 7 节完整 M1 验收分别记录，本版不主张任何真实验收通过。
+
+## 2026-09-11 — Issue #60 / v0.3.1 Volcengine TTS V3 SSE hotfix
+
+- **问题与范围：** v0.3.0 的 `volcengine_tts` 仍向旧 v1 JSON 接口发送
+  `Authorization: Bearer;…`，本机真实 API Key 验证失败。该修复只处理
+  Active Voice Test 的云端 TTS 调用，不改变录音导入主链路、ASR 的签名 URL
+  前置条件、Timeline/Metric/Evidence 基础设施或 HIL 排程（PRD-F016、F019、
+  F020、F023、N004；Issue #60）。
+- **实现：** TTS 改为 V3 单向 SSE，使用 `X-Api-Key`、
+  `X-Api-Resource-Id`、`X-Api-Request-Id`；模型配置要求 resource ID、voice
+  和 `wav`，不包含账户专属默认值。SSE 音频帧必须拼接为非空、可由 `wave`
+  验证的 WAV 后才能作为播放资产；失败调用不写音频，并保存不含密钥或服务端
+  原始错误的审计记录。审计保留 API version、公开配置、请求 ID、延迟、状态、
+  输出 hash 与 WAV 元数据。
+- **软件验证：** `tests.test_voice_test`、`tests.test_model_settings` 与
+  `tests.test_release_packaging` 覆盖 V3 请求体/头、多帧 SSE、WAV 校验、失败
+  脱敏审计、配置传递、版本化发布资产；实际结果在发布前复跑记录。
+- **候选容器云端冒烟：** 本地独立镜像
+  `aivoicebench:v0.3.1-candidate`、独立卷、`127.0.0.1:10431`。在用户明确
+  授权的 API Key 下，仅合成一条短句；`POST .../synthesize` 返回 `ready`，
+  短语状态 `ready`，音频端点 HTTP 200 / `audio/wav`，153,220 bytes。该结果
+  验证 V3 请求、SSE 合帧和浏览器音频服务，不构成真实扬声器、麦克风或 AI
+  设备测试。
+- **密钥清理证据：** 冒烟后先后执行 API 密钥删除与容器内 SQLite 计数检查；
+  模型描述显示 `credential_configured=false`，`secrets` 表记录数为 `0`。没有
+  把密钥、真实录音或生成音频提交到仓库。
+- **待完成：** 发布包下载后的重复冒烟、GitHub Release CI、真实设备声学
+  对话、Frozen Golden Asset/正式 Execution Evidence 仍分别待验收；不能由
+  此次短句云调用替代。

@@ -74,7 +74,14 @@ def validate_profile(p):
     params=p.get('parameters',{})
     if not isinstance(params,dict) or set(params)-PARAMETERS:
         raise SettingsError('包含不支持的模型参数')
-    for key,limits in {'temperature':(0,2),'max_tokens':(1,131072),'timeout_seconds':(1,300),'speed':(0.25,4),'sample_rate':(8000,96000)}.items():
+    numeric_limits={'temperature':(0,2),'max_tokens':(1,131072),'timeout_seconds':(1,300),'sample_rate':(8000,96000)}
+    if p['protocol']=='volcengine_tts':
+        # V3 TTS uses signed integer percentage-like controls.  The service
+        # itself remains authoritative for any model-specific restriction.
+        numeric_limits.update({'speed':(-50,100),'volume':(-100,100),'pitch':(-100,100)})
+    else:
+        numeric_limits['speed']=(0.25,4)
+    for key,limits in numeric_limits.items():
         if key in params and (type(params[key]) not in (int,float) or not math.isfinite(params[key]) or not limits[0]<=params[key]<=limits[1]):
             raise SettingsError('模型数值参数超出范围')
     for key in ('max_tokens','sample_rate'):
@@ -83,6 +90,12 @@ def validate_profile(p):
     for key in ('voice','format','resource_id'):
         if key in params and (not isinstance(params[key],str) or len(params[key])>200):
             raise SettingsError('无效的语音参数')
+    if p['protocol']=='volcengine_tts':
+        missing=[key for key in ('resource_id','voice') if not params.get(key,'').strip()]
+        if missing:
+            raise SettingsError('火山 TTS 必须填写资源 ID 和音色 ID')
+        if params.get('format','wav').lower()!='wav':
+            raise SettingsError('主动语音测试的火山 TTS 格式必须为 wav')
     p['parameters']=params
     return p
 
@@ -201,9 +214,9 @@ class ModelSettings:
                         provider_name=diarization['provider'] or 'volcengine',
                         model=diarization['model'] or 'bigmodel',
                         resource_id=diarization['parameters'].get('resource_id','volc.bigasr.auc_turbo'))
-        # TTS for Active Voice Test: the user configures a volcengine_tts profile
-        # with a base_url, model, and voice_type parameter. The provider makes
-        # one bounded HTTP call per synthesis, audited through InvocationAudit.
+        # TTS V3 SSE for Active Voice Test.  Profile parameters intentionally
+        # carry current account-specific resource/voice identifiers rather than
+        # code defaults; credentials remain in the secret store/environment.
         tts=by_id.get(doc['routes']['tts'])
         if tts and tts['enabled'] and adapter_available(tts, 'tts'):
             from .volcengine_tts import VolcengineTTSProvider
@@ -214,10 +227,11 @@ class ModelSettings:
                 return VolcengineTTSProvider(root, _tts_key,
                     endpoint=_tts_profile['base_url'],
                     model=_tts_profile['model'],
-                    voice_type=params.get('voice','BV001_streaming'),
-                    speed_ratio=params.get('speed',1.0),
-                    volume_ratio=params.get('volume',1.0),
-                    pitch_ratio=params.get('pitch',1.0),
+                    resource_id=params['resource_id'],
+                    voice_type=params['voice'],
+                    speech_rate=params.get('speed',0),
+                    loudness_rate=params.get('volume',0),
+                    pitch_rate=params.get('pitch',0),
                     audio_format=params.get('format','wav'),
                     sample_rate=params.get('sample_rate',16000),
                     timeout=params.get('timeout_seconds',30))

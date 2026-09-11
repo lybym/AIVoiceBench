@@ -1,27 +1,26 @@
-"""Volcengine TTS (语音合成大模型) HTTP provider.
+"""Volcengine (Doubao) TTS V3 single-direction SSE provider.
 
-Synthesises speech from text for the Active Voice Test. The generated audio
-is saved as a WAV file that the browser plays through the user's speakers.
-
-Interface-contract status: pending. The official parameter table could not be
-extracted (docs are JS-rendered, same as the ASR endpoint). This implements the
-widely-documented HTTP non-streaming format. Verify with credentials before
-production use; the exact endpoint and parameter names may differ in the current
-service revision.
-
-Every call is audited through the existing InvocationAudit infrastructure, so
-provider/model/latency/status are traceable. Secrets never enter artifacts.
+The provider uses the current API-Key based V3 SSE contract. A profile keeps
+the resource id and voice selection, while the API key remains write-only in
+``ModelSettings`` or an environment variable. Calls are bounded and each
+attempt writes an audit record without credentials or raw provider errors.
 """
 
+import base64
+import io
 import json
-import os
 import time
 import uuid
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .cloud_transport import HTTPTransport
 from .providers import ProviderFailure
+
+
+DEFAULT_TTS_ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse'
+TTS_API_VERSION = 'v3_sse_unidirectional'
 
 
 def _utc_now():
@@ -33,40 +32,25 @@ def _sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-# The widely-documented Volcengine TTS HTTP endpoint. The user configures the
-# base_url in model settings; this is only the default.
-DEFAULT_TTS_ENDPOINT = 'https://openspeech.bytedance.com/api/v1/tts'
-
-# A default voice type. The user must configure a real voice_type from their
-# Volcengine console; this is only a placeholder so the provider can construct
-# a request body without a hard crash.
-DEFAULT_VOICE_TYPE = 'BV001_streaming'
-
-
 class VolcengineTTSProvider:
-    """Synthesise speech via the Volcengine TTS HTTP API.
+    """Synthesize browser-playable WAV through Volcengine's V3 SSE API."""
 
-    The provider makes one bounded HTTP POST per call. No streaming, no
-    websockets, no automatic retry. If the call fails, the caller keeps the
-    error reason and does not mark the phrase as generated.
-    """
-
-    tts_version = '1.0.0'
+    tts_version = '2.0.0'
 
     def __init__(self, root, api_key, *, endpoint=DEFAULT_TTS_ENDPOINT,
-                 model='tts', voice_type=DEFAULT_VOICE_TYPE,
-                 speed_ratio=1.0, volume_ratio=1.0, pitch_ratio=1.0,
-                 audio_format='wav', sample_rate=16000,
-                 timeout=30, transport=None):
+                 model='tts', resource_id='', voice_type='', speech_rate=0,
+                 loudness_rate=0, pitch_rate=0, audio_format='wav',
+                 sample_rate=16000, timeout=30, transport=None):
         self.root = Path(root)
         self.api_key = api_key
         self.endpoint = endpoint.rstrip('/')
         self.model = model
+        self.resource_id = resource_id
         self.voice_type = voice_type
-        self.speed_ratio = speed_ratio
-        self.volume_ratio = volume_ratio
-        self.pitch_ratio = pitch_ratio
-        self.audio_format = audio_format
+        self.speech_rate = speech_rate
+        self.loudness_rate = loudness_rate
+        self.pitch_rate = pitch_rate
+        self.audio_format = audio_format.lower()
         self.sample_rate = sample_rate
         self.timeout = timeout
         self.transport = transport or HTTPTransport(timeout)
@@ -75,150 +59,204 @@ class VolcengineTTSProvider:
             'model_id': model,
             'model_version': 'service-managed',
             'library_version': f'aivoicebench-volcengine-tts:{self.tts_version}',
+            'api_version': TTS_API_VERSION,
+            'resource_id': resource_id,
             'voice_type': voice_type,
-            'audio_format': audio_format,
+            'audio_format': self.audio_format,
             'sample_rate': sample_rate,
         }
 
     def synthesize(self, text, destination):
-        """Synthesise ``text`` and save the audio to ``destination``.
-
-        Returns a dict with the synthesis metadata. Raises ProviderFailure on
-        any error; the caller must not mark the phrase as generated.
-        """
-        if not self.api_key:
-            raise ProviderFailure('TTS credential missing')
-
+        """Synthesize ``text`` and save a verified WAV to ``destination``."""
+        destination = Path(destination)
         request_id = str(uuid.uuid4())
         started_at = _utc_now()
         start_time = time.monotonic()
-        config = {'model': self.model, 'voice_type': self.voice_type,
-                  'audio_format': self.audio_format, 'sample_rate': self.sample_rate}
+        config = self._public_config()
+        failure_code = None
 
         try:
-            body = self._build_request(text, request_id)
+            self._validate_configuration(text)
             reply = self.transport.request(
                 'POST', self.endpoint,
-                {'Content-Type': 'application/json',
-                 'Authorization': f'Bearer;{self.api_key}'},
-                json.dumps(body).encode())
-            audio_data = self._parse_response(reply, text)
+                {
+                    'Content-Type': 'application/json',
+                    'Accept': 'text/event-stream',
+                    'X-Api-Key': self.api_key,
+                    'X-Api-Resource-Id': self.resource_id,
+                    'X-Api-Request-Id': request_id,
+                },
+                json.dumps(self._build_request(text), ensure_ascii=False,
+                           separators=(',', ':')).encode('utf-8'))
+            if not 200 <= reply.status < 300:
+                failure_code = f'http_{reply.status}'
+                raise ProviderFailure(f'TTS request rejected (HTTP {reply.status})')
+            audio_data = self._parse_sse(reply)
+            audio_metadata = self._validate_wav(audio_data)
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(audio_data)
-            latency_ms = round((time.monotonic() - start_time) * 1000, 3)
-            # Record a simple audit in the session directory (not the full
-            # provider-invocation audit, which requires file input artifacts;
-            # TTS input is text, not a file).
-            audit_path = destination.parent / f'{destination.stem}-tts-audit.json'
-            audit_path.write_text(json.dumps({
-                'schema_version': '1.0.0',
-                'invocation_id': 'CALL-' + request_id,
-                'provider': 'volcengine',
-                'model': self.model,
-                'voice_type': self.voice_type,
-                'endpoint': self.endpoint,
-                'config': config,
-                'started_at': started_at,
-                'finished_at': _utc_now(),
-                'latency_ms': latency_ms,
-                'status': 'complete',
-                'output': {
-                    'path': str(destination.name),
-                    'sha256': _sha256(audio_data),
-                    'size_bytes': len(audio_data),
-                },
-                'input_text': text[:200] + '...' if len(text) > 200 else text,
-            }, ensure_ascii=False, indent=2), encoding='utf-8')
+            self._write_audit(destination, request_id, started_at, start_time,
+                              config, text, 'complete', audio_data=audio_data,
+                              audio_metadata=audio_metadata)
             return {
                 'path': str(destination),
                 'sha256': _sha256(audio_data),
                 'size_bytes': len(audio_data),
                 'format': self.audio_format,
-                'sample_rate': self.sample_rate,
+                'sample_rate': audio_metadata['sample_rate'],
                 'text': text,
                 'voice_type': self.voice_type,
                 'model': self.model,
+                'resource_id': self.resource_id,
                 'request_id': request_id,
             }
-        except ProviderFailure:
+        except ProviderFailure as error:
+            self._write_audit(destination, request_id, started_at, start_time,
+                              config, text, 'failed',
+                              failure_code=failure_code or self._failure_code(error))
             raise
         except Exception:
+            self._write_audit(destination, request_id, started_at, start_time,
+                              config, text, 'failed', failure_code='unexpected_error')
             raise ProviderFailure('TTS synthesis failed; check configuration and credentials') from None
 
-    def _build_request(self, text, request_id):
-        """Build the TTS HTTP request body.
+    def _validate_configuration(self, text):
+        if not self.api_key:
+            raise ProviderFailure('TTS credential missing')
+        if not isinstance(text, str) or not text.strip():
+            raise ProviderFailure('TTS text is empty')
+        if not self.resource_id:
+            raise ProviderFailure('TTS resource_id missing')
+        if not self.voice_type:
+            raise ProviderFailure('TTS voice missing')
+        if self.audio_format != 'wav':
+            raise ProviderFailure('Active Voice Test requires TTS format=wav')
 
-        This follows the widely-documented Volcengine TTS format. The exact
-        field names and endpoint may differ in the current revision; verify
-        with credentials before production use.
-        """
+    def _public_config(self):
         return {
-            'app': {
-                'appid': '',
-                'token': 'access_token',
-                'cluster': 'volcano_tts',
-            },
-            'user': {
-                'uid': 'aivoicebench',
-            },
-            'audio': {
-                'voice_type': self.voice_type,
-                'encoding': self.audio_format,
-                'speed_ratio': str(self.speed_ratio),
-                'volume_ratio': str(self.volume_ratio),
-                'pitch_ratio': str(self.pitch_ratio),
-                'rate': self.sample_rate,
-            },
-            'request': {
-                'reqid': request_id,
+            'api_version': TTS_API_VERSION,
+            'model': self.model,
+            'resource_id': self.resource_id,
+            'voice_type': self.voice_type,
+            'audio_format': self.audio_format,
+            'sample_rate': self.sample_rate,
+            'speech_rate': self.speech_rate,
+            'loudness_rate': self.loudness_rate,
+            'pitch_rate': self.pitch_rate,
+        }
+
+    def _build_request(self, text):
+        additions = {
+            'post_process': {'pitch': self.pitch_rate},
+            'disable_markdown_filter': True,
+            'enable_latex_tn': False,
+        }
+        return {
+            'user': {'uid': 'aivoicebench'},
+            'req_params': {
                 'text': text,
-                'text_type': 'plain',
-                'operation': 'query',
+                'speaker': self.voice_type,
+                'audio_params': {
+                    'format': self.audio_format,
+                    'sample_rate': self.sample_rate,
+                    'speech_rate': self.speech_rate,
+                    'loudness_rate': self.loudness_rate,
+                },
+                'additions': json.dumps(additions, ensure_ascii=False,
+                                        separators=(',', ':')),
             },
         }
 
-    def _parse_response(self, reply, text):
-        """Extract audio bytes from the TTS response.
-
-        The response is expected to be JSON with a ``data`` field containing
-        base64-encoded audio, or raw audio bytes with an appropriate
-        content-type. Both are handled defensively.
-        """
-        # If the response is raw audio (content-type starts with audio/), use it directly.
-        content_type = reply.headers.get('Content-Type', '')
-        if content_type.startswith('audio/'):
-            return reply.body
-
-        # Otherwise, parse JSON and extract base64 audio.
+    def _parse_sse(self, reply):
+        chunks = []
         try:
-            payload = json.loads(reply.body.decode('utf-8'))
-        except (ValueError, UnicodeDecodeError) as error:
-            raise ProviderFailure(f'TTS response is not valid JSON or audio: {error}')
-
-        code = payload.get('code') or payload.get('ResponseCode')
-        if code and str(code) != '3000' and str(code) != '0':
-            raise ProviderFailure(f'TTS rejected the request (code={code}): '
-                                  f'{payload.get("message") or payload.get("ResponseMessage") or "unknown"}')
-
-        data = payload.get('data') or payload.get('audio') or payload.get('audio_data')
-        if not data:
+            lines = reply.body.decode('utf-8', errors='strict').splitlines()
+        except UnicodeDecodeError as error:
+            raise ProviderFailure('TTS response contains invalid SSE data') from error
+        for line in lines:
+            if not line.startswith('data:'):
+                continue
+            raw = line[5:].strip()
+            if not raw or raw == '[DONE]':
+                continue
+            try:
+                event = json.loads(raw)
+            except ValueError as error:
+                raise ProviderFailure('TTS response contains invalid SSE data') from error
+            code = event.get('code', 0)
+            if str(code) not in ('0', '20000000'):
+                raise ProviderFailure(f'TTS request rejected (code={code})')
+            if event.get('data'):
+                try:
+                    chunks.append(base64.b64decode(event['data'], validate=True))
+                except (ValueError, TypeError) as error:
+                    raise ProviderFailure('TTS response contains invalid audio data') from error
+        if not chunks:
             raise ProviderFailure('TTS response contained no audio data')
+        return b''.join(chunks)
 
-        import base64
+    @staticmethod
+    def _validate_wav(audio_data):
         try:
-            return base64.b64decode(data)
-        except Exception as error:
-            raise ProviderFailure(f'TTS audio data could not be decoded: {error}')
+            with wave.open(io.BytesIO(audio_data), 'rb') as audio:
+                if audio.getnframes() <= 0:
+                    raise ProviderFailure('TTS returned an empty WAV')
+                return {
+                    'channels': audio.getnchannels(),
+                    'sample_width_bytes': audio.getsampwidth(),
+                    'sample_rate': audio.getframerate(),
+                    'frames': audio.getnframes(),
+                }
+        except (wave.Error, EOFError) as error:
+            raise ProviderFailure('TTS response is not a valid WAV asset') from error
 
+    @staticmethod
+    def _failure_code(error):
+        message = str(error)
+        if 'credential' in message:
+            return 'credential_missing'
+        if 'resource_id' in message or 'voice missing' in message or 'format=' in message:
+            return 'configuration_invalid'
+        if 'empty' in message:
+            return 'input_invalid'
+        if 'SSE' in message or 'audio data' in message or 'WAV' in message:
+            return 'response_invalid'
+        if 'code=' in message:
+            return 'provider_rejected'
+        return 'provider_error'
 
-def _sha256(data):
-    import hashlib
-    return hashlib.sha256(data).hexdigest()
+    def _write_audit(self, destination, request_id, started_at, start_time,
+                     config, text, status, *, audio_data=None,
+                     audio_metadata=None, failure_code=None):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        audit = {
+            'schema_version': '1.1.0',
+            'invocation_id': 'CALL-' + request_id,
+            'provider': 'volcengine',
+            'model': self.model,
+            'endpoint': self.endpoint,
+            'config': config,
+            'started_at': started_at,
+            'finished_at': _utc_now(),
+            'latency_ms': round((time.monotonic() - start_time) * 1000, 3),
+            'status': status,
+            'input_text': text[:200] + '...' if len(text) > 200 else text,
+        }
+        if status == 'complete':
+            audit['output'] = {
+                'path': str(destination.name),
+                'sha256': _sha256(audio_data),
+                'size_bytes': len(audio_data),
+                'audio_metadata': audio_metadata,
+            }
+        else:
+            audit['failure_code'] = failure_code or 'provider_error'
+        (destination.parent / f'{destination.stem}-tts-audit.json').write_text(
+            json.dumps(audit, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
 class UnavailableTTSProvider:
     """Production default when no TTS provider is configured."""
 
     def synthesize(self, text, destination):
-        raise ProviderFailure('No TTS provider configured; '
-                              'add a volcengine_tts profile in model settings')
+        raise ProviderFailure('No TTS provider configured; add a volcengine_tts profile in model settings')

@@ -1,6 +1,6 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.2.0
+prd_version: 1.2.1
 status: consolidated_for_owner_review
 updated: 2026-09-11
 implementation_baseline: v0.1.3@e3c2821a417a1aeea90a7c029290b6f814bf747b
@@ -130,7 +130,7 @@ Windows EXE/安装包、集群、复杂云端 Control Plane 不属于当前交�
 | PRD-F013 | Markdown + JSON 报告 | P1（MVP 必需） | 🟡 partial | 文件可生成；完整结论级回溯待验收 |
 | PRD-F014 | Web 测试与分析工作台 | P0/P1 | 🟡 partial | main + release；波形、完整 Timeline、人工审核尚缺 |
 | PRD-F015 | 统一模型配置管理 | P1 | ✅ implemented | main + release；限管理与 Judge 路由 |
-| PRD-F016 | 语音生成/分析适配器实际调用 | P0 ASR（M1）/ P1 TTS（M2） | ⬜ planned | 配置占位不能算适配器；未集成旧云 ASR 分支。本分支进展：云 ASR 原生输出/审计/Web 已具备，diarization 复用同一次 ASR 响应（未合并，真实验收待完成） |
+| PRD-F016 | 语音生成/分析适配器实际调用 | P0 ASR（M1）/ P1 TTS（M2） | 🟡 partial | 云 ASR/TTS 适配器和调用审计已有分支实现；真实录音与真实设备验收仍待完成。v0.3.1 分支将 TTS 改为当前 API-Key V3 SSE 合约，尚未发布。 |
 | PRD-F017 | 同一录音分析修订与重现 | P1 | 🟡 partial | Hash/配置快照已有；同 Run 多版本重算未完成 |
 | PRD-F018 | 版本/设备/供应商 Compare | P2 | ⬜ planned | 无产品比较工作流 |
 | PRD-F019 | Frozen Golden Voice 资产 | P1（M2 核心） | ⬜ planned | 暂停草稿不算可交付能力 |
@@ -332,15 +332,16 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 ### PRD-F016 — 语音服务实际调用与主动测试 TTS
 
-**代码：⬜ planned（发布基线的云 speech adapter）；验证：real_recording_pending。**
+**代码：🟡 partial（发布基线的云 speech adapter）；验证：software_verified、real_recording_pending。**
 
 提供统一 ASRProvider、TTSProvider、AudioProcessingProvider、DiarizationProvider 接入点；核对火山等当前官方 API 后实现真实调用。每次调用记录 provider、model、endpoint/API version、config、prompt_version（适用时）、timestamp、输入/输出 refs、latency、status，不记录 Secret。配置管理不代表调用能力已交付。音频标准化和 Vosk 已有能力分别见 PRD-F003/F005，不在此重复标为未实现。
 
 - [ ] 云 ASR/diarization 原生输出、重试/失败状态、调用审计与 Web 分析集成。
 
 本分支进展（software_verified，未合并）：云 ASR 原生输出/审计/Web 集成已具备；diarization 通过 `DiarizationProvider` 的 ASR-native 实现复用同一次云 ASR 原生响应产出聚类，不新增独立服务端点或第二次识别，聚类结果进入 ImportRun 账本与 Web/CLI。**仍未验证**：供应商是否需在请求中显式开启说话人分离（官方参数表无法离线核实），以及任何真实录音/凭据下的原生标签可用性；因此该项保持未勾选。
+- [x] 本分支进展（software_verified，未发布）：`volcengine_tts` 使用 API-Key V3 单向 SSE，显式配置当前 resource ID 与 voice ID；SSE 帧只在拼接为有效 WAV 后才生成播放资产。请求/响应协议、无旧鉴权头、失败脱敏审计和配置传递由单元测试覆盖（Issue #60）。
 - [ ] TTS 真实调用服务于主动测试（P1/M2）：固定 Runner 执行前生成并冻结音频，运行时重用资产；M3 自由 Agent 可逐轮生成，保存每轮实际播放音频及引用。效果与成本按服务实际支持能力选择。
-- [ ] TTS 失败、预算耗尽或音频无效时明确停止/失败，不标记为已播放；调用记录关联 Execution Run/Turn 和音频资产。
+- [x] 本分支进展（software_verified）：TTS 失败或音频无效时不生成播放资产，并写入不含 Secret 和原始服务错误的失败审计。预算耗尽、冻结资产版本化和 Execution Run/Turn 正式证据关联仍未实现。
 
 依据：[model_settings.py 的 not_integrated 声明](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/model_settings.py)；Issues #22、#30、#9；关闭未合并的 PR #31/#32 须先做集成审计再复用。
 
@@ -552,6 +553,7 @@ M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程�
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
+| 1.2.1 | 2026-09-11 | 记录 Issue #60 的 v0.3.1 TTS 协议修复：当前 API-Key V3 SSE、显式资源/音色、可验证 WAV 与脱敏调用审计；状态保持 partial，真实录音/设备验收未升级 | 项目所有者要求修复 v0.3.0 云 TTS 调用失败并重新发布测试 |
 | 1.2.0 | 2026-09-11 | 调整开发排程：主动语音测试不再以完整 M1 真实质量验收通过为开工前提，先交付固定用例多轮对话最小可用版本，再接自由对话；M1 录音分析剩余验收继续保留。本轮新增 TTS Provider、Voice Test 会话管理器、WebSocket 实时控制、浏览器音频播放与 VAD、自由对话 LLM Agent。对应 PRD-F014/F016/F019/F020/F021/F023 | 项目所有者运行 v0.2.0-alpha.2 后发现缺少主动对话能力，要求立即实现 |
 | 1.1.2 | 2026-09-11 | 记录 v0.2.0-alpha.1 预览发布：M1 当前能力的可下载预览版，范围冻结为录音导入/资产与 provenance/阶段账本/配置管理/云 ASR 调用路径/时间戳转写/回放/说话人标签展示/历史/报告/失败与持久化；明确云 ASR 完整前置条件（API Key + 三个签名 URL）与已知限制（接口约定待确认、无角色证据时保持 unknown）；第 7 节完整 M1 验收仍未通过、未降级 | 项目所有者要求收敛现有功能并交付可实际操作的预览版 |
 | 1.1.1 | 2026-09-11 | 消除第 7 节与第 8 节的里程碑编号冲突：第 7 节工程拆分改标为产品 M1 内部子阶段 M1.1～M1.5，正式排程仍以第 8 节 M1～M5 为准；新增第 1 节“需求 / 实现建议 / 实现状态”区分规则；按当前分支代码、测试与提交刷新 F006/F009/F016、M004/M008、Issue #3/#25 的状态描述并标注“本分支进展（未合并）” | 项目所有者要求先校准 PRD 基线、消除里程碑命名冲突、区分需求与实现建议与实现状态 |
