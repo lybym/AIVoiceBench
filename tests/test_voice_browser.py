@@ -163,7 +163,7 @@ def setUpModule():
             [sys.executable, str(REPO_ROOT / 'tests' / 'browser_server.py'),
              '--port', str(port), '--output', str(Path(tmp.name) / 'out'),
              '--first-phrase-ms', '2500', '--phrase-ms', '250',
-             '--no-response-timeout-ms', '2500'],
+             '--no-response-timeout-ms', '2500', '--free-mode'],
             cwd=str(REPO_ROOT), stdout=log, stderr=subprocess.STDOUT)
         _STATE['server'] = proc
 
@@ -540,6 +540,94 @@ class BrowserControlTestCase(unittest.TestCase):
         self.assertEqual(len(archived['turns']), 2)  # turn 0 closed, turn 1 cancelled
         self.assertTrue(current['current'])
         self.assertEqual(current['run_index'], 2)
+
+
+    # ------------------------------------------------------- free mode capture
+
+    def test_free_mode_streams_audio_and_shows_the_device_transcript(self):
+        """The real page captures PCM and the backend turns it into an observation.
+
+        The recogniser is a scripted test double, but the path under test is real:
+        AudioWorklet capture -> sequence-framed binary audio socket -> backend
+        capture -> observation -> next turn. The scripted provider only reports
+        text when it actually received audio, so a passing transcript proves the
+        microphone frames crossed the wire.
+        """
+        self.page.goto(f"{_STATE['base']}/")
+        self.page.click('#nav-voice-test')
+        self.page.click('text=自由对话（大模型）')
+        self.page.fill('#vt-free-goal', '测试设备的天气查询能力')
+        self.page.click('#vt-start-free')
+
+        self.page.wait_for_function(
+            '() => { const s = window.VT.controlState();'
+            ' return !!s && s.stats.playReceived >= 1; }', timeout=25000)
+        self.assertIn('实时', self.page.inner_text('#vt-capture-status'))
+        self.assertEqual(self.state()['capture_mode'], 'streaming')
+
+        # Speak into the controlled microphone, then fall silent: the browser VAD
+        # ends the turn, the capture is finalised and the transcript appears.
+        # Wait for listening first — VAD is deliberately paused during playback,
+        # so input raised too early would be missed.
+        self.wait_for_listening()
+        self.page.evaluate('window.__vtMic.setLevel(1.0)')
+        self.page.wait_for_timeout(self.VAD_SPEAK_WAIT_MS)
+        self.page.evaluate('window.__vtMic.setLevel(0.0)')
+
+        # Partial text is shown while the turn runs, then the confirmed text.
+        self.page.wait_for_function(
+            "() => (document.getElementById('vt-device-transcript')||{}).textContent"
+            ".includes('设备回答')", timeout=25000)
+        partial_shown = self.page.inner_text('#vt-device-transcript')
+        self.assertIn('设备（实时）', partial_shown)
+
+        self.page.wait_for_function(
+            "() => (document.getElementById('vt-device-transcript')||{}).textContent"
+            ".includes('设备（确认）')", timeout=25000)
+        transcript = self.page.inner_text('#vt-device-transcript')
+        self.assertIn('设备回答：南京明天晴', transcript)
+
+        # The observation drove the next turn.
+        self.page.wait_for_function(
+            '() => { const s = window.VT.controlState();'
+            ' return !!s && s.stats.playReceived >= 2; }', timeout=25000)
+
+        # The trace records the capture as control evidence, with the audio facts.
+        session_id = self.state()['session_id']
+        record = self.record(session_id)
+        self.assertEqual(record['resolved_capture_mode'], 'streaming')
+        started = [e for e in record['events'] if e['kind'] == 'capture_started']
+        self.assertTrue(started, [e['kind'] for e in record['events']])
+        self.assertEqual(started[0]['detail']['evidence_scope'], 'control_evidence')
+        self.assertEqual(started[0]['detail']['audio']['sample_rate'], 16000)
+        finished = [e for e in record['events'] if e['kind'] == 'capture_finished']
+        self.assertTrue(finished)
+        self.assertGreater(finished[0]['detail']['audio_bytes'], 0,
+                           'the page must actually have streamed audio')
+        self.assertEqual(finished[0]['detail']['final_text'], '设备回答：南京明天晴')
+
+    def test_free_mode_stop_releases_the_capture(self):
+        self.page.goto(f"{_STATE['base']}/")
+        self.page.click('#nav-voice-test')
+        self.page.click('text=自由对话（大模型）')
+        self.page.fill('#vt-free-goal', '停止清理')
+        self.page.click('#vt-start-free')
+        self.page.wait_for_function(
+            '() => { const s = window.VT.controlState();'
+            ' return !!s && s.stats.playReceived >= 1; }', timeout=25000)
+
+        self.page.click('#vt-stop-free')
+        self.wait_for_status('已停止')
+        state = self.state()
+        self.assertTrue(state['cancelled'])
+        self.assertFalse(state['pending_play_wait'])
+        self.assertFalse(state['has_capture'], 'stopping must release the capture')
+        # Wait past the bound: a stopped run must not advance on its own.
+        self.page.wait_for_timeout(3000)
+        self.assertEqual(self.state()['stats']['playReceived'], 1)
+        record = self.record(state['session_id'])
+        self.assertEqual(record['status'], 'stopped')
+        self.assertNotIn('capture_finished', [e['kind'] for e in record['events']])
 
 
 if __name__ == '__main__':

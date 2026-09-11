@@ -177,13 +177,19 @@ class FreeModeStreamingTests(unittest.TestCase):
 
     def send_capture(self, session_id, turn_id, *, sample_rate=16000, channels=1, bits=16,
                      frames=4, sequences=None, stop=True):
-        """Stream PCM over the audio socket and return the capture_result message."""
+        """Stream PCM over the audio socket and return the terminal message.
+
+        Display updates (partial/final transcript) may arrive first; they are
+        collected on the returned message under ``seen``.
+        """
+        seen = []
         with self.audio.websocket_connect(
                 f'/api/voice-test/sessions/{session_id}/audio') as ws:
             ws.send_json({'type': 'capture_started', 'turn_id': turn_id,
                           'sample_rate': sample_rate, 'channels': channels, 'bits': bits})
             ready = ws.receive_json()
             if ready.get('type') != 'capture_ready':
+                ready['seen'] = seen
                 return ready
             for index in range(frames):
                 sequence = sequences[index] if sequences else index
@@ -191,7 +197,12 @@ class FreeModeStreamingTests(unittest.TestCase):
                 ws.send_bytes(sequence.to_bytes(4, 'big') + pcm)
             if stop:
                 ws.send_json({'type': 'capture_stopped', 'reason': 'speech_end'})
-                return ws.receive_json()
+                for _ in range(20):
+                    message = ws.receive_json()
+                    if message.get('type') in ('capture_result', 'capture_error'):
+                        message['seen'] = seen
+                        return message
+                    seen.append(message)
         return None
 
     def record(self, session_id):
@@ -220,6 +231,11 @@ class FreeModeStreamingTests(unittest.TestCase):
             self.assertEqual(result['type'], 'capture_result')
             self.assertEqual(result['final_text'], '这是设备的回答')
             self.assertFalse(result['empty_transcript'])
+            # Partial text is pushed to the page while the turn is still running.
+            self.assertTrue([m for m in result['seen'] if m['type'] == 'partial_transcript'],
+                            result['seen'])
+            self.assertTrue(all(m.get('evidence_scope') == 'control_evidence'
+                                for m in result['seen']))
 
             control.send_json({'type': 'capture_result', 'turn_id': first_turn,
                                'stream_id': result['stream_id']})

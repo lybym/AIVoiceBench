@@ -709,7 +709,9 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
                 except Exception:  # noqa: BLE001 - the session already recorded why
                     pass
                 capture.audio_bytes += len(pcm)
-                _voice_test_manager.note_streaming_events(session, capture.asr.poll_events())
+                applied = _voice_test_manager.note_streaming_events(
+                    session, capture.asr.poll_events())
+                await _forward_streaming_events(websocket, applied)
                 if capture.failure in ('invalid_audio', 'audio_capture_failed'):
                     break
                 continue
@@ -740,6 +742,26 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
                                        'note': str(error)[:200]})
         except Exception:
             pass
+
+
+async def _forward_streaming_events(websocket, events):
+    """Show the device's words to the operator while the turn is still running.
+
+    Partial text is display-only: it never triggers the agent, and the trace
+    keeps it labelled as a control observation.
+    """
+    for event in events:
+        if event.kind not in ('partial_transcript', 'final_transcript'):
+            continue
+        if not event.text:
+            continue
+        try:
+            await websocket.send_json({
+                'type': event.kind, 'text': event.text, 'basis': event.basis,
+                'sequence': event.sequence, 'source': event.source,
+                'evidence_scope': 'control_evidence'})
+        except Exception:  # noqa: BLE001 - a display update must not break the run
+            return
 
 
 def _apply_frame_ordering(capture, sequence):
