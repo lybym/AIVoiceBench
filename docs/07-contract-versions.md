@@ -4,7 +4,7 @@
 
 ## TestCase 2.0.0 (Issue #1)
 
-Breaking change from the seed 1.0.0: strict mode-specific stimulus objects replace open-ended fields. Case ID remains stable; migrated example content uses Case version 2.0.0. Other seed contracts remain at 1.0.0 until their respective Issues; do not assume all contracts share one version.
+Breaking change from the seed 1.0.0: strict mode-specific stimulus objects replace open-ended fields. Case ID remains stable; migrated example content uses Case version 2.0.0. Each contract evolves independently; current imported Transcript is 1.1.0 and MetricResult is 3.0.0. The sections below also document legacy versions.
 
 Migration:
 
@@ -75,3 +75,12 @@ Validate with `python -m aivoicebench validate --kind metric --timeline examples
 ## Finding 2.0.0 / Evidence 1.0.0 integration (Issue #4)
 
 Migrates inline evidence to the Timeline Evidence catalog; separates observation/defect and observation confidence/cause confidence. Adds explicit unknown/suspected/verified attribution, required review metadata for serious safety confirmation, and candidate/minimized/frozen regression links. Frozen candidate validation requires the linked versioned TestCase/Golden Set. See `08-findings-and-evidence.md` for severity guidance, provenance, lifecycle and CLI examples. Review timestamps require a full timezone-qualified ISO timestamp (no leap seconds); built-in validation does not rely on an optional date-format dependency.
+
+## Import contracts (audited 2026-09-11 at main c612d36; re-checked at main 8d01ef2 / v0.3.2)
+
+- RecordingRun / AnalysisOutput bind Run/Analysis identity, stage status and artifact refs; they do not replace preparation RunManifest.
+- Transcript 1.1.0 supports nullable remote model hash, absent word detail/confidence and overlapping utterances in start order; 1.0.0 remains strict for legacy inputs. See [ASR](11-timestamped-asr.md) and [Backbone](23-recording-backbone.md).
+- SpeakerAssignments / Attribution keep clustering and tester/device/unknown roles separate. Provider-estimated timing is not acoustic truth; exact versions/fields are in their schemas.
+- Imported metrics emit MetricResult 3.0.0 directly; 2.0.0 remains readable through version-aware validation. Fields include analysis_id, prd_ref, turn/response identity, policy/version, reason, confidence source and uncertainty. Nullable fields preserve unknown evidence; schema compliance is not accuracy validation.
+
+Code/tests: [validation.py](../aivoicebench/validation.py), [metrics.py](../aivoicebench/metrics.py), [version compatibility](../tests/test_metric_compatibility.py), [metric contracts](../tests/test_metrics_contract.py). Real-device acceptance remains separate.

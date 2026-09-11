@@ -1,28 +1,28 @@
-# Docker / API — 使用说明与版本边界
+# Docker / API — 当前使用说明
 
-> M1 实现更新：本分支统一 ImportRun、ASR 路由、调用审计和转写；恢复/契约与当前验证限制见 [Recording Backbone](23-recording-backbone.md)。下文旧版本路径和可用状态以该技术更新为准。
+2026-09-11 基线 main c612d36 / alpha.2。产品要求见 [PRD](PRD.md)，主链配置见 [Recording Backbone](23-recording-backbone.md)。
 
-产品要求见 [PRD-F001/F014/F015、PRD-N001](PRD.md)，不以本文件另设交付范围。
+## 版本与启动
 
-## 选择运行的版本
+[v0.3.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.3.2) 为当前正式发布（Latest）。[v0.2.0-alpha.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.2.0-alpha.2) 是历史预览版，alpha.1 未作为公开预览版发布。按 [v0.3.2 发布说明](releases/0.3.2.md) 下载镜像包、Compose、Windows 启动脚本及 SHA256SUMS，启动后访问 <http://127.0.0.1:8000>；端口占用可用脚本 -Port 8001。
 
-main 19d3a07 尚未包含 PR #43/#45 的全部 Web 修复。发布版 v0.1.3 已包含 FFmpeg、Web WAV/MP3/M4A 导入、统一历史状态、模型管理和版本号修复。发布镜像与 main 源码不能混为同一实现。
+预览脚本使用独立容器/数据卷，不迁移旧 v0.1.x 数据。Docker 自带 FFmpeg/FFprobe，无需从 Windows 挂载可执行文件；不交付 EXE。
 
-推荐从 [v0.1.3 Release](https://github.com/lybym/AIVoiceBench/releases/tag/v0.1.3) 下载并按 [README](../README.md) 运行，浏览器访问 http://localhost:8000 。升级时保留数据卷。无需把 FFmpeg 可执行文件从 Windows 挂入 Linux 容器。
+## 接口与边界
 
-## 发布版接口
-
-| 方法 | 路径 | 用途 |
+| 方法 | 路径 | 当前用途 |
 | --- | --- | --- |
-| GET | /health、/openapi.json | 服务/版本元数据 |
-| GET | / | Web UI |
-| POST | /api/analyze | multipart 三格式上传；设备资料可选 |
-| GET | /api/runs、/api/runs/{run_id} | 历史与统一响应详情 |
+| GET | /health、/openapi.json、/ | 版本/接口信息与 Web |
+| POST | /api/analyze | multipart 三格式导入，与 CLI 共用 ImportRun；设备资料可选 |
+| GET | /api/runs、/api/runs/{run_id} | 历史/详情：analysis_id、stages、transcript、speaker_segments、diarization_scope、attribution、阶段数据与 report_md |
 | GET | /api/runs/{run_id}/audio | 标准化音频回放 |
-| GET / POST | /api/models | 脱敏设置读取、版本化配置更新；不回传密钥 |
+| POST | /api/runs/{run_id}/resume | JSON {"retry_asr": true} 显式重试 ASR；已完成 ASR/report 不重复调用 |
+| GET / POST | /api/models | 脱敏配置读取/版本化更新；保存不调用服务，密钥不回传 |
 
-上传上限 1 GiB、最长 30 分钟；完整 MVP 的真实录音验收仍是 PRD 第 7 节。失败阶段保留 Run，不把 partial 视为通过。模型管理和路径参数以 [发布代码](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/api.py) 为准；语音配置尚未代表云适配器实际调用。
+上传上限 1 GiB、最长 30 分钟为实现限制。云 ASR 需要路由、凭据及音频 PUT/GET/host 配置，不能只填 Key；ASR-native 聚类需绑定 diarization 路由且服务返回标签。普通 Web 无角色编辑入口，缺角色时 turns/timeline/metrics 弃权。
 
-API 是可信单用户服务。发布版 Compose 默认绑定 localhost；本地配置密钥数据库是明文存储，远程使用需认证代理。容器基础检查只验证软件行为，不验证设备准确率。
+ImportRun 尚未执行 Judge/Findings，当前报告是阶段状态报告，空发现不代表设备通过。完整结论报告、人工修订和通用重分析 API/UI 未闭环；resume 不是通用重算接口。
 
-原先“WAV-only / 挂载 FFmpeg”的说明保留在 [历史快照](product/archive/2026-09-10/20-docker-api.md)，不再作为发布版操作指南。
+默认可信单用户 localhost 部署，配置数据库为本地明文，远程访问需认证代理。音频发布 URL 必须为允许主机的 HTTPS、443（或省略端口），PUT/GET 同对象并回读校验；模型管理对本地服务 HTTP 的许可不适用于音频发布。
+
+依据：[api.py](../aivoicebench/api.py)、[import_pipeline.py](../aivoicebench/import_pipeline.py)、[cloud_transport.py](../aivoicebench/cloud_transport.py)。软件/容器验证见 PRD 第 1 节；真实录音质量验收未完成。
