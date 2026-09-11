@@ -1,8 +1,8 @@
 # Model management
 
-> M1 实现更新：本分支统一 ImportRun、ASR 路由、调用审计和转写；恢复/契约与当前验证限制见 [Recording Backbone](23-recording-backbone.md)。下文旧版本路径和可用状态以该技术更新为准。
+> 2026-09-11 基线：main c612d36 / alpha.2。当前主链与验证限制见 [Recording Backbone](23-recording-backbone.md)；真实验收仍待完成。
 
-The browser model manager separates provider profiles from capability routes (TTS, ASR, diarization and result Judge). Profiles declare protocol, endpoint, model ID, parameters and credential reference; default routes select a profile per purpose. Changes apply at the next Run. Unsupported speech adapters are explicitly not_integrated; saving configuration does not invoke a provider or certify connectivity. M1 also wires the configured Volcengine ASR route. Diarization/TTS remain unavailable; ASR availability does not imply role attribution. Vosk remains intact.
+The browser model manager separates provider profiles from capability routes (TTS, ASR, diarization and result Judge). Profiles declare protocol, endpoint, model ID, parameters and credential reference; default routes select a profile per purpose. Changes apply at the next Run. Unsupported speech adapters are explicitly not_integrated; saving configuration does not invoke a provider or certify connectivity. M1 also wires the configured Volcengine ASR route. ASR-native diarization reuses the selected ASR response when its route selects an enabled volcengine_asr profile; bind both routes to the same profile. TTS remains unavailable. Judge configuration can be captured, but ImportRun does not execute it. ASR/clusters do not imply role attribution. Vosk remains intact.
 
 ## Reference and adaptation
 

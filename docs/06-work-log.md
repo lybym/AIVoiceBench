@@ -284,3 +284,14 @@
 ### 验证边界
 
 真实云调用、真实录音与人工标注对照**均未进行**；预览发布门槛与 PRD 第 7 节完整 M1 验收分别记录，本版不主张任何真实验收通过。
+
+
+## 2026-09-11 — docs implementation audit against main c612d36
+
+- User requested updating docs to match latest code. Created docs/main-implementation-audit in an isolated worktree from origin/main c612d36a61a5cbc90f629677b28d64228316f1d0; preserved other worktrees and local release work. Related #27/#22/#24/#25/#30; PRD-F004–F017, F022/F023, M001–M010.
+- Verified GitHub main and public pre-release v0.2.0-alpha.2 point to c612d36. PR #48/#49/#50/#53/#55/#56 merged; #51/#52 are Closed but their implementation commits are ancestors of main. PR #54 is open and excluded from delivered scope. Latest stable release remains v0.1.3.
+- Updated PRD to 1.1.3 with pinned implementation evidence, current integration cells and remaining M1 work. Preserved product priorities, metric meanings, requirement IDs and all real-recording acceptance gates. Reconciled roadmap M1.1–M1.5 engineering slices with product M1–M5 and basic local audio versus professional HIL.
+- Corrected technical docs and preview notes: cloud ASR/audit and ASR-native clustering are integrated; role-gated downstream stages remain conditional; Judge/Findings and full conclusion reports are not executed by ImportRun; explicit ASR resume is not general human reanalysis. Corrected report locations, audio-publication HTTPS requirements, diarization routing and preview test counts. Historical archive bytes and source/config/scripts are unchanged.
+- Validation: git diff --check passed; 19 edited documents checked before this appended record, 97 local Markdown links and pinned source paths resolve; 24 unique PRD functional IDs preserved, priorities and metric meaning cells unchanged, Section 7 real gates remain unchecked. Updated CLI examples retain valid PowerShell single-line form. Final scope check includes this log (20 Markdown files under docs).
+- Reused verified upstream CI 34511317063: Windows/Linux each ran 445 tests, Linux skipped 1; workflow successful. Release workflow 34511317171 succeeded with synthetic codec/container/restart/reloaded-image checks. These are upstream records, not tests rerun in this docs-only task. No cloud credentials/calls, private recordings, real hardware verification, deployment or release occurred.
+- Documentation branch is prepared for push/PR review; no automatic merge. Future execution should recheck main and PR #54 before updating delivered status.

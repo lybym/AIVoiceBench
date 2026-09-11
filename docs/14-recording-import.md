@@ -1,14 +1,14 @@
-# Recording Import — first verified implementation stage
+# Recording Import — main / alpha.2
 
-> M1 实现更新：本分支统一 ImportRun、ASR 路由、调用审计和转写；恢复/契约与当前验证限制见 [Recording Backbone](23-recording-backbone.md)。下文旧版本路径和可用状态以该技术更新为准。
+> 2026-09-11 基线：main c612d36 / alpha.2。当前主链与验证限制见 [Recording Backbone](23-recording-backbone.md)；真实验收仍待完成。
 
 > Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
 
-Highest priority is now External Recording → Automatic Analysis. The complete migration/context/architecture changes are in sibling [PR #28](https://github.com/lybym/AIVoiceBench/pull/28), Issue #20. They are not merged; this independent #21 branch shares the same fixed `167e5cc` baseline. Historical documents describing hardware-first sequencing are superseded by the import-first product decision. Audio Station and all existing contracts/tests remain intact.
+Recording Analysis is the M1 implementation priority within the dual-workflow product. Current Web/CLI share ImportRun; no TestCase or live hardware is required. Existing Runner/Station/contracts are retained.
 
-## What works in this stage
+## What works
 
-Import WAV/MP3/M4A without a scripted TestCase. Preserve source bytes and SHA256, create a unique Run/Analysis ID, decode to WAV PCM16LE/16kHz/mono, retain native metadata and exact converter invocations, calculate streaming QA, optionally run the existing Vosk provider, and write a JSON/Markdown stage-status report. Each unsuccessful processor leaves a failed/insufficient stage and retained evidence. No cloud service is called unless a future configured adapter is explicitly selected. This stage does not yet implement automatic acoustic detection, diarization, turns/events, LLM Judge or confirmed Findings; these are pending, not successful empty results.
+Three-format ingestion, immutable source/canonical PCM16/16kHz/mono assets, QA, optional configured Vosk or cloud ASR, native responses/audit and Transcript are integrated. Acoustic, ASR-native clustering, attribution and fusion share the ledger. Role-dependent turns/events/metrics execute only with evidence; default unknown roles abstain. Judge/Findings are not executed and reports are stage-status reports.
 
 ## Windows commands
 
@@ -46,21 +46,22 @@ RUN-<uuid>/
     transcript.json
     acoustic-segments.json
     speaker-assignments.json
+    attribution.json
     fused-segments.json
     turns.json
     timeline.json
     metrics.json
     judge-results.json
     findings.json
-  report.json
-  report.md
+    report.json
+    report.md
 ```
 
-RecordingRun 1.0 is a new workflow-specific manifest; the preparation RunManifest 1.0 is unchanged. An AnalysisOutput envelope binds domain output to Run/Analysis and status. Pending/failed/insufficient outputs have `data: null`, not invented canonical events or zero metrics. `data_artifact_ref` identifies the stored canonical Transcript document; resolve its local relative paths against that document's folder. The envelope supplies unscripted Run identity without putting a fake case_id into Transcript 1.0. Future #22/#24 can extend canonical versions explicitly.
+RecordingRun 1.0 is a new workflow-specific manifest; the preparation RunManifest 1.0 is unchanged. An AnalysisOutput envelope binds domain output to Run/Analysis and status. Pending/failed/insufficient outputs have `data: null`, not invented canonical events or zero metrics. `data_artifact_ref` identifies the stored canonical Transcript document; resolve its local relative paths against that document's folder. The envelope supplies unscripted Run identity without putting a fake case_id into Transcript 1.0. Cloud Transcript 1.1.0 and imported MetricResult 3.0.0 are implemented, with legacy version validation retained.
 
 Artifacts have unique IDs, relative paths, size/hash, parent IDs and processor labels. A normalized artifact points to the immutable original. Metadata/audit files record converter version and executable hash, exact downmix/resample options, source container/codec/rate/channels/start-time fields and derived duration. `recording_run_errors(manifest, root)` verifies paths, all file hashes, parent ordering and stage references. Failed conversion may retain incomplete files only as diagnostics; they are not registered as normalized audio.
 
-Each re-import creates a new Run and Analysis ID while the unchanged source hash ties attempts together. Same normalized bytes are checked for the same local configuration; cloud output equality is not assumed. Full in-Run reanalysis and manual Annotation application belong to #26; no raw output is overwritten here. The manifest is an atomic progress checkpoint, not an immutable analysis result. Disk/filesystem failure can prevent further checkpoints/reports; existing original artifacts are never deliberately removed.
+Each re-import creates a new Run and Analysis ID while the unchanged source hash ties attempts together. Same normalized bytes are checked for the same local configuration; cloud output equality is not assumed. Explicit ASR resume retains the Run and creates an AnalysisRevision; completed ASR/report does not rerun. Full in-Run reanalysis and manual Annotation application belong to #26; no raw output is overwritten here. The manifest is an atomic progress checkpoint, not an immutable analysis result. Disk/filesystem failure can prevent further checkpoints/reports; existing original artifacts are never deliberately removed.
 
 ## Timing and quality limits
 
@@ -74,6 +75,6 @@ The existing ASR provider limit remains 10 minutes by default for compatibility;
 
 Tests use synthetic tones to exercise actual WAV/MP3/AAC-in-M4A decoding, 44.1kHz stereo → 16kHz mono, canonical sample preservation, 20-minute conversion/ASR preparation, source tampering/truncation, profile/ref validation, missing tools, failed ASR, repeat import isolation and secret-safe failure logs. Generated Chinese speech also exercises actual Vosk transcription inside an imported Run. Neither is a real tester/device conversation acceptance.
 
-Next: #22 current cloud ASR/diarization and invocation records; #23 acoustic candidates; #26 revision contract; #24 speaker/turn/event fusion; #25 expanded metrics; #10 structured Harness; #11 full report; #27 real 5–20 minute end-to-end and Windows executable/UI acceptance. No physical HIL work is required for these stages.
+Remaining: real ASR/speaker-label verification, automatic role/semantic association, Judge/Findings/full report integration, human revisions and full Windows-browser/real-recording acceptance. No Windows executable or professional HIL is a prerequisite.
 
-Official media references: [FFmpeg stream selection/conversion](https://ffmpeg.org/ffmpeg.html), [FFprobe structured metadata](https://ffmpeg.org/ffprobe.html), [resampler options](https://ffmpeg.org/ffmpeg-resampler.html). The executable is currently a configured local dependency; its packaging/redistribution choices are part of the later Windows build task.
+Official media references: [FFmpeg stream selection/conversion](https://ffmpeg.org/ffmpeg.html), [FFprobe structured metadata](https://ffmpeg.org/ffprobe.html), [resampler options](https://ffmpeg.org/ffmpeg-resampler.html). Local CLI needs installed FFmpeg/FFprobe; Docker already includes them.

@@ -2,8 +2,9 @@
 
 > Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
 
-Issue #11. Generates Finding 2.0.0 documents from LLM judge results and
-renders evidence-linked Markdown + JSON reports.
+2026-09-11 baseline: main c612d36 / alpha.2. Issue #11.
+
+Web/CLI import calls write_import_report(): report_kind=import_stage_status, empty conclusions, insufficient device-performance evidence. It does not execute Judge/Findings. The modules and commands below are the separate pipeline/findings/report CLI; they are not the default Web path. Full integration and human confirmation remain incomplete.
 
 ## Pipeline
 
@@ -57,22 +58,10 @@ Produces `report.md` (human-readable) and `report.json` (structured):
 
 ```powershell
 # Generate findings
-& ./.venv/Scripts/python.exe -m aivoicebench findings \
-  --judge artifacts/judge/judge-results.json \
-  --timeline artifacts/fusion/timeline.json \
-  --metrics artifacts/fusion/metrics.json \
-  --output artifacts/findings/findings.json
+& ./.venv/Scripts/python.exe -m aivoicebench findings --judge artifacts/judge/judge-results.json --timeline artifacts/fusion/timeline.json --metrics artifacts/fusion/metrics.json --output artifacts/findings/findings.json
 
 # Render report
-& ./.venv/Scripts/python.exe -m aivoicebench report \
-  --output artifacts/report \
-  --profile artifacts/profile.json \
-  --fused artifacts/fusion/fused-segments.json \
-  --turns artifacts/fusion/turns.json \
-  --timeline artifacts/fusion/timeline.json \
-  --metrics artifacts/fusion/metrics.json \
-  --judge artifacts/judge/judge-results.json \
-  --findings artifacts/findings/findings.json
+& ./.venv/Scripts/python.exe -m aivoicebench report --output artifacts/report --profile artifacts/profile.json --fused artifacts/fusion/fused-segments.json --turns artifacts/fusion/turns.json --timeline artifacts/fusion/timeline.json --metrics artifacts/fusion/metrics.json --judge artifacts/judge/judge-results.json --findings artifacts/findings/findings.json
 ```
 
 ## Full pipeline (end-to-end)
@@ -81,7 +70,7 @@ Produces `report.md` (human-readable) and `report.json` (structured):
 acoustic → fusion → metrics → judge → findings → report
 ```
 
-Functional test with ASR text:
+Historical synthetic fixture example, not a current Web result or real measurement:
 - 2 segments (tester: "今天天气怎么样？" / device: "嗯……好的，让我看看。南京今天天气晴朗。")
 - 1 turn, 7 events, 3 metrics, 5 judge results, 1 finding
 - Finding: [P2] high_latency (3000ms exceeds 2000ms threshold)

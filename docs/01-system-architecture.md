@@ -1,10 +1,12 @@
-# System Architecture — Recording Import and Automatic Analysis
+# System Architecture — Active Voice Test and Recording Analysis
 
-> M1 实现更新：本分支统一 ImportRun、ASR 路由、调用审计和转写；恢复/契约与当前验证限制见 [Recording Backbone](23-recording-backbone.md)。下文旧版本路径和可用状态以该技术更新为准。
+> 2026-09-11 基线：main c612d36 / alpha.2。当前主链与验证限制见 [Recording Backbone](23-recording-backbone.md)；真实验收仍待完成。
 
 > Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
 
-The primary Docker/Web UI product is an evaluation harness for externally recorded tester + AI terminal conversations. Recording may be performed by a phone, recorder or computer; tester speech can be spontaneous, driven by frozen audio or by a future agent. The import pipeline does not require a sound card, a live device or a TestCase. Existing HIL and Case infrastructure remains available as a later input path.
+The product has two primary workflows: Active Voice Test and Recording Analysis. M1 is the recording foundation; M2 fixed-case execution, M3 the free test agent. Basic playback/microphone observation is M2/F023; professional HIL is P3/F022. Live Control Evidence steers execution; separate-recording Measurement Evidence supports formal conclusions.
+
+Current main executes import/QA/ASR/acoustic/diarization/attribution/fusion and, with roles, turns/timeline/metrics. Judge/Findings, full conclusion reports and human reanalysis below are target architecture, not current ImportRun behavior. Import requires neither live hardware nor TestCase. Exact states and retry limits are in the backbone document.
 
 ```mermaid
 flowchart TD
@@ -25,7 +27,7 @@ flowchart TD
   O --> V[Human verification / versioned reanalysis]
   V --> H
   V --> G[Regression and comparison]
-  X[Future Audio Station / HIL / Agent] -. feeds recordings .-> I
+  X[M2 Fixed Runner / M3 Test Agent / P3 HIL] -. feeds recordings .-> I
 ```
 
 ## Processor boundaries
@@ -70,4 +72,4 @@ The Harness follows Context → Model → Structured Decision → allowed determ
 
 ## Docker/Web UI delivery and later extensions
 
-Home/Runs → Import → Analyze → Analysis with waveform, speaker segments, transcript, turns, events, metrics and findings. Clicking a finding navigates to its evidence time range. Human edits are explicit revisions. Docker services and the Web UI must be tested from a Windows browser with real 5–20 minute recordings and configured providers. No native Windows executable/installer is required. Version/supplier Compare, Golden replay, multi-turn/exploratory agents follow. Audio Station, loopback, automatic physical HIL and remote Station remain P3 extensions with existing code preserved.
+Home/Runs → Import → Analyze → Analysis with waveform, speaker segments, transcript, turns, events, metrics and findings. Clicking a finding navigates to its evidence time range. Human edits are explicit revisions. Docker services and the Web UI must be tested from a Windows browser with real 5–20 minute recordings and configured providers. No native Windows executable/installer is required. Version/supplier Compare, Golden replay, multi-turn/exploratory agents follow. Professional synchronization/calibration, loopback and remote Station remain F022/P3; ordinary local audio is F023/M2. Docker access to Windows audio hardware is not assumed.

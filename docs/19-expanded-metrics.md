@@ -1,16 +1,19 @@
-# Expanded Metrics — 当前实现与需求差距
+# Expanded Metrics — 当前实现与剩余范围
 
-指标的用户含义与验收在 [PRD-M001～M010](PRD.md)，规范契约与统计在 [metric-definition](03-metric-definition.md)。本文件只记录导入扩展实现的技术差距。
+2026-09-11 基线 main c612d36 / alpha.2。用户含义在 [PRD-M001～M010](PRD.md)，技术公式在 [指标定义](03-metric-definition.md)。
 
-`compute_timeline_metrics()` 位于 `aivoicebench/metrics.py`，调用 `formulas.py`；旧的证据校验计算路径位于 `engine.py`。测试分别为 `test_metrics_expanded.py` 与 `test_engine.py`。二者需要集成，而非重写旧引擎。
+[compute_timeline_metrics()](../aivoicebench/metrics.py) 直接输出规范 MetricResult **3.0.0**，旧 [engine.py](../aivoicebench/engine.py) 保留显式 Case/Timeline 计算。2.0.0 历史结果仍可读，验证器按版本检查，不把新字段强加给旧数据。
 
-| 当前路径 | 尚需修复/验证 |
-| --- | --- |
-| first_speech_latency_ms | 可靠 tester/device 角色、对应 turn 边界和 canonical MetricResult 验证 |
-| turn_gap_ms(device_end, next_tester_start) | 方向与 PRD-M004 不符；不得将当前函数参数反向固化为需求 |
-| barge_in_stop_latency_ms | 自动识别旧 response 身份，避免误取新回答结束 |
-| overlap duration / ratio | 多区间、完整观察窗口、分母与规范 Evidence 一致性 |
-| false_endpoint_detected | 不能将 possible_false_endpoint 候选直接升级为已确认异常 |
-| feedback / meaningful response | 当前保持 insufficient_evidence；需要已有语义锚点，不接受模型编造时间 |
+| 范围 | 已实现 | 尚缺 / 限制 |
+| --- | --- | --- |
+| M002 First Speech | 同轮 tester end→device onset；提前发声为 not_applicable | 自动角色及真实边界质量 |
+| M004 Turn Gap | tester end→device start，保留负值 | 真实对照和语义有效起点 |
+| M005 Barge-in Stop | interrupted_response_id 查找旧回答结束 | 自动语义关联，不替代完整打断成功 |
+| M008 False Endpoint | false_endpoint_candidate / candidate_only | observed 只指候选存在，不是确认缺陷 |
+| M009 Overlap | 事件对计算 duration/ratio，保留引用和分母策略 | 多区间去重/合并、复杂响应和真实声源识别仍待验证 |
+| M001/M003/M006/M007 | 显式 insufficient_evidence，不猜语义时间 | 反馈/有效回答/新 Intent 锚点与完整观察窗口 |
+| M010 timeout/CER/WER/统计 | 旧 engine/formulas 有基础 | 当前导入不自动产出 M010，缺合法参考/健康窗口不能算 |
 
-旧表格中的 observed 表示某段代码可输出该枚举，不代表产品需求已完成。所有完成状态移到 PRD。旧技术说明保留在 [原文快照](product/archive/2026-09-10/19-expanded-metrics.md)。相关 Issues #8/#25，依赖 #24/#10。
+无事件时返回不足证据与空指标，不强造各维度。单项记录 Run/Analysis、定义/策略版本、适用状态、引用和计数。ImportRun 未执行 Judge，配置路由不等于语义指标已补齐。
+
+证据：[契约测试](../tests/test_metrics_contract.py)、[版本兼容](../tests/test_metric_compatibility.py)、[扩展指标](../tests/test_metrics_expanded.py)、[显式角色端到端](../tests/test_explicit_attribution_e2e.py)。PR #52 的代码已在 main 集成历史中，不应根据 Closed 标签重复修复。真实录音对照仍待完成。

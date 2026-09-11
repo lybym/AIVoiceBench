@@ -30,3 +30,7 @@ Text without timing becomes a partial transcript with a gap. Empty recognition i
 Model archive SHA-256: `3af8b0e7e0f835ae9d414ce5df580237a3cfb08d586c9fbbb0f7ff29ad5b14ba`. Model-file fingerprint: `2e71fb6b30fd4f73945f19995a506118164751524c3325dc61a721b9e50d25c4`. The archive/model stay in ignored .cache/models. Target capture, run-clock alignment and other providers remain untested.
 
 The user explicitly permits Volcano/火山 API speech synthesis. Golden Set generation will support that configurable provider; local Windows synthesis was only a convenient ASR smoke input. Do not infer that the final application must synthesize locally or operate entirely offline.
+
+## Current cloud/import path (2026-09-11)
+
+Main c612d36 / alpha.2 includes audited Volcengine flash ASR in Web/CLI ImportRun. See [Recording Backbone](23-recording-backbone.md) for signed-URL prerequisites, Transcript 1.1.0 and explicit retry. Vosk remains an explicit offline fallback with version-specific validation. Labels can feed ASR-native clustering, but the live label contract and tester/device role inference are not verified; PR #54 role attribution is not merged. No real cloud/recording accuracy is claimed.
