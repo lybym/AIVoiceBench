@@ -280,7 +280,7 @@ async def update_models(request: Request):
 # Active Voice Test (PRD-F020/F021/F023)
 # ---------------------------------------------------------------------------
 
-from .voice_test import VoiceTestManager, VoiceTestTurn
+from .voice_test import VoiceTestManager, PHASE_OBSERVED
 
 _voice_test_manager = VoiceTestManager(OUTPUT_ROOT)
 
@@ -292,15 +292,20 @@ async def create_voice_test_session(request: Request):
     mode = body.get('mode', 'fixed')
     if mode not in ('fixed', 'free'):
         raise HTTPException(400, 'mode must be "fixed" or "free"')
-    session = _voice_test_manager.create_session(
-        mode,
-        phrases=body.get('phrases'),
-        device=body.get('device'),
-        goal=body.get('goal'),
-        constraints=body.get('constraints'),
-        max_turns=body.get('max_turns', 10),
-        llm_model=body.get('llm_model'),
-    )
+    try:
+        session = _voice_test_manager.create_session(
+            mode,
+            phrases=body.get('phrases'),
+            device=body.get('device'),
+            goal=body.get('goal'),
+            constraints=body.get('constraints'),
+            max_turns=body.get('max_turns', 10),
+            llm_model=body.get('llm_model'),
+            on_no_response=body.get('on_no_response', 'pause'),
+            no_response_timeout_ms=body.get('no_response_timeout_ms'),
+        )
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
     return session.to_dict()
 
 
@@ -312,9 +317,27 @@ def list_voice_test_sessions():
 @app.get('/api/voice-test/sessions/{session_id}')
 def get_voice_test_session(session_id: str):
     session = _voice_test_manager.get_session(session_id)
-    if not session:
-        raise HTTPException(404, 'Session not found')
-    return session.to_dict()
+    if session:
+        return session.to_dict()
+    # A control record outlives the in-memory session (e.g. after a restart),
+    # so a finished run stays inspectable instead of disappearing.
+    record = _voice_test_manager.load_record(session_id)
+    if record:
+        return record
+    raise HTTPException(404, 'Session not found')
+
+
+@app.get('/api/voice-test/sessions/{session_id}/execution-record')
+def get_voice_test_execution_record(session_id: str):
+    """Export the minimal control trace of a session.
+
+    This is control state (what the platform did and what the browser
+    reported), not measurement evidence.
+    """
+    record = _voice_test_manager.load_record(session_id)
+    if not record:
+        raise HTTPException(404, 'Execution record not found')
+    return record
 
 
 @app.post('/api/voice-test/sessions/{session_id}/synthesize')
@@ -413,11 +436,21 @@ def _transcribe_device_audio(session_id, audio_path):
 async def voice_test_websocket(websocket: WebSocket, session_id: str):
     """WebSocket for real-time voice test control.
 
-    Fixed mode: the browser plays audio, detects device speech via VAD, and
-    reports events. The server advances the phrase sequence.
+    Fixed mode: the browser plays audio, detects a *suspected* device response
+    via VAD, and reports events. The server advances the phrase sequence.
 
     Free mode: the browser plays generated phrases, captures device audio, and
     uploads it for ASR. The server calls the LLM agent to decide the next phrase.
+
+    Control rules enforced here (PRD-F020):
+    - Only the turn currently awaiting an observation may be advanced, by an
+      event that names that turn. Duplicate, late, or stale-session events are
+      acknowledged as ignored and never advance the run twice.
+    - A turn advances on an observed response end or, decided by the session's
+      explicit ``on_no_response`` policy, on a reported no-response timeout.
+      A timeout is recorded as "no response observed", never as a response.
+    - Every server play instruction and every browser report is written to the
+      session's control trace.
     """
     session = _voice_test_manager.get_session(session_id)
     if not session:
@@ -428,63 +461,165 @@ async def voice_test_websocket(websocket: WebSocket, session_id: str):
         while True:
             message = await websocket.receive_json()
             msg_type = message.get('type')
+            turn_id = message.get('turn_id')
 
             if msg_type == 'start':
                 session = _voice_test_manager.start(session_id)
                 if session.mode == 'fixed':
-                    # Send the first phrase to play
                     await _send_play(websocket, session, 0)
                 else:
-                    # Free mode: generate the first phrase via LLM
                     await _generate_and_send_free_phrase(websocket, session)
 
             elif msg_type == 'stop':
+                # Idempotent: stopping an already stopped session is not an error.
                 _voice_test_manager.stop(session_id, reason='user_stop')
                 await websocket.send_json({'type': 'stopped', 'reason': 'user_stop'})
                 break
 
+            elif msg_type in ('playback_started', 'playback_ended',
+                              'playback_cancelled', 'playback_failed'):
+                turn = _voice_test_manager.turn_by_id(session, turn_id)
+                if turn is None or (turn.closed and msg_type != 'playback_cancelled'):
+                    await _send_ignored(websocket, msg_type, turn_id,
+                                        'unknown or closed turn')
+                    continue
+                if session.status != 'running':
+                    await _send_ignored(websocket, msg_type, turn_id,
+                                        f'session is {session.status}')
+                    continue
+                _voice_test_manager.note_playback(
+                    session, turn, msg_type, reason=message.get('reason'))
+                if msg_type == 'playback_failed':
+                    reason = message.get('reason') or 'playback_failed'
+                    _voice_test_manager.fail(session_id, reason=f'playback_failed:{reason}')
+                    await websocket.send_json({
+                        'type': 'failed', 'reason': 'playback_failed',
+                        'detail': reason, 'turn_id': turn.turn_id,
+                    })
+
             elif msg_type == 'device_speech_start':
+                turn = _voice_test_manager.turn_by_id(session, turn_id)
+                if not _voice_test_manager.is_current_turn(session, turn):
+                    await _send_ignored(websocket, msg_type, turn_id,
+                                        'not the turn awaiting an observation')
+                    continue
+                _voice_test_manager.note_observation(session, turn, 'observation_speech_start')
                 await websocket.send_json({'type': 'listening',
+                                           'turn_id': turn.turn_id,
+                                           'note': 'suspected response (browser VAD)',
                                            'phrase_index': session.current_phrase_index})
 
             elif msg_type == 'device_speech_end':
+                turn = _voice_test_manager.turn_by_id(session, turn_id)
+                if not _voice_test_manager.is_current_turn(session, turn):
+                    await _send_ignored(websocket, msg_type, turn_id,
+                                        'not the turn awaiting an observation')
+                    continue
+                _voice_test_manager.note_observation(session, turn, 'observation_speech_end')
                 if session.mode == 'fixed':
-                    next_index = session.current_phrase_index + 1
-                    if next_index < len(session.phrases):
-                        session.current_phrase_index = next_index
-                        await _send_play(websocket, session, next_index)
-                    else:
-                        session.status = 'completed'
-                        session.stop_reason = 'all_phrases_done'
-                        await websocket.send_json({'type': 'complete',
-                                                   'reason': 'all_phrases_done'})
+                    if not await _advance_fixed(websocket, session, turn):
                         break
+                # Free mode: the browser uploads the captured audio separately
+                # and then sends 'device_audio_ready'.
+
+            elif msg_type == 'observation_timeout':
+                turn = _voice_test_manager.turn_by_id(session, turn_id)
+                if not _voice_test_manager.is_current_turn(session, turn):
+                    await _send_ignored(websocket, msg_type, turn_id,
+                                        'not the turn awaiting an observation')
+                    continue
+                _voice_test_manager.record_event(
+                    session, 'observation_timeout', turn_id=turn.turn_id,
+                    source='browser',
+                    detail={'note': 'no response observed before the control wait bound',
+                            'wait_ms': message.get('wait_ms')})
+                _voice_test_manager.close_turn(
+                    session, turn, phase='no_response', status='no_response',
+                    closure_reason='no_response_timeout',
+                    observation='no_response', observation_basis=None)
+                if session.on_no_response == 'continue':
+                    if session.mode == 'fixed':
+                        if not await _advance_fixed(websocket, session, turn,
+                                                    already_closed=True):
+                            break
+                    else:
+                        await websocket.send_json({
+                            'type': 'no_response', 'turn_id': turn.turn_id,
+                            'policy': 'continue',
+                            'note': 'no response observed; continuing by policy'})
                 else:
-                    # Free mode: the browser will upload audio separately,
-                    # then send 'device_audio_ready'. Nothing to do here yet.
-                    pass
+                    _voice_test_manager.stop(session_id, reason='no_response_timeout')
+                    await websocket.send_json({
+                        'type': 'stopped', 'reason': 'no_response_timeout',
+                        'turn_id': turn.turn_id,
+                        'note': 'no response observed before the control wait bound'})
+                    break
 
             elif msg_type == 'device_audio_ready':
-                # Free mode: ASR has been run (via the POST endpoint), and the
-                # browser reports the transcript. The server calls the LLM agent.
+                if session.status != 'running':
+                    await _send_ignored(websocket, msg_type, turn_id,
+                                        f'session is {session.status}')
+                    continue
                 device_text = message.get('transcript', '')
                 await _generate_and_send_free_phrase(websocket, session, device_text)
+
+            else:
+                await _send_ignored(websocket, msg_type, turn_id, 'unknown message type')
 
     except WebSocketDisconnect:
         _voice_test_manager.stop(session_id, reason='disconnected')
     except Exception as error:
-        await websocket.send_json({'type': 'error', 'reason': str(error)})
-        _voice_test_manager.stop(session_id, reason='error')
+        try:
+            await websocket.send_json({'type': 'error', 'reason': str(error)})
+        except Exception:
+            pass
+        _voice_test_manager.fail(session_id, reason=f'control_error:{error}')
+
+
+async def _send_ignored(websocket, msg_type, turn_id, reason):
+    """Tell the browser an event was not applied, so it can stop waiting."""
+    await websocket.send_json({
+        'type': 'ignored', 'event': msg_type, 'turn_id': turn_id, 'reason': reason,
+    })
+
+
+async def _advance_fixed(websocket, session, turn, *, already_closed=False):
+    """Close the current fixed-mode turn and send the next play instruction.
+
+    Returns False when the run is finished (the caller must stop reading).
+    """
+    if not already_closed:
+        _voice_test_manager.close_turn(
+            session, turn, phase=PHASE_OBSERVED, status='complete',
+            closure_reason='observation_speech_end',
+            observation='speech_end', observation_basis='browser_vad_rms')
+    next_index = turn.turn_index + 1
+    if next_index < len(session.phrases):
+        session.current_phrase_index = next_index
+        await _send_play(websocket, session, next_index)
+        return True
+    _voice_test_manager.complete(session.session_id, 'all_phrases_done')
+    await websocket.send_json({'type': 'complete', 'reason': 'all_phrases_done'})
+    return False
 
 
 async def _send_play(websocket, session, phrase_index):
-    """Send a play command for a fixed-mode phrase."""
+    """Record and send a play instruction for a fixed-mode phrase."""
     phrase = session.phrases[phrase_index]
+    audio_url = f'/api/voice-test/sessions/{session.session_id}/audio/{phrase_index}'
+    turn = _voice_test_manager.open_turn(
+        session, text=phrase['text'], audio_path=phrase.get('audio_path'),
+        audio_sha256=phrase.get('audio_sha256'), audio_url=audio_url)
+    session.current_phrase_index = phrase_index
     await websocket.send_json({
         'type': 'play',
+        'turn_id': turn.turn_id,
         'phrase_index': phrase_index,
         'text': phrase['text'],
-        'audio_url': f'/api/voice-test/sessions/{session.session_id}/audio/{phrase_index}',
+        'audio_url': audio_url,
+        'playback_start_timeout_ms': 10000,
+        'playback_max_duration_ms': 180000,
+        'no_response_timeout_ms': session.no_response_timeout_ms,
     })
 
 
@@ -495,45 +630,36 @@ async def _generate_and_send_free_phrase(websocket, session, device_text=''):
     latest response. It decides what to say next, or whether to stop.
     """
     from .voice_agent import generate_next_phrase
-    history = [{'role': t.role, 'text': t.text} for t in session.turns]
+    history = [{'role': t.role, 'text': t.text} for t in session.turns if t.text]
     try:
         result = await run_in_threadpool(
             generate_next_phrase, session, history, device_text,
             OUTPUT_ROOT, _voice_test_manager)
         if result is None:
-            # Agent decided to stop
-            session.status = 'completed'
-            session.stop_reason = 'agent_stop'
+            _voice_test_manager.complete(session.session_id, 'agent_stop')
             await websocket.send_json({'type': 'complete', 'reason': 'agent_stop'})
             return
         text, audio_path = result
-        turn_index = len(session.turns)
-        session.turns.append(VoiceTestTurn(
-            turn_index=turn_index, role='platform', text=text,
-            audio_path=audio_path, started_at=utc_now_iso(),
-            status='playing'))
+        audio_url = f'/api/voice-test/sessions/{session.session_id}/audio/{len(session.turns)}'
+        turn = _voice_test_manager.open_turn(
+            session, text=text, audio_path=audio_path, audio_url=audio_url)
         if device_text:
-            session.turns.append(VoiceTestTurn(
-                turn_index=turn_index, role='device', text=device_text,
-                observation='speech_end', started_at=utc_now_iso(),
-                status='observed'))
+            _voice_test_manager.note_device_response(session, device_text)
         await websocket.send_json({
             'type': 'play',
-            'phrase_index': turn_index,
+            'turn_id': turn.turn_id,
+            'phrase_index': turn.turn_index,
             'text': text,
-            'audio_url': f'/api/voice-test/sessions/{session.session_id}/audio/{turn_index}',
+            'audio_url': audio_url,
             'device_text': device_text,
+            'playback_start_timeout_ms': 10000,
+            'playback_max_duration_ms': 180000,
+            'no_response_timeout_ms': session.no_response_timeout_ms,
         })
-        if len(session.turns) >= session.max_turns * 2:
-            session.status = 'completed'
-            session.stop_reason = 'max_turns'
+        platform_turns = sum(1 for t in session.turns if t.role == 'platform')
+        if platform_turns >= session.max_turns:
+            _voice_test_manager.complete(session.session_id, 'max_turns')
             await websocket.send_json({'type': 'complete', 'reason': 'max_turns'})
     except Exception as error:
         await websocket.send_json({'type': 'error', 'reason': str(error)})
-        _voice_test_manager.stop(session.session_id, reason='error')
-
-
-def utc_now_iso():
-    from datetime import timezone
-    from datetime import datetime
-    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        _voice_test_manager.fail(session.session_id, reason=f'agent_error:{error}')
