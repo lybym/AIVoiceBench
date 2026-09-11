@@ -30,6 +30,10 @@ jobs:
           ref: ${{ github.event.inputs.ref }}
           fetch-depth: 1
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Resolve the exact source commit
         id: source
         run: |
@@ -110,6 +114,48 @@ jobs:
           docker exec reload-check python /app/docker_smoke.py
           docker rm -f reload-check
           docker volume rm reload-check-data
+
+      # The published image must pass the fixed-dialogue acceptance itself: the
+      # shipped code is exercised inside the shipped image. The synthetic TTS and
+      # the test-only server are copied in for this run only — the image and its
+      # normal startup path stay untouched.
+      - name: Fixed-dialogue acceptance inside the candidate image
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          docker volume create acceptance-data
+          docker run -d --name acceptance -p 127.0.0.1:8099:8099 \
+            -v acceptance-data:/data/output "${{ env.IMAGE_NAME }}:${TAG}"
+          docker cp tests acceptance:/app/tests
+          docker exec acceptance python -m pip install --quiet httpx
+          docker exec acceptance python /app/tests/container_acceptance.py
+          # Serve the image's own UI with a test-only controlled TTS so the real
+          # page can be driven; the image's default command is unchanged.
+          docker exec -d acceptance python /app/tests/browser_server.py \
+            --host 0.0.0.0 --port 8099 --output /data/output/acceptance \
+            --first-phrase-ms 2500 --phrase-ms 250 --no-response-timeout-ms 2500
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8099/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8099/health
+
+      - name: Browser acceptance against the candidate image
+        env:
+          # "the browser module was skipped" must never count as a pass here.
+          VT_REQUIRE_BROWSER: '1'
+          VT_BROWSER_BASE_URL: http://127.0.0.1:8099
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+          python -m unittest tests.test_voice_browser -v
+
+      - name: Stop the acceptance container
+        if: always()
+        run: |
+          docker rm -f acceptance || true
+          docker volume rm acceptance-data || true
 
       - name: Stage release attachments with checksums
         run: |

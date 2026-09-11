@@ -186,10 +186,13 @@ class PreviewPackagingTests(unittest.TestCase):
             text = (ROOT / relative).read_text(encoding='utf-8-sig')
             self.assertIn(VERSION, text, relative)
             # Look for version-like references (v0.3.0 or 0.3.0) but not IP addresses.
+            # A pre-release such as 0.4.0-alpha.1 carries the numeric part 0.4.0, so
+            # both spellings are accepted for the current build while any other
+            # version still fails the check.
             found = set(re.findall(r'(?<!\d\.)(?<!\d)(\d+\.\d+\.\d+)(?![\d.])', text))
-            stale = found - {VERSION, '127.0.0.1'.rsplit('.', 1)[0]}
-            self.assertEqual(stale, set(),
-                             f'{relative} references a superseded build: {sorted(stale)}')
+            current = {VERSION, VERSION.split('-')[0], '127.0.0.1'.rsplit('.', 1)[0]}
+            self.assertEqual(found - current, set(),
+                             f'{relative} references a superseded build: {sorted(found - current)}')
         notes = (ROOT / 'docs/releases' / f'{VERSION}.md').read_text(encoding='utf-8')
         self.assertIn(VERSION, notes)
 

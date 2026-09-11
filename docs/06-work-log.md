@@ -384,3 +384,80 @@
 - **待完成：** 真实录音与实体设备验收门槛未变、未降级；文档中的日期化审计基线
   （`2026-09-11 基线：main c612d36 / alpha.2`）按历史记录保留，仅当语句声称
   “当前状态/当前入口/当前 CI 数量”时才按 `v0.3.2` 更新。
+
+## 2026-09-11 — 固定对话控制可靠性（PRD-F020 / F023）
+
+- **问题与范围：** 在已发布 `v0.3.2` 上验证固定用例链路（生成语音→播放→麦克风
+  观察→自动下一轮→停止）时发现四个真实缺陷：① 点击“停止”只停麦克风与后端状态，
+  不取消正在播放的音频，播放结束回调还会覆盖“已停止”并重新进入监听；② fixed
+  模式全程不写 `turns`，跑完没有任何执行记录（实测 `turns=0`），且无回答超时与
+  回答结束发送同一种事件，二者无法区分；③ 音频不可用、`play()` 被拒或会话失效时
+  `await playAudio()` 的拒绝无人处理，浏览器与后端都会悬挂；④ 由于①②，PRD-F020
+  要求的 Run/Turn 引用与“用户可随时停止”在发布版上无证据可用。本工作单元只做
+  **控制链路的最小收口**：不重建控制框架、不接离线 Measurement Pipeline、不做
+  完整 Timeline/指标、不扩展高级 Barge-in/AEC/Frozen Golden 资产库、不合并 #54。
+- **实现（服务端 `voice_test.py` / `api.py`）：** 轮次引入会话内唯一 `turn_id`
+  与显式 phase；`is_current_turn()` 要求事件属于“正在等待观察且会话仍在运行”的
+  那一轮，重复、迟到、无 `turn_id` 与已停止会话的事件统一回 `ignored`，不重复
+  推进。新增 `observation_timeout`：记录“未观察到回答”并按会话策略
+  （`on_no_response` = `pause`（默认）/`continue`）暂停或继续，**不作为回答结束**，
+  turn 的 `observation` 记为 `no_response`。`start` 归档上一轮执行（`runs`）而不是
+  清空，`turn_id` 在整个会话内单调，旧执行的事件不会污染新执行。音频不可用/被拒/
+  卡住/断连/会话丢失分别落到明确的失败原因。新增
+  `GET /api/voice-test/sessions/{id}/execution-record`，且会话从内存消失后仍可从
+  会话目录读取该记录。
+- **实现（浏览器 `static/voice_test.js`）：** 引入 run 作用域控制器：`stopLocal()`
+  先置 `cancelled`、摘除 `onended/onerror/onplaying`、暂停并卸载 `src`，再停 VAD
+  与麦克风并恢复按钮，因此**不等待后端确认**且可重复调用；`playAudio()` 对取消/
+  失败都以明确 outcome 结束，并设置播放开始与最长播放的控制上限；超时改为发送
+  `observation_timeout`；状态文案改为“检测到疑似回答（浏览器 VAD 提示，未确认
+  说话人）”，不再声称已确认回答。
+- **取消必须结束播放等待（本轮补充收口）：** 复检发现仅“停止音频并摘除回调”还不够
+  —— `cancelAudio()` 当时没有结束 `playAudio()` 的 Promise，被取消的播放等待会
+  **永久挂起**（其开始/最长播放定时器也一直不释放）。现改为：每次播放由一个
+  `playback` 控制器持有，`settle()` 只生效一次并统一清理两个定时器、清空
+  `run.playback`/`run.audio` 与 `pendingPlayWait`；`cancel()` 先摘除回调、暂停并
+  卸载 `src`，再调用 `settle('cancelled')`。因此“停止”会**结束对应的播放等待**，
+  且只结束一次；迟到的 `ended` 只会被记为 `lateDropped`，既不恢复监听也不推进，
+  整个过程不依赖后端回应。诊断面新增 `pending_play_wait` 与
+  `playWaitSettled/playWaitCancelled` 计数。
+- **最小执行记录（PRD-F020）：** 每轮记录可回答“本次会话/执行与第几句、使用了哪句
+  文本与哪个音频资产、服务端发出了什么播放指令、浏览器报告播放开始/结束/取消/
+  失败、观察到疑似语音开始/结束还是无回答、为什么推进/停止/失败”。服务端
+  `play_issued` 与浏览器 `playback_*` 是分开的事件，二者都**不冒充真实声场
+  onset**；VAD 观察一律带 `observation_basis=browser_vad_rms`。记录写入会话目录
+  `execution-record.json`，`control_policy` 中的等待上限明确标注为控制护栏、
+  **不是产品性能 SLA**。仅控制轨迹，不进入离线分析链。
+- **软件验证（协议层）：** 新增 `tests/test_voice_control.py`（12 tests）驱动真实
+  HTTP + WebSocket：三轮推进、记录字段、重复/迟到/无 turn_id 事件不重复推进、
+  播放失败后可重启且失败执行被归档、停止幂等且已停止会话的迟到事件被忽略、
+  超时暂停与 `continue` 策略、超时事件不带 VAD 依据、记录可导出且在内存会话消失
+  后仍可读、未知会话 WS 以 4004 关闭。**12 tests, 0 failures**。
+- **浏览器验证（受控输入）：** 新增 `tests/test_voice_browser.py`（7 tests）与
+  仅测试用的 `tests/browser_server.py`，用 Playwright + 本机 Chrome 打开真实页面，
+  真实 `voice_test.js` 控制层、真实 WebSocket、真实 `Audio` 元素播放真实生成的
+  WAV，并由注入的**合成麦克风**驱动真实 VAD 代码路径。覆盖：三轮正常路径（播放→
+  疑似回答→推进→完成，逐轮记录齐备）、播放中停止（音频停止、迟到 `ended` 不恢复
+  监听也不推进）、等待回答时停止（不再进入下一轮）、无回答超时（明确超时、不伪造
+  回答结束）、音频不可用（明确中断且可重新开始）、会话失效（提示重新开始、不悬挂）、
+  重启为新执行且保留旧执行记录。**7 tests, 0 failures**（约 42–46 秒）。
+- **“播放等待确实结束”的断言：** 播放中停止用例不止断言“页面已停止/音频已清空”，
+  还断言停止**前**存在未完成的播放等待（`pending_play_wait=true`）、停止**后**
+  该等待已结束且 `playWaitSettled=playWaitCancelled=1`，并等待超过原音频时长后
+  仍为 1（只结束一次）。该断言已做**反向验证**：把 `cancel()` 中的
+  `settle('cancelled')` 临时去掉后，该用例立即失败
+  （`AssertionError: True is not false`，即 `pending_play_wait` 仍为真），恢复后
+  重新通过，证明它能真正捕获“取消未结束等待”这一缺陷。
+- **回归：** 全量 `python -m unittest discover -s tests -v`：**475 tests，OK
+  （skipped=1）**，skip 为未安装 Playwright 的环境自动跳过浏览器模块；录音导入与
+  分析主链未改动，未出现退化。
+- **验证边界（不夸大）：** 浏览器测试使用**合成 TTS** 与**受控合成麦克风输入**；
+  不涉及真实云 TTS、真实扬声器、真实麦克风、实体 AI 设备，也不产生正式测量结论。
+  脚本直接发送 VAD 事件只用于协议测试，**不作为浏览器 VAD 验证**。本机 Docker
+  daemon 未运行，未做发布镜像内的浏览器冒烟。
+- **待完成：** 真实扬声器/麦克风/实体设备多轮与条件打断验收（第 7/8 节门槛）、
+  发布镜像内浏览器操作冒烟、F023 边播放边监听（Barge-in）、句中精确停顿与
+  Frozen Golden 资产、自由模式完整多轮验收（其设备音频采集在发布版中本就未接线，
+  本单元未改动该范围）、`main_baseline` 等 PRD 头部基线字段刷新（见 #57 工作单元）。
+- **附带修正：** `docs/PRD.md` 头部 `prd_version` 原为 `1.2.1` 而变更表最新行为
+  `1.2.2`（相差一个版本）；本次新增 `1.2.3` 行后头部同步为 `1.2.3`，消除该不一致。
