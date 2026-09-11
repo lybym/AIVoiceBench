@@ -356,9 +356,18 @@
 - **实现（浏览器 `static/voice_test.js`）：** 引入 run 作用域控制器：`stopLocal()`
   先置 `cancelled`、摘除 `onended/onerror/onplaying`、暂停并卸载 `src`，再停 VAD
   与麦克风并恢复按钮，因此**不等待后端确认**且可重复调用；`playAudio()` 对取消/
-  失败都以明确 outcome 结束，不再留下悬挂 Promise，并设置播放开始与最长播放的
-  控制上限；超时改为发送 `observation_timeout`；状态文案改为“检测到疑似回答
-  （浏览器 VAD 提示，未确认说话人）”，不再声称已确认回答。
+  失败都以明确 outcome 结束，并设置播放开始与最长播放的控制上限；超时改为发送
+  `observation_timeout`；状态文案改为“检测到疑似回答（浏览器 VAD 提示，未确认
+  说话人）”，不再声称已确认回答。
+- **取消必须结束播放等待（本轮补充收口）：** 复检发现仅“停止音频并摘除回调”还不够
+  —— `cancelAudio()` 当时没有结束 `playAudio()` 的 Promise，被取消的播放等待会
+  **永久挂起**（其开始/最长播放定时器也一直不释放）。现改为：每次播放由一个
+  `playback` 控制器持有，`settle()` 只生效一次并统一清理两个定时器、清空
+  `run.playback`/`run.audio` 与 `pendingPlayWait`；`cancel()` 先摘除回调、暂停并
+  卸载 `src`，再调用 `settle('cancelled')`。因此“停止”会**结束对应的播放等待**，
+  且只结束一次；迟到的 `ended` 只会被记为 `lateDropped`，既不恢复监听也不推进，
+  整个过程不依赖后端回应。诊断面新增 `pending_play_wait` 与
+  `playWaitSettled/playWaitCancelled` 计数。
 - **最小执行记录（PRD-F020）：** 每轮记录可回答“本次会话/执行与第几句、使用了哪句
   文本与哪个音频资产、服务端发出了什么播放指令、浏览器报告播放开始/结束/取消/
   失败、观察到疑似语音开始/结束还是无回答、为什么推进/停止/失败”。服务端
@@ -378,7 +387,14 @@
   疑似回答→推进→完成，逐轮记录齐备）、播放中停止（音频停止、迟到 `ended` 不恢复
   监听也不推进）、等待回答时停止（不再进入下一轮）、无回答超时（明确超时、不伪造
   回答结束）、音频不可用（明确中断且可重新开始）、会话失效（提示重新开始、不悬挂）、
-  重启为新执行且保留旧执行记录。**7 tests, 0 failures**（约 46 秒）。
+  重启为新执行且保留旧执行记录。**7 tests, 0 failures**（约 42–46 秒）。
+- **“播放等待确实结束”的断言：** 播放中停止用例不止断言“页面已停止/音频已清空”，
+  还断言停止**前**存在未完成的播放等待（`pending_play_wait=true`）、停止**后**
+  该等待已结束且 `playWaitSettled=playWaitCancelled=1`，并等待超过原音频时长后
+  仍为 1（只结束一次）。该断言已做**反向验证**：把 `cancel()` 中的
+  `settle('cancelled')` 临时去掉后，该用例立即失败
+  （`AssertionError: True is not false`，即 `pending_play_wait` 仍为真），恢复后
+  重新通过，证明它能真正捕获“取消未结束等待”这一缺陷。
 - **回归：** 全量 `python -m unittest discover -s tests -v`：**475 tests，OK
   （skipped=1）**，skip 为未安装 Playwright 的环境自动跳过浏览器模块；录音导入与
   分析主链未改动，未出现退化。

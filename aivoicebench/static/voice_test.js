@@ -146,6 +146,10 @@ const VT = (function () {
       finished: false,
       turnId: null,
       audio: null,
+      // The playback currently being awaited. `cancelAudio()` ends it, so a
+      // cancelled play never leaves an await (or its timers) pending.
+      playback: null,
+      pendingPlayWait: false,
       listening: false,
       bounds: {
         playback_start_timeout_ms: PLAYBACK_START_TIMEOUT_MS,
@@ -155,6 +159,7 @@ const VT = (function () {
       stats: {
         playReceived: 0, playbackStarted: 0, playbackEnded: 0,
         observations: 0, timeouts: 0, ignored: 0, failures: 0, lateDropped: 0,
+        playWaitSettled: 0, playWaitCancelled: 0,
       },
     };
   }
@@ -173,6 +178,7 @@ const VT = (function () {
       turn_id: activeRun.turnId,
       listening: activeRun.listening,
       has_audio: !!activeRun.audio,
+      pending_play_wait: !!activeRun.pendingPlayWait,
       stats: Object.assign({}, activeRun.stats),
     };
   }
@@ -194,18 +200,24 @@ const VT = (function () {
     if (stop) stop.disabled = !running;
   }
 
-  function cancelAudio(run) {
-    const audio = run && run.audio;
-    if (run) run.audio = null;
-    if (!audio) return false;
-    // Detach handlers first: a late `ended` must not restart listening or
-    // advance the run after a stop.
-    audio.onended = null;
-    audio.onerror = null;
-    audio.onplaying = null;
-    try { audio.pause(); } catch (_) { /* ignore */ }
-    try { audio.removeAttribute('src'); audio.load(); } catch (_) { /* ignore */ }
-    return true;
+  function clearTimer(id) {
+    if (id) clearTimeout(id);
+    return null;
+  }
+
+  /* End the playback wait that is currently outstanding, exactly once.
+   *
+   * Stopping must finish the `await playAudio(...)` in `handlePlay`, not just
+   * silence the audio element: otherwise the wait (and its timers) stay pending
+   * forever. Returns true when a wait was actually ended by this call.
+   */
+  function cancelAudio(run, reason) {
+    const playback = run && run.playback;
+    if (!playback) {
+      if (run) { run.audio = null; run.pendingPlayWait = false; }
+      return false;
+    }
+    return playback.cancel(reason || 'cancelled');
   }
 
   function stopLocal(run, reason, options) {
@@ -213,7 +225,9 @@ const VT = (function () {
     if (run.cancelled) return false; // idempotent
     run.cancelled = true;
     run.listening = false;
-    const hadAudio = cancelAudio(run);
+    // Ends the outstanding playback wait as well as the audio itself, so the
+    // awaiting flow finishes instead of hanging.
+    const hadAudio = cancelAudio(run, reason || 'user_stop');
     stopVAD();
     stopMic();
     if (hadAudio) {
@@ -269,23 +283,47 @@ const VT = (function () {
   function playAudio(run, url) {
     return new Promise((resolve) => {
       stopVAD(); // do not listen to our own playback
-      cancelAudio(run);
+      cancelAudio(run, 'replaced'); // end any previous wait exactly once
 
       const audio = new Audio(url);
-      run.audio = audio;
       let settled = false;
       let startTimer = null;
       let maxTimer = null;
 
-      const settle = (outcome, detail) => {
-        if (settled) return;
-        settled = true;
-        if (startTimer) clearTimeout(startTimer);
-        if (maxTimer) clearTimeout(maxTimer);
-        resolve({ outcome, detail });
+      const playback = {
+        audio,
+        // Settles the wait once: clears both timers and resolves the promise.
+        settle(outcome, detail) {
+          if (settled) return false;
+          settled = true;
+          startTimer = clearTimer(startTimer);
+          maxTimer = clearTimer(maxTimer);
+          if (run.playback === playback) {
+            run.playback = null;
+            run.audio = null;
+          }
+          run.pendingPlayWait = false;
+          run.stats.playWaitSettled += 1;
+          if (outcome === 'cancelled') run.stats.playWaitCancelled += 1;
+          resolve({ outcome, detail });
+          return true;
+        },
+        // Detach handlers first: a late `ended` must not restart listening or
+        // advance the run after a stop.
+        cancel(reason) {
+          audio.onended = null;
+          audio.onerror = null;
+          audio.onplaying = null;
+          try { audio.pause(); } catch (_) { /* ignore */ }
+          try { audio.removeAttribute('src'); audio.load(); } catch (_) { /* ignore */ }
+          return playback.settle('cancelled', reason);
+        },
       };
+      run.playback = playback;
+      run.audio = audio;
+      run.pendingPlayWait = true;
 
-      const ownsAudio = () => isActive(run) && run.audio === audio;
+      const ownsAudio = () => isActive(run) && run.playback === playback;
 
       audio.onplaying = () => {
         if (!ownsAudio()) { run.stats.lateDropped += 1; return; }
@@ -294,45 +332,42 @@ const VT = (function () {
       };
 
       audio.onended = () => {
-        if (!ownsAudio()) { run.stats.lateDropped += 1; settle('cancelled'); return; }
+        // A late `ended` after a stop finds the wait already settled and does
+        // nothing: no listening, no advance.
+        if (!ownsAudio()) { run.stats.lateDropped += 1; return; }
         run.stats.playbackEnded += 1;
-        run.audio = null;
         wsSend(run, { type: 'playback_ended', turn_id: run.turnId });
-        settle('ended');
+        playback.settle('ended');
       };
 
       audio.onerror = () => {
-        if (!ownsAudio()) { run.stats.lateDropped += 1; settle('cancelled'); return; }
-        run.audio = null;
+        if (!ownsAudio()) { run.stats.lateDropped += 1; return; }
         wsSend(run, { type: 'playback_failed', turn_id: run.turnId, reason: 'audio_error' });
-        settle('failed', 'audio_error');
+        playback.settle('failed', 'audio_error');
       };
 
       const startBound = Number(run.bounds.playback_start_timeout_ms) || PLAYBACK_START_TIMEOUT_MS;
       const maxBound = Number(run.bounds.playback_max_duration_ms) || PLAYBACK_MAX_DURATION_MS;
 
       startTimer = setTimeout(() => {
-        if (settled || !isActive(run) || run.audio !== audio) return;
+        if (settled || !isActive(run) || run.playback !== playback) return;
         if (audio.currentTime > 0 || !audio.paused) return;
-        run.audio = null;
         wsSend(run, { type: 'playback_failed', turn_id: run.turnId, reason: 'playback_did_not_start' });
-        settle('failed', 'playback_did_not_start');
+        playback.settle('failed', 'playback_did_not_start');
       }, startBound);
 
       maxTimer = setTimeout(() => {
-        if (settled || !isActive(run) || run.audio !== audio) return;
-        run.audio = null;
+        if (settled || !isActive(run) || run.playback !== playback) return;
         audio.onended = null;
         try { audio.pause(); } catch (_) { /* ignore */ }
         wsSend(run, { type: 'playback_failed', turn_id: run.turnId, reason: 'playback_stuck' });
-        settle('failed', 'playback_stuck');
+        playback.settle('failed', 'playback_stuck');
       }, maxBound);
 
       audio.play().catch(() => {
-        if (!ownsAudio()) { run.stats.lateDropped += 1; settle('cancelled'); return; }
-        run.audio = null;
+        if (!ownsAudio()) { run.stats.lateDropped += 1; return; }
         wsSend(run, { type: 'playback_failed', turn_id: run.turnId, reason: 'play_rejected' });
-        settle('failed', 'play_rejected');
+        playback.settle('failed', 'play_rejected');
       });
     });
   }

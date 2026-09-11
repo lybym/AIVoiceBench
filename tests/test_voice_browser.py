@@ -310,7 +310,10 @@ class BrowserControlTestCase(unittest.TestCase):
         phrases = ['[slow] 第一句：请讲一个很长的故事', '第二句：南京天气', '第三句：北京呢']
         self.prepare_fixed_run(phrases=phrases)
         self.wait_for_playing()
-        self.assertTrue(self.state()['has_audio'], 'audio should still be playing')
+        before = self.state()
+        self.assertTrue(before['has_audio'], 'audio should still be playing')
+        # the control layer is waiting on this playback to finish
+        self.assertTrue(before['pending_play_wait'], 'a playback wait should be outstanding')
         self.page.click('#vt-stop-fixed')
 
         self.wait_for_status('已停止')
@@ -318,16 +321,24 @@ class BrowserControlTestCase(unittest.TestCase):
         self.assertTrue(state['cancelled'])
         self.assertFalse(state['has_audio'])
         self.assertFalse(state['listening'])
+        # stopping must END the playback wait, not merely silence the element
+        self.assertFalse(state['pending_play_wait'], 'the playback wait must be finished')
+        self.assertEqual(state['stats']['playWaitSettled'], 1,
+                         'the wait must be settled exactly once')
+        self.assertEqual(state['stats']['playWaitCancelled'], 1)
         self.assertFalse(self.page.is_disabled('#vt-start-fixed'))
         self.assertTrue(self.page.is_disabled('#vt-stop-fixed'))
 
-        # a late `ended` from the cancelled audio must not restart listening
-        # nor advance the run
+        # a late `ended` from the cancelled audio must not restart listening,
+        # advance the run, nor settle the same wait a second time
         self.page.wait_for_timeout(9000)
         after = self.state()
         self.assertEqual(after['stats']['playReceived'], 1)
         self.assertEqual(after['stats']['observations'], 0)
         self.assertFalse(after['listening'])
+        self.assertEqual(after['stats']['playWaitSettled'], 1)
+        self.assertEqual(after['stats']['playWaitCancelled'], 1)
+        self.assertFalse(after['pending_play_wait'])
         self.assertIn('已停止', self.status_text())
         self.assertNotIn('等待设备回答', self.status_text())
 
