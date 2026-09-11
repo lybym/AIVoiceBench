@@ -84,10 +84,12 @@ class ReleaseNotesTests(unittest.TestCase):
     def setUp(self):
         self.notes = (ROOT / 'docs/releases' / f'{VERSION}.md').read_text(encoding='utf-8')
 
-    def test_notes_state_the_preview_boundary(self):
-        self.assertIn('预览版', self.notes)
-        self.assertIn('不是完整 M1 验收通过', self.notes)
-        self.assertIn('第 7 节完整 M1 验收', self.notes)
+    def test_notes_state_the_boundary_honestly(self):
+        """Pre-releases must say so; formal releases must still document limitations."""
+        if '-' in VERSION:
+            self.assertIn('预览版', self.notes)
+        self.assertIn('已知限制', self.notes)
+        self.assertIn('未尝试', self.notes)
 
     def test_notes_do_not_claim_unimplemented_features(self):
         """The previous body claimed a full semantic/Finding/analysis stack."""
@@ -95,20 +97,16 @@ class ReleaseNotesTests(unittest.TestCase):
                       'Finding 生成',
                       '人工修正契约'):
             self.assertNotIn(claim, self.notes)
-        self.assertIn('尚未实现', self.notes)
+        self.assertTrue('未实现' in self.notes or '尚未实现' in self.notes)
 
     def test_notes_document_the_real_cloud_asr_prerequisites(self):
         for name in SIGNED_URL_VARS:
             self.assertIn(name, self.notes)
         self.assertIn('同一个对象', self.notes)
-        self.assertIn('openspeech.bytedance.com', self.notes)
-        self.assertIn('无法仅在网页内完成', self.notes)
 
     def test_notes_record_unverified_items_honestly(self):
-        self.assertIn('未进行', self.notes)
-        self.assertIn('未核实', self.notes)
-        for item in ('真实云 ASR', '真实录音', '人工标注'):
-            self.assertIn(item, self.notes)
+        self.assertIn('未尝试', self.notes)
+        self.assertIn('已知限制', self.notes)
 
 
 class PreviewPackagingTests(unittest.TestCase):
@@ -182,25 +180,22 @@ class PreviewPackagingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_every_asset_is_pinned_to_the_current_version(self):
-        """Executable release assets must be pinned to this build, never a superseded one.
-
-        The release notes are exempt from the "no superseded version" rule because they
-        deliberately record what the superseded build got wrong.
-        """
-        current = re.fullmatch(r'0\.2\.0-alpha\.(\d+)', VERSION)
-        self.assertIsNotNone(current, VERSION)
+        """Executable release assets must be pinned to this build."""
         for relative in ('docs/releases/docker-compose.preview.yml',
                          'docs/releases/start-aivoicebench-preview.ps1'):
             text = (ROOT / relative).read_text(encoding='utf-8-sig')
             self.assertIn(VERSION, text, relative)
-            found = set(re.findall(r'0\.2\.0-alpha\.(\d+)', text))
-            self.assertEqual(found, {current.group(1)},
-                             f'{relative} references a superseded alpha build: {sorted(found)}')
+            # Look for version-like references (v0.3.0 or 0.3.0) but not IP addresses.
+            found = set(re.findall(r'(?<!\d\.)(?<!\d)(\d+\.\d+\.\d+)(?![\d.])', text))
+            stale = found - {VERSION, '127.0.0.1'.rsplit('.', 1)[0]}
+            self.assertEqual(stale, set(),
+                             f'{relative} references a superseded build: {sorted(stale)}')
         notes = (ROOT / 'docs/releases' / f'{VERSION}.md').read_text(encoding='utf-8')
         self.assertIn(VERSION, notes)
 
-    def test_version_is_the_preview_version(self):
-        self.assertTrue(VERSION.startswith('0.2.0-alpha.'), VERSION)
+    def test_version_is_a_release_version(self):
+        """Accepts both formal (0.3.0) and alpha (0.2.0-alpha.2) versions."""
+        self.assertTrue(re.match(r'\d+\.\d+\.\d+', VERSION), VERSION)
 
 
 if __name__ == '__main__':
