@@ -87,6 +87,39 @@ class OpenAICompatibleProvider:
         inv.output_chars = len(json.dumps(result, ensure_ascii=False))
         return result, inv
 
+    def complete_raw(self, system_prompt, user_prompt):
+        """Call the LLM API and return the raw response text, without JudgeResult validation.
+
+        For use cases that need a different output schema (e.g. the voice test
+        agent), this returns the raw text so the caller can parse its own format.
+        """
+        inv = LLMInvocation(
+            invocation_id="CALL-" + uuid.uuid4().hex,
+            provider=self.provider, model=self.model,
+            prompt_version="voice-test-agent-1.0.0",
+            started_at=_utc_now(),
+        )
+        start_time = time.monotonic()
+        try:
+            self._check_key()
+            raw_text = self._call_api(system_prompt, user_prompt)
+            inv.status = 'success'
+        except Exception as error:
+            inv.status = 'failed'
+            inv.finished_at = _utc_now()
+            inv.latency_ms = round((time.monotonic() - start_time) * 1000, 3)
+            raise
+        inv.finished_at = _utc_now()
+        inv.latency_ms = round((time.monotonic() - start_time) * 1000, 3)
+        inv.input_chars = len(user_prompt)
+        inv.output_chars = len(raw_text)
+        return raw_text, inv
+        if inv.status != 'failed':
+            inv.status = 'success'
+        inv.input_chars = len(user_prompt)
+        inv.output_chars = len(json.dumps(result, ensure_ascii=False))
+        return result, inv
+
     def _call_api(self, system_prompt, user_prompt):
         """Make the actual HTTP call to the OpenAI-compatible API."""
         import requests

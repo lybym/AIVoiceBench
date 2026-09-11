@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 CAPABILITIES = {'tts': '语音生成', 'asr': '语音识别', 'diarization': '说话人分析', 'judge': '结果分析'}
 PROTOCOLS = {'openai_chat': {'judge'}, 'volcengine_tts': {'tts'},
              'volcengine_asr': {'asr', 'diarization'}, 'custom_speech': {'tts', 'asr', 'diarization'}}
-PARAMETERS = {'temperature', 'max_tokens', 'timeout_seconds', 'voice', 'speed', 'sample_rate', 'format', 'resource_id'}
+PARAMETERS = {'temperature', 'max_tokens', 'timeout_seconds', 'voice', 'speed', 'volume', 'pitch', 'sample_rate', 'format', 'resource_id'}
 
 @dataclass(frozen=True)
 class RunProviders:
@@ -30,6 +30,7 @@ class RunProviders:
 def adapter_available(profile, role):
     return ((role == 'judge' and profile['protocol'] == 'openai_chat') or
             (role == 'asr' and profile['protocol'] == 'volcengine_asr') or
+            (role == 'tts' and profile['protocol'] == 'volcengine_tts') or
             (role == 'diarization' and profile['protocol'] == 'volcengine_asr'))
 
 class SettingsError(ValueError):
@@ -176,6 +177,7 @@ class ModelSettings:
             'configured' if keys[route] else 'credential_missing') for role,route in doc['routes'].items()}
         asr_factory=None
         diarization_factory=None
+        tts_factory=None
         asr=by_id.get(doc['routes']['asr'])
         if asr and asr['enabled'] and adapter_available(asr, 'asr'):
             from .volcengine_asr import VolcengineASRProvider
@@ -199,9 +201,29 @@ class ModelSettings:
                         provider_name=diarization['provider'] or 'volcengine',
                         model=diarization['model'] or 'bigmodel',
                         resource_id=diarization['parameters'].get('resource_id','volc.bigasr.auc_turbo'))
+        # TTS for Active Voice Test: the user configures a volcengine_tts profile
+        # with a base_url, model, and voice_type parameter. The provider makes
+        # one bounded HTTP call per synthesis, audited through InvocationAudit.
+        tts=by_id.get(doc['routes']['tts'])
+        if tts and tts['enabled'] and adapter_available(tts, 'tts'):
+            from .volcengine_tts import VolcengineTTSProvider
+            _tts_profile=tts
+            _tts_key=keys[tts['id']]
+            def tts_factory(root):
+                params=_tts_profile['parameters']
+                return VolcengineTTSProvider(root, _tts_key,
+                    endpoint=_tts_profile['base_url'],
+                    model=_tts_profile['model'],
+                    voice_type=params.get('voice','BV001_streaming'),
+                    speed_ratio=params.get('speed',1.0),
+                    volume_ratio=params.get('volume',1.0),
+                    pitch_ratio=params.get('pitch',1.0),
+                    audio_format=params.get('format','wav'),
+                    sample_rate=params.get('sample_rate',16000),
+                    timeout=params.get('timeout_seconds',30))
         if doc['revision']==0:
             doc['legacy_environment']={'provider':os.environ.get('AIVOICEBENCH_LLM_PROVIDER','none'),
                 'model':os.environ.get('AIVOICEBENCH_LLM_MODEL',''),
                 'note':'Existing environment configuration applies until settings are first saved'}
             provider=None
-        return doc,RunProviders(asr=asr_factory, diarization=diarization_factory, judge=provider)
+        return doc,RunProviders(asr=asr_factory, tts=tts_factory, diarization=diarization_factory, judge=provider)
