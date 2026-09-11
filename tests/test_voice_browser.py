@@ -16,7 +16,14 @@ Nothing here verifies a real speaker, a real microphone, or a physical AI
 device. Those remain outstanding acceptance items.
 
 Skipped automatically when Playwright or a Chromium-based browser is missing, so
-a CI image without them still passes.
+a CI image without them still passes — **unless** ``VT_REQUIRE_BROWSER=1`` is
+set, in which case an unavailable browser is a hard failure. The release
+acceptance sets it so that "the browser module was skipped" can never be
+reported as a pass.
+
+Set ``VT_BROWSER_BASE_URL`` to drive an already-running server (for example the
+test-only server started inside the candidate Docker image) instead of starting
+a local one.
 """
 
 import json
@@ -32,12 +39,24 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+EXTERNAL_BASE_URL = os.environ.get('VT_BROWSER_BASE_URL', '').strip()
+REQUIRE_BROWSER = os.environ.get('VT_REQUIRE_BROWSER', '').strip() not in ('', '0', 'false', 'False')
+
+# CI installs Playwright where it is expected to be present, so the browser test
+# can import it from the same interpreter that runs the suite.
 try:
     from playwright.sync_api import sync_playwright
     PLAYWRIGHT_IMPORT_ERROR = None
 except Exception as error:  # pragma: no cover - environment dependent
     sync_playwright = None
     PLAYWRIGHT_IMPORT_ERROR = str(error)
+
+
+def _unavailable(message):
+    """Unavailable browser is a skip by default and a hard failure when required."""
+    if REQUIRE_BROWSER:
+        raise RuntimeError(f'browser acceptance required but unavailable: {message}')
+    raise unittest.SkipTest(message)
 
 
 # Installs a controllable synthetic microphone. Marked clearly as test input.
@@ -83,16 +102,33 @@ def _free_port():
 
 def _launch_browser(playwright):
     last_error = None
-    for channel in ('chrome', 'msedge'):
+    for channel in ('chrome', 'msedge', None):
         try:
-            return playwright.chromium.launch(channel=channel, headless=True, args=[
+            if channel:
+                return playwright.chromium.launch(channel=channel, headless=True, args=[
+                    '--autoplay-policy=no-user-gesture-required',
+                    '--use-fake-ui-for-media-stream',
+                    '--use-fake-device-for-media-stream',
+                ]), channel
+            return playwright.chromium.launch(headless=True, args=[
                 '--autoplay-policy=no-user-gesture-required',
                 '--use-fake-ui-for-media-stream',
                 '--use-fake-device-for-media-stream',
-            ]), channel
+            ]), 'chromium'
         except Exception as error:  # pragma: no cover - environment dependent
             last_error = error
     raise RuntimeError(f'no Chromium-based browser available: {last_error}')
+
+
+def _wait_for_health(base, timeout=60):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f'{base}/health', timeout=3) as response:
+                return json.loads(response.read().decode())
+        except Exception:
+            time.sleep(0.5)
+    raise RuntimeError(f'server at {base} never became ready')
 
 
 _STATE = {}
@@ -100,43 +136,58 @@ _STATE = {}
 
 def setUpModule():
     if PLAYWRIGHT_IMPORT_ERROR is not None:
-        raise unittest.SkipTest(f'playwright unavailable: {PLAYWRIGHT_IMPORT_ERROR}')
+        _unavailable(f'playwright unavailable: {PLAYWRIGHT_IMPORT_ERROR}')
 
     tmp = tempfile.TemporaryDirectory()
     _STATE['tmp'] = tmp
-    port = _free_port()
-    _STATE['port'] = port
-    _STATE['base'] = f'http://127.0.0.1:{port}'
+    _STATE['server'] = None
+    _STATE['server_log'] = None
 
-    log = open(Path(tmp.name) / 'server.log', 'w+', encoding='utf-8')
-    _STATE['server_log'] = log
-    proc = subprocess.Popen(
-        [sys.executable, str(REPO_ROOT / 'tests' / 'browser_server.py'),
-         '--port', str(port), '--output', str(Path(tmp.name) / 'out'),
-         '--first-phrase-ms', '2500', '--phrase-ms', '250',
-         '--no-response-timeout-ms', '2500'],
-        cwd=str(REPO_ROOT), stdout=log, stderr=subprocess.STDOUT)
-    _STATE['server'] = proc
-
-    deadline = time.time() + 40
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(f'control test server exited early: {_read_log()}')
+    if EXTERNAL_BASE_URL:
+        # Drive a server that already runs elsewhere (e.g. inside the candidate
+        # image, started with the test-only controlled TTS).
+        _STATE['port'] = None
+        _STATE['base'] = EXTERNAL_BASE_URL.rstrip('/')
         try:
-            with urllib.request.urlopen(f"{_STATE['base']}/health", timeout=2) as response:
-                json.loads(response.read().decode())
-            break
-        except Exception:
-            time.sleep(0.25)
+            _wait_for_health(_STATE['base'])
+        except Exception as error:
+            _unavailable(str(error))
     else:
-        raise RuntimeError(f'control test server never became ready: {_read_log()}')
+        port = _free_port()
+        _STATE['port'] = port
+        _STATE['base'] = f'http://127.0.0.1:{port}'
+
+        log = open(Path(tmp.name) / 'server.log', 'w+', encoding='utf-8')
+        _STATE['server_log'] = log
+        proc = subprocess.Popen(
+            [sys.executable, str(REPO_ROOT / 'tests' / 'browser_server.py'),
+             '--port', str(port), '--output', str(Path(tmp.name) / 'out'),
+             '--first-phrase-ms', '2500', '--phrase-ms', '250',
+             '--no-response-timeout-ms', '2500'],
+            cwd=str(REPO_ROOT), stdout=log, stderr=subprocess.STDOUT)
+        _STATE['server'] = proc
+
+        deadline = time.time() + 40
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                _unavailable(f'control test server exited early: {_read_log()}')
+            try:
+                _wait_for_health(_STATE['base'], timeout=2)
+                break
+            except Exception:
+                time.sleep(0.25)
+        else:
+            _unavailable(f'control test server never became ready: {_read_log()}')
 
     _STATE['playwright'] = sync_playwright().start()
     try:
         _STATE['browser'], _STATE['channel'] = _launch_browser(_STATE['playwright'])
     except Exception as error:
         _STATE['playwright'].stop()
-        raise unittest.SkipTest(str(error))
+        _unavailable(str(error))
+    print(f"[browser acceptance] base={_STATE['base']} "
+          f"browser={_STATE['channel']} {_STATE['browser'].version} "
+          f"external_server={bool(EXTERNAL_BASE_URL)}", flush=True)
 
 
 def tearDownModule():
@@ -164,7 +215,7 @@ def tearDownModule():
 def _read_log():
     log = _STATE.get('server_log')
     if log is None:
-        return '(no log)'
+        return '(no local server)'
     log.flush()
     try:
         return Path(log.name).read_text(encoding='utf-8')[-2000:]
