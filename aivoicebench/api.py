@@ -325,10 +325,16 @@ async def synthesize_voice_test(session_id: str):
         raise HTTPException(404, 'Session not found')
     if session.mode != 'fixed':
         raise HTTPException(400, 'Synthesis is for fixed mode only')
+    if session.status == 'generating':
+        raise HTTPException(409, 'Synthesis is already in progress')
+    session.status = 'generating'
     try:
-        results = await run_in_threadpool(_voice_test_manager.synthesize_all, session_id)
-        return {'status': 'ready', 'phrases': results}
+        await run_in_threadpool(_voice_test_manager.synthesize_all, session_id)
+        # Return the complete snapshot so callers retain the session identifier
+        # and use the same phrase records for preview playback.
+        return session.to_dict()
     except Exception as error:
+        session.status = 'failed'
         raise HTTPException(502, str(error)) from None
 
 

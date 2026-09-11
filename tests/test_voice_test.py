@@ -12,6 +12,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+from fastapi.testclient import TestClient
+
+from aivoicebench import api
 from aivoicebench.voice_test import VoiceTestManager, VoiceTestSession
 from aivoicebench.volcengine_tts import VolcengineTTSProvider, UnavailableTTSProvider
 from aivoicebench.cloud_transport import HTTPReply
@@ -127,6 +130,43 @@ class VoiceTestSessionTests(unittest.TestCase):
         self.assertEqual(d['mode'], 'fixed')
         self.assertEqual(d['device'], 'Test Device')
         self.assertEqual(len(d['phrases']), 1)
+
+
+class VoiceTestApiContractTests(unittest.TestCase):
+    """The browser polls this public snapshot while fixed audio is generated."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.manager = VoiceTestManager(self.root)
+        self.manager._providers = RunProviders(tts=lambda root: MockTTSProvider(root))
+        self.manager_patch = patch.object(api, '_voice_test_manager', self.manager)
+        self.manager_patch.start()
+        self.addCleanup(self.manager_patch.stop)
+        self.client = TestClient(api.app)
+        self.addCleanup(self.client.close)
+
+    def test_synthesis_returns_complete_session_snapshot(self):
+        created = self.client.post('/api/voice-test/sessions', json={
+            'mode': 'fixed', 'phrases': ['你好', '测试'], 'device': 'fixture',
+        })
+        self.assertEqual(created.status_code, 200, created.text)
+        session_id = created.json()['session_id']
+
+        synthesized = self.client.post(f'/api/voice-test/sessions/{session_id}/synthesize')
+        self.assertEqual(synthesized.status_code, 200, synthesized.text)
+        snapshot = synthesized.json()
+        self.assertEqual(snapshot['session_id'], session_id)
+        self.assertEqual(snapshot['status'], 'ready')
+        self.assertEqual([p['status'] for p in snapshot['phrases']], ['ready', 'ready'])
+
+    def test_second_synthesis_request_is_rejected_while_generating(self):
+        session = self.manager.create_session('fixed', phrases=['你好'])
+        session.status = 'generating'
+        response = self.client.post(f'/api/voice-test/sessions/{session.session_id}/synthesize')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['detail'], 'Synthesis is already in progress')
 
 
 class TTSProviderTests(unittest.TestCase):
