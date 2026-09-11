@@ -102,17 +102,24 @@ const VT = (function () {
   function startSynthesisProgress(sessionId, total) {
     const startedAt = Date.now();
     const elapsed = () => Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    // A poll that is still in flight when synthesis finishes must not overwrite
+    // the final status: `stopSynthesisProgress()` sets the timer to null, and
+    // any response arriving after that is dropped.
+    const cancelled = () => synthesisProgressTimer === null;
     const refresh = async () => {
       if (synthesisProgressPolling) return;
       synthesisProgressPolling = true;
       try {
         const response = await fetch(`/api/voice-test/sessions/${sessionId}`);
+        if (cancelled()) return;
         if (response.ok) {
           const snapshot = await response.json();
+          if (cancelled()) return;
           const complete = (snapshot.phrases || []).filter(p => p.status === 'ready').length;
           updateGenerationProgress(`正在调用 TTS 生成语音：${complete}/${total} 条已完成，已等待 ${elapsed()} 秒。`);
         }
       } catch (_) {
+        if (cancelled()) return;
         updateGenerationProgress(`正在调用 TTS 生成语音，已等待 ${elapsed()} 秒；暂时无法读取进度。`);
       } finally {
         synthesisProgressPolling = false;

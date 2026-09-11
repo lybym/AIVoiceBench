@@ -312,6 +312,10 @@ class BrowserControlTestCase(unittest.TestCase):
 
     def test_three_round_path_plays_observes_advances_and_completes(self):
         self.prepare_fixed_run()
+        # A progress poll that was still in flight when synthesis finished must
+        # not overwrite the final status afterwards.
+        self.page.wait_for_timeout(1200)
+        self.assertIn('已生成 3/3', self.page.inner_text('#vt-generation-progress'))
 
         self.suspect_response()
         self.wait_for_play_count(2)
