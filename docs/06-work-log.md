@@ -313,3 +313,21 @@
 - **待完成：** 发布包下载后的重复冒烟、GitHub Release CI、真实设备声学
   对话、Frozen Golden Asset/正式 Execution Evidence 仍分别待验收；不能由
   此次短句云调用替代。
+
+## 2026-09-11 — Issue #62 / fixed voice generation progress
+
+- **问题与范围：** 用户点击固定用例的“生成语音”后没有持续进度提示，且旧的
+  合成响应不含 `session_id`，可能让后续试听 URL 缺少会话标识。本修复只覆盖
+  主动测试 TTS 资产生成的可见状态（PRD-F014、F016、F020、N004）；不改变
+  导入录音主链路、Evidence/Timeline/Metric 契约或真实设备验收范围。
+- **实现：** 合成开始将会话标为 `generating`，同一会话拒绝重复合成；成功时返回
+  完整会话快照，失败时标记 `failed`。浏览器立即禁用提交和输入，建立 aria-live
+  状态区域，按会话接口轮询已 `ready` 的短句数量及实际等待时间；完成、失败和
+  网络异常都会恢复操作。预览继续使用完整会话 ID，且生成后显示预览面板。
+- **软件验证：** 一次性 Docker 测试容器安装明确的 `httpx` 开发依赖后，
+  `python -m unittest tests.test_voice_test tests.test_web_release -v`：**22 tests,
+  0 failures**（含 WAV/MP3/M4A 合成导入 fixture）；随后完整 `unittest discover`
+  通过。发布资产契约 **17 tests, 0 failures（1 个仅 Linux 环境跳过）**。未使用云端
+  凭据、未产生真实录音或设备测试结论。
+- **待完成：** 发布前仍需运行完整测试、GitHub PR/发布 CI 和发布镜像的浏览器
+  冒烟；真实 TTS/设备验证不由本次 UI 进度修复替代。

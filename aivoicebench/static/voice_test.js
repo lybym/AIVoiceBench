@@ -20,6 +20,8 @@ const VT = (function () {
   let silenceStartMs = 0;
   let currentAudio = null;
   let session = null;
+  let synthesisProgressTimer = null;
+  let synthesisProgressPolling = false;
 
   // VAD thresholds (tunable)
   const VAD_THRESHOLD = 0.015; // RMS threshold for speech detection
@@ -32,6 +34,82 @@ const VT = (function () {
   function notify(msg) {
     const el = $('vt-notice');
     if (el) { el.textContent = msg; el.hidden = !msg; }
+  }
+
+  function fixedGenerationElements() {
+    const fixed = $('vt-fixed');
+    const actions = fixed?.querySelector('.settings-actions');
+    const button = $('vt-generate-fixed') || actions?.querySelector('button.primary');
+    if (button) button.id = 'vt-generate-fixed';
+
+    let progress = $('vt-generation-progress');
+    if (!progress && actions) {
+      progress = document.createElement('span');
+      progress.id = 'vt-generation-progress';
+      progress.className = 'quiet';
+      progress.setAttribute('role', 'status');
+      progress.setAttribute('aria-live', 'polite');
+      progress.style.minHeight = '18px';
+      actions.appendChild(progress);
+    }
+    return { button, progress };
+  }
+
+  function updateGenerationProgress(message) {
+    const { progress } = fixedGenerationElements();
+    if (progress) progress.textContent = message;
+  }
+
+  function setFixedGenerationBusy(busy) {
+    const { button } = fixedGenerationElements();
+    if (button) {
+      button.disabled = busy;
+      button.textContent = busy ? '正在生成…' : '生成语音';
+    }
+    ['vt-phrases', 'vt-device'].forEach(id => {
+      const input = $(id);
+      if (input) input.disabled = busy;
+    });
+  }
+
+  function stopSynthesisProgress() {
+    if (synthesisProgressTimer) clearInterval(synthesisProgressTimer);
+    synthesisProgressTimer = null;
+    synthesisProgressPolling = false;
+  }
+
+  function startSynthesisProgress(sessionId, total) {
+    const startedAt = Date.now();
+    const elapsed = () => Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    const refresh = async () => {
+      if (synthesisProgressPolling) return;
+      synthesisProgressPolling = true;
+      try {
+        const response = await fetch(`/api/voice-test/sessions/${sessionId}`);
+        if (response.ok) {
+          const snapshot = await response.json();
+          const complete = (snapshot.phrases || []).filter(p => p.status === 'ready').length;
+          updateGenerationProgress(`正在调用 TTS 生成语音：${complete}/${total} 条已完成，已等待 ${elapsed()} 秒。`);
+        }
+      } catch (_) {
+        updateGenerationProgress(`正在调用 TTS 生成语音，已等待 ${elapsed()} 秒；暂时无法读取进度。`);
+      } finally {
+        synthesisProgressPolling = false;
+      }
+    };
+    updateGenerationProgress(`正在调用 TTS 生成语音：0/${total} 条已完成，已等待 0 秒。`);
+    refresh();
+    synthesisProgressTimer = setInterval(refresh, 800);
+  }
+
+  async function responseMessage(response) {
+    try {
+      const body = await response.json();
+      return body.detail || body.message || `HTTP ${response.status}`;
+    } catch (_) {
+      const text = await response.text();
+      return text || `HTTP ${response.status}`;
+    }
   }
 
   async function requestMic() {
@@ -155,39 +233,47 @@ const VT = (function () {
     if (phrases.length === 0) { notify('请输入至少一句话术'); return; }
 
     const device = $('vt-device')?.value || '';
+    setFixedGenerationBusy(true);
     notify('正在创建会话…');
-    const resp = await fetch('/api/voice-test/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'fixed', phrases, device }),
-    });
-    if (!resp.ok) { notify('创建会话失败：' + resp.status); return; }
-    session = await resp.json();
-    notify('会话已创建，正在生成语音…');
+    updateGenerationProgress('正在创建测试会话…');
+    try {
+      const resp = await fetch('/api/voice-test/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'fixed', phrases, device }),
+      });
+      if (!resp.ok) throw new Error('创建会话失败：' + await responseMessage(resp));
+      session = await resp.json();
+      notify('');
+      startSynthesisProgress(session.session_id, phrases.length);
 
-    // Generate TTS for all phrases
-    const synthResp = await fetch(`/api/voice-test/sessions/${session.session_id}/synthesize`, {
-      method: 'POST',
-    });
-    if (!synthResp.ok) {
-      const err = await synthResp.text();
-      notify('语音生成失败：' + err);
-      return;
+      const synthResp = await fetch(`/api/voice-test/sessions/${session.session_id}/synthesize`, {
+        method: 'POST',
+      });
+      if (!synthResp.ok) throw new Error('语音生成失败：' + await responseMessage(synthResp));
+      const synthResult = await synthResp.json();
+      session = { ...session, ...synthResult };
+      const ready = (session.phrases || []).filter(p => p.status === 'ready').length;
+      if (ready !== phrases.length) throw new Error(`语音生成不完整：${ready}/${phrases.length} 条已完成`);
+
+      renderFixedPreview(session.phrases);
+      $('vt-start-fixed').disabled = false;
+      updateGenerationProgress(`已生成 ${ready}/${phrases.length} 条语音，可以试听或开始测试。`);
+    } catch (error) {
+      notify(error.message || '语音生成请求失败');
+      updateGenerationProgress('语音生成未完成，请检查模型配置后重试。');
+    } finally {
+      stopSynthesisProgress();
+      setFixedGenerationBusy(false);
     }
-    const synthResult = await synthResp.json();
-    session = synthResult; // update with phrase audio paths
-    notify('');
-
-    // Show preview buttons
-    renderFixedPreview(phrases);
-    $('vt-start-fixed').disabled = false;
   }
 
   function renderFixedPreview(phrases) {
     const container = $('vt-preview');
     if (!container) return;
     container.innerHTML = '';
-    phrases.forEach((text, i) => {
+    phrases.forEach((phrase, i) => {
+      const text = typeof phrase === 'string' ? phrase : phrase.text;
       const div = document.createElement('div');
       div.className = 'segment';
       div.innerHTML = `<button class="text-button" data-preview="${i}">试听 ${i + 1}</button><span>${esc(text)}</span>`;
@@ -196,6 +282,7 @@ const VT = (function () {
       };
       container.appendChild(div);
     });
+    container.hidden = false;
   }
 
   async function startFixedTest() {

@@ -130,7 +130,7 @@ Windows EXE/安装包、集群、复杂云端 Control Plane 不属于当前交�
 | PRD-F013 | Markdown + JSON 报告 | P1（MVP 必需） | 🟡 partial | 文件可生成；完整结论级回溯待验收 |
 | PRD-F014 | Web 测试与分析工作台 | P0/P1 | 🟡 partial | main + release；波形、完整 Timeline、人工审核尚缺 |
 | PRD-F015 | 统一模型配置管理 | P1 | ✅ implemented | main + release；限管理与 Judge 路由 |
-| PRD-F016 | 语音生成/分析适配器实际调用 | P0 ASR（M1）/ P1 TTS（M2） | 🟡 partial | 云 ASR/TTS 适配器和调用审计已有分支实现；真实录音与真实设备验收仍待完成。v0.3.1 分支将 TTS 改为当前 API-Key V3 SSE 合约，尚未发布。 |
+| PRD-F016 | 语音生成/分析适配器实际调用 | P0 ASR（M1）/ P1 TTS（M2） | 🟡 partial | 云 ASR/TTS 适配器和调用审计已有 main + release 实现；真实录音与真实设备验收仍待完成。 |
 | PRD-F017 | 同一录音分析修订与重现 | P1 | 🟡 partial | Hash/配置快照已有；同 Run 多版本重算未完成 |
 | PRD-F018 | 版本/设备/供应商 Compare | P2 | ⬜ planned | 无产品比较工作流 |
 | PRD-F019 | Frozen Golden Voice 资产 | P1（M2 核心） | ⬜ planned | 暂停草稿不算可交付能力 |
@@ -315,6 +315,7 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 - [ ] 波形、完整转写/轮次/事件联动、Finding 区间跳转、人工审核入口及真实长录音体验。
 
 - [ ] M2/M3 主动测试入口可操作，清楚区分执行完成、测量待补充与正式结论；后续范围不计入现有 browser_verified。
+- [x] 本分支进展（software_verified，未发布）：固定用例生成会立即显示 aria-live 状态，轮询会话中实际已完成的短句数量和耗时，阻止重复提交；失败后恢复输入。该进度只反映 TTS 资产生成，不表示播放、设备回答或正式测量完成（Issue #62）。
 
 依据：[static/](https://github.com/lybym/AIVoiceBench/tree/v0.1.3/aivoicebench/static)、[api.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/api.py)；Issues #27、#42。
 
@@ -553,6 +554,7 @@ M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程�
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
+| 1.2.2 | 2026-09-11 | 记录 Issue #62 的固定语音生成可见进度：会话快照、实际短句状态轮询、重复提交保护与失败恢复；不升级主动测试或真实设备验收状态 | 项目所有者反馈生成语音缺少进度提示 |
 | 1.2.1 | 2026-09-11 | 记录 Issue #60 的 v0.3.1 TTS 协议修复：当前 API-Key V3 SSE、显式资源/音色、可验证 WAV 与脱敏调用审计；状态保持 partial，真实录音/设备验收未升级 | 项目所有者要求修复 v0.3.0 云 TTS 调用失败并重新发布测试 |
 | 1.2.0 | 2026-09-11 | 调整开发排程：主动语音测试不再以完整 M1 真实质量验收通过为开工前提，先交付固定用例多轮对话最小可用版本，再接自由对话；M1 录音分析剩余验收继续保留。本轮新增 TTS Provider、Voice Test 会话管理器、WebSocket 实时控制、浏览器音频播放与 VAD、自由对话 LLM Agent。对应 PRD-F014/F016/F019/F020/F021/F023 | 项目所有者运行 v0.2.0-alpha.2 后发现缺少主动对话能力，要求立即实现 |
 | 1.1.2 | 2026-09-11 | 记录 v0.2.0-alpha.1 预览发布：M1 当前能力的可下载预览版，范围冻结为录音导入/资产与 provenance/阶段账本/配置管理/云 ASR 调用路径/时间戳转写/回放/说话人标签展示/历史/报告/失败与持久化；明确云 ASR 完整前置条件（API Key + 三个签名 URL）与已知限制（接口约定待确认、无角色证据时保持 unknown）；第 7 节完整 M1 验收仍未通过、未降级 | 项目所有者要求收敛现有功能并交付可实际操作的预览版 |
