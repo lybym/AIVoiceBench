@@ -1,7 +1,7 @@
 # M1 — Real Recording Backbone
 
 PRD refs: PRD-F004–F009/F016/F017; Issues #22/#24/#25/#27/#30.
-Audited 2026-09-11 at main c612d36, published as v0.2.0-alpha.2 pre-release. Complete M1 and real-recording acceptance remain pending.
+Audited 2026-09-11 at main c612d36 (published as v0.2.0-alpha.2), then re-checked against main 8d01ef2 (= v0.3.2). Complete M1 and real-recording acceptance remain pending.
 
 ## One Run
 
@@ -12,7 +12,10 @@ legacy explicit `pipeline` CLI remain available, but are not another Web path.
 Historical `web-analysis` records remain readable and are never rewritten.
 
 `ModelSettings.capture()` returns `(snapshot, RunProviders)` with ASR factory,
-diarization, Judge and TTS slots. ASR and ASR-native diarization are wired into ImportRun. Judge configuration can be captured but is not executed by this path; TTS remains unintegrated. Credential values and signed URLs stay in memory, not snapshots.
+diarization, Judge and TTS slots. ASR and ASR-native diarization are wired into
+ImportRun. Judge configuration can be captured but is not executed by this path;
+TTS stays outside the ImportRun analysis path, where it is used only by the
+Active Voice Test (API-Key V3 SSE, Issue #60). Credential values and signed URLs stay in memory, not snapshots.
 Saving configuration does not make a service call. ASR errors occur inside its
 stage after the original recording has been preserved.
 

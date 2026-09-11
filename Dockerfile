@@ -5,7 +5,7 @@ FROM python:3.12-slim AS base
 
 LABEL maintainer="AIVoiceBench"
 LABEL description="AI Voice Terminal Evaluation — recording import, evidence ledger, timestamped transcript, deterministic metrics (preview build; scope and limits in docs/releases)"
-LABEL version="0.2.0-alpha.2"
+LABEL version="0.3.2"
 
 # Install only system packages needed for Python audio including FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \

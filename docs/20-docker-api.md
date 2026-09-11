@@ -4,7 +4,7 @@
 
 ## 版本与启动
 
-[v0.2.0-alpha.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.2.0-alpha.2) 已公开为预览版；Latest 稳定版仍为 v0.1.3。alpha.1 未作为公开预览版发布。按 [安装说明](releases/0.2.0-alpha.2.md) 下载镜像包、Compose、Windows 启动脚本及 SHA256SUMS，启动后访问 <http://127.0.0.1:8000>；端口占用可用脚本 -Port 8001。
+[v0.3.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.3.2) 为当前正式发布（Latest）。[v0.2.0-alpha.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.2.0-alpha.2) 是历史预览版，alpha.1 未作为公开预览版发布。按 [v0.3.2 发布说明](releases/0.3.2.md) 下载镜像包、Compose、Windows 启动脚本及 SHA256SUMS，启动后访问 <http://127.0.0.1:8000>；端口占用可用脚本 -Port 8001。
 
 预览脚本使用独立容器/数据卷，不迁移旧 v0.1.x 数据。Docker 自带 FFmpeg/FFprobe，无需从 Windows 挂载可执行文件；不交付 EXE。
 

@@ -18,6 +18,13 @@ class WebReleaseTests(unittest.TestCase):
         self.assertEqual(self.client.get('/openapi.json').json()['info']['version'],VERSION)
         self.assertEqual(self.client.get('/').status_code,200)
         self.assertIn('app.js',self.client.get('/').text)
+    def test_fixed_voice_generation_has_live_progress_contract(self):
+        script = self.client.get('/static/voice_test.js').text
+        self.assertIn('vt-generation-progress', script)
+        self.assertIn("setAttribute('aria-live', 'polite')", script)
+        self.assertIn('startSynthesisProgress', script)
+        self.assertIn('/api/voice-test/sessions/${sessionId}', script)
+        self.assertIn('setFixedGenerationBusy(true)', script)
     def test_legacy_report_without_timeline(self):
         d=self.root/'RUN-legacy';d.mkdir()
         (d/'report.json').write_text(json.dumps({'run_summary':{'status':'partial'},'metrics':{'metrics':[]}}))

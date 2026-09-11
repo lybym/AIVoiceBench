@@ -59,8 +59,10 @@ jobs:
           if not notes.is_file():
               sys.exit(f"Missing release notes {notes}; the Release body must describe this exact version")
           text = notes.read_text(encoding='utf-8')
-          if not re.search(r'预览版|Pre-release|pre-release', text, re.I):
-              sys.exit('Release notes must state that this is a pre-release')
+          if '-' in VERSION and not re.search(r'预览版|Pre-release|pre-release', text, re.I):
+              sys.exit('Release notes for a pre-release must state that it is a pre-release')
+          if not re.search(r'已知限制|Known limitations|limitations', text, re.I):
+              sys.exit('Release notes must document known limitations')
           print(f"OK tag={tag} version={VERSION} notes={notes}")
           PY
           echo "notes=docs/releases/$(python -c 'from aivoicebench.version import VERSION; print(VERSION)').md" >> "$GITHUB_OUTPUT"

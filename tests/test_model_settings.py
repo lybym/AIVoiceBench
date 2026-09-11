@@ -49,11 +49,31 @@ class ModelSettingsTests(unittest.TestCase):
         d={'expected_revision':1,'profiles':[],'routes':dict.fromkeys(['tts','asr','diarization','judge'])}
         self.store.update(d)
         with self.store.connect() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM secrets').fetchone()[0],0)
-    def test_not_integrated_speech_is_not_claimed_ready(self):
-        p=profile();p.update(protocol='volcengine_tts',capabilities=['tts'])
+    def test_tts_speech_adapter_is_integrated(self):
+        """TTS is now wired (PRD-F016/F020); readiness reflects the adapter."""
+        p=profile();p.update(protocol='volcengine_tts',capabilities=['tts'],
+            parameters={'resource_id':'configured-resource','voice':'configured-voice','format':'wav'})
         d=payload(p);d['routes']['judge']=None;d['routes']['tts']='judge';self.store.update(d)
-        snap,provider=self.store.capture();self.assertEqual(snap['readiness']['tts'],'not_integrated')
-        self.assertEqual(self.store.describe()['profiles'][0]['adapter_status'],'not_integrated')
+        snap,provider=self.store.capture()
+        # The adapter exists now; readiness is 'configured' (key is stored) not 'not_integrated'
+        self.assertNotEqual(snap['readiness']['tts'],'not_integrated',
+                            'volcengine_tts is now an integrated adapter')
+        self.assertEqual(snap['readiness']['tts'],'credential_missing')
+        self.assertNotEqual(self.store.describe()['profiles'][0]['adapter_status'],'not_integrated')
+        # The TTS factory is populated
+        self.assertIsNotNone(provider.tts)
+        configured=provider.tts(self.root)
+        self.assertEqual(configured.resource_id,'configured-resource')
+        self.assertEqual(configured.voice_type,'configured-voice')
+        self.assertEqual(configured.audio_format,'wav')
+
+    def test_tts_v3_requires_explicit_resource_voice_and_wav(self):
+        for parameters in ({}, {'resource_id':'resource'}, {'voice':'voice'},
+                           {'resource_id':'resource','voice':'voice','format':'pcm'}):
+            p=profile();p.update(protocol='volcengine_tts',capabilities=['tts'],parameters=parameters)
+            d=payload(p);d['routes']['judge']=None;d['routes']['tts']=p['id']
+            with self.subTest(parameters=parameters), self.assertRaises(SettingsError):
+                self.store.update(d)
     def test_api_redacts_invalid_input_and_rejects_cross_origin(self):
         with patch.object(api,'OUTPUT_ROOT',self.root),TestClient(api.app) as client:
             d=payload();d['secrets']={'judge':'secret-canary'}

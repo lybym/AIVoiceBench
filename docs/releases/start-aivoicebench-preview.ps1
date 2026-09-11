@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  启动 AIVoiceBench v0.2.0-alpha.2 预览版（独立容器名与独立数据卷，仅绑定本机）。
+  启动 AIVoiceBench v0.3.2 预览版（独立容器名与独立数据卷，仅绑定本机）。
 
 .DESCRIPTION
   - 从发布附件中的镜像包 docker load 镜像，不需要在本机重新编译源码。
@@ -9,7 +9,7 @@
   - 不会自动删除已有容器或数据卷；端口或名称冲突时明确提示并退出。
 
 .PARAMETER Tarball
-  镜像包路径。默认取与本脚本同目录的 aivoicebench-v0.2.0-alpha.2.tar.gz。
+  镜像包路径。默认取与本脚本同目录的 aivoicebench-v0.3.2.tar.gz。
 
 .PARAMETER Port
   宿主机端口，默认 8000。被占用时脚本会提示改用其他端口。
@@ -35,12 +35,12 @@ param(
 # native call instead of relying on the preference.
 $ErrorActionPreference = 'Continue'
 
-$image       = 'aivoicebench:v0.2.0-alpha.2'
+$image       = 'aivoicebench:v0.3.2'
 $container   = 'aivoicebench-preview'
 $volume      = 'aivoicebench-preview-data'
 $cacheVol    = 'aivoicebench-preview-cache'
-$expected    = '0.2.0-alpha.2'
-$tarballName = 'aivoicebench-v0.2.0-alpha.2.tar.gz'
+$expected    = '0.3.2'
+$tarballName = 'aivoicebench-v0.3.2.tar.gz'
 
 function Fail($message, $hint) {
   Write-Host ""

@@ -8,7 +8,7 @@
 
 `llm_provider.py` 已有兼容 Chat Completions 的 OpenAI/Volcengine Provider，失败、非法 JSON、无有效引用和模型编造时间会被拒绝。它不是完整的 schema-constrained tool loop：上下文/语义锚点、统一原生调用审计和更多产品维度仍需接通。
 
-模型管理与快照已在 main；但 ImportRun 尚未执行 Judge/Findings，仅发布状态封装。现有 LLMJudge 位于独立 pipeline/CLI，不能代表 Web 上传已完成语义评估。ASR/原生聚类已接主链，TTS 未接入；语义角色 PR #54 未合并。
+模型管理与快照已在 main；但 ImportRun 尚未执行 Judge/Findings，仅发布状态封装。现有 LLMJudge 位于独立 pipeline/CLI，不能代表 Web 上传已完成语义评估。ASR/原生聚类已接主链；TTS 已按 API-Key V3 SSE 接入主动语音测试链路（Issue #60），但不属于 ImportRun 分析链，且真实录音/设备验收未完成；语义角色 PR #54 未合并。
 
 ## 时间与 Findings
 

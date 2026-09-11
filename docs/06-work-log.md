@@ -285,13 +285,85 @@
 
 真实云调用、真实录音与人工标注对照**均未进行**；预览发布门槛与 PRD 第 7 节完整 M1 验收分别记录，本版不主张任何真实验收通过。
 
+## 2026-09-11 — Issue #60 / v0.3.1 Volcengine TTS V3 SSE hotfix
 
-## 2026-09-11 — docs implementation audit against main c612d36
+- **问题与范围：** v0.3.0 的 `volcengine_tts` 仍向旧 v1 JSON 接口发送
+  `Authorization: Bearer;…`，本机真实 API Key 验证失败。该修复只处理
+  Active Voice Test 的云端 TTS 调用，不改变录音导入主链路、ASR 的签名 URL
+  前置条件、Timeline/Metric/Evidence 基础设施或 HIL 排程（PRD-F016、F019、
+  F020、F023、N004；Issue #60）。
+- **实现：** TTS 改为 V3 单向 SSE，使用 `X-Api-Key`、
+  `X-Api-Resource-Id`、`X-Api-Request-Id`；模型配置要求 resource ID、voice
+  和 `wav`，不包含账户专属默认值。SSE 音频帧必须拼接为非空、可由 `wave`
+  验证的 WAV 后才能作为播放资产；失败调用不写音频，并保存不含密钥或服务端
+  原始错误的审计记录。审计保留 API version、公开配置、请求 ID、延迟、状态、
+  输出 hash 与 WAV 元数据。
+- **软件验证：** `tests.test_voice_test`、`tests.test_model_settings` 与
+  `tests.test_release_packaging` 覆盖 V3 请求体/头、多帧 SSE、WAV 校验、失败
+  脱敏审计、配置传递、版本化发布资产；实际结果在发布前复跑记录。
+- **候选容器云端冒烟：** 本地独立镜像
+  `aivoicebench:v0.3.1-candidate`、独立卷、`127.0.0.1:10431`。在用户明确
+  授权的 API Key 下，仅合成一条短句；`POST .../synthesize` 返回 `ready`，
+  短语状态 `ready`，音频端点 HTTP 200 / `audio/wav`，153,220 bytes。该结果
+  验证 V3 请求、SSE 合帧和浏览器音频服务，不构成真实扬声器、麦克风或 AI
+  设备测试。
+- **密钥清理证据：** 冒烟后先后执行 API 密钥删除与容器内 SQLite 计数检查；
+  模型描述显示 `credential_configured=false`，`secrets` 表记录数为 `0`。没有
+  把密钥、真实录音或生成音频提交到仓库。
+- **待完成：** 发布包下载后的重复冒烟、GitHub Release CI、真实设备声学
+  对话、Frozen Golden Asset/正式 Execution Evidence 仍分别待验收；不能由
+  此次短句云调用替代。
 
-- User requested updating docs to match latest code. Created docs/main-implementation-audit in an isolated worktree from origin/main c612d36a61a5cbc90f629677b28d64228316f1d0; preserved other worktrees and local release work. Related #27/#22/#24/#25/#30; PRD-F004–F017, F022/F023, M001–M010.
-- Verified GitHub main and public pre-release v0.2.0-alpha.2 point to c612d36. PR #48/#49/#50/#53/#55/#56 merged; #51/#52 are Closed but their implementation commits are ancestors of main. PR #54 is open and excluded from delivered scope. Latest stable release remains v0.1.3.
-- Updated PRD to 1.1.3 with pinned implementation evidence, current integration cells and remaining M1 work. Preserved product priorities, metric meanings, requirement IDs and all real-recording acceptance gates. Reconciled roadmap M1.1–M1.5 engineering slices with product M1–M5 and basic local audio versus professional HIL.
-- Corrected technical docs and preview notes: cloud ASR/audit and ASR-native clustering are integrated; role-gated downstream stages remain conditional; Judge/Findings and full conclusion reports are not executed by ImportRun; explicit ASR resume is not general human reanalysis. Corrected report locations, audio-publication HTTPS requirements, diarization routing and preview test counts. Historical archive bytes and source/config/scripts are unchanged.
-- Validation: git diff --check passed; 19 edited documents checked before this appended record, 97 local Markdown links and pinned source paths resolve; 24 unique PRD functional IDs preserved, priorities and metric meaning cells unchanged, Section 7 real gates remain unchecked. Updated CLI examples retain valid PowerShell single-line form. Final scope check includes this log (20 Markdown files under docs).
-- Reused verified upstream CI 34511317063: Windows/Linux each ran 445 tests, Linux skipped 1; workflow successful. Release workflow 34511317171 succeeded with synthetic codec/container/restart/reloaded-image checks. These are upstream records, not tests rerun in this docs-only task. No cloud credentials/calls, private recordings, real hardware verification, deployment or release occurred.
-- Documentation branch is prepared for push/PR review; no automatic merge. Future execution should recheck main and PR #54 before updating delivered status.
+## 2026-09-11 — Issue #62 / fixed voice generation progress
+
+- **问题与范围：** 用户点击固定用例的“生成语音”后没有持续进度提示，且旧的
+  合成响应不含 `session_id`，可能让后续试听 URL 缺少会话标识。本修复只覆盖
+  主动测试 TTS 资产生成的可见状态（PRD-F014、F016、F020、N004）；不改变
+  导入录音主链路、Evidence/Timeline/Metric 契约或真实设备验收范围。
+- **实现：** 合成开始将会话标为 `generating`，同一会话拒绝重复合成；成功时返回
+  完整会话快照，失败时标记 `failed`。浏览器立即禁用提交和输入，建立 aria-live
+  状态区域，按会话接口轮询已 `ready` 的短句数量及实际等待时间；完成、失败和
+  网络异常都会恢复操作。预览继续使用完整会话 ID，且生成后显示预览面板。
+- **软件验证：** 一次性 Docker 测试容器安装明确的 `httpx` 开发依赖后，
+  `python -m unittest tests.test_voice_test tests.test_web_release -v`：**22 tests,
+  0 failures**（含 WAV/MP3/M4A 合成导入 fixture）；随后完整 `unittest discover`
+  通过。发布资产契约 **17 tests, 0 failures（1 个仅 Linux 环境跳过）**。未使用云端
+  凭据、未产生真实录音或设备测试结论。
+- **待完成：** 发布前仍需运行完整测试、GitHub PR/发布 CI 和发布镜像的浏览器
+  冒烟；真实 TTS/设备验证不由本次 UI 进度修复替代。
+
+## 2026-09-11 — docs implementation audit（对齐 main `8d01ef2` / v0.3.2）
+
+- **原始审计记录（历史事实，保留）：** 本工作单元最初在独立工作树中从 main
+  `c612d36a61a5cbc90f629677b28d64228316f1d0` 建 `docs/main-implementation-audit`；
+  当时 GitHub main 与公开预发布版 `v0.2.0-alpha.2` 均指向该提交；PR
+  #48/#49/#50/#53/#55/#56 已合并；#51/#52 显示 Closed，但其实现提交已由集成历史
+  带入 main —— **不能按 PR 标签判断代码缺失**；PR #54 仍 open，不在交付范围。
+  当时 Latest 稳定版为 `v0.1.3`。相关 #27/#22/#24/#25/#30；PRD-F004–F017、
+  F022/F023、M001–M010。
+- **本次对齐更新：** main 已推进到 `8d01ef2`（= 正式发布 `v0.3.2`，包含 Active
+  Voice Test #58、TTS V3 SSE #61、生成进度 #63）。本工作单元重新应用到
+  `8d01ef2`，**保留仍成立的修正**、**丢弃已被 main 取代的内容**：不再把 PRD
+  版本或实现基线回退到 1.1.3 / `c612d36` / alpha.2，不把 Latest 记为 `v0.1.3`，
+  不把 main 已实现的 TTS 写回“未接入”，不改动主动语音排程与 PRD 功能状态。
+- **保留的修正（main 中仍成立）：** 云 ASR/调用审计与 ASR-native 聚类已进入 main；
+  角色证据门控下游阶段；**ImportRun 不执行 Judge/Findings，导入阶段状态报告不等于
+  完整结论报告**；显式 ASR retry 保留 Run 并新增修订，不等同通用人工修订/重分析；
+  报告产物位置与 `attribution.json`、音频发布 HTTPS 要求、diarization 路由、
+  PowerShell 单行示例等运行与配置说明修正。
+- **历史与当前指南分开：** 文档中 `c612d36` / `v0.2.0-alpha.2` 的引用属于当时
+  审计基线的历史记录，按原文保留；只有描述“当前状态/当前入口/当前 CI 数量”的
+  语句按 `v0.3.2` 更新。本次**未做全库机械替换版本号**。
+- **PRD 基线与标题一致性：** 头部 `prd_version` 与 §8 变更表最新行原本相差一个版本
+  （头部 `1.2.1` vs 最新行 `1.2.2`）；本工作单元将头部对齐并新增 `1.2.3` 行记录
+  本次状态校准。`implementation_baseline` / `main_baseline` 一并从
+  `v0.2.0-alpha.2@c612d36` 刷新为 `v0.3.2@8d01ef2`。§8 的 `1.2.0/1.2.1/1.2.2` 与
+  1.1.x 历史行全部保留。
+- **验证边界：** 本工作单元**仅文档**，未改代码/配置/脚本；未重跑音频测试、未调用
+  云服务、未验收硬件、未发布镜像。上游 CI 记录按当时基线保留为历史：Contract
+  validation `34511317063`（Windows/Linux 各 445 tests，Linux skipped=1）与 Release
+  workflow `34511317171`；当前 main `8d01ef2` 上的 Contract validation
+  `34584755849` 为 463 tests，属另一时点记录，不在此改写历史。
+- **待完成：** 真实录音与实体设备验收门槛未变、未降级；文档中的日期化审计基线
+  （`2026-09-11 基线：main c612d36 / alpha.2`）按历史记录保留，仅当语句声称
+  “当前状态/当前入口/当前 CI 数量”时才按 `v0.3.2` 更新。

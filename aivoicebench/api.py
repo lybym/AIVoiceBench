@@ -8,17 +8,16 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from .acoustic import EnergyVadSegmenter
 from .runner import write_json, digest
 from .version import VERSION
-from fastapi.responses import FileResponse
-from starlette.concurrency import run_in_threadpool
 from .import_pipeline import import_recording, resume_recording
 from .audio_processing import MAX_INPUT_BYTES
 
@@ -275,3 +274,266 @@ async def update_models(request: Request):
     except (SettingsError, ValueError):
         # Validation errors must never echo write-only credentials or arbitrary input.
         raise HTTPException(400, '配置无效，请检查服务地址、用途、参数和默认模型') from None
+
+
+# ---------------------------------------------------------------------------
+# Active Voice Test (PRD-F020/F021/F023)
+# ---------------------------------------------------------------------------
+
+from .voice_test import VoiceTestManager, VoiceTestTurn
+
+_voice_test_manager = VoiceTestManager(OUTPUT_ROOT)
+
+
+@app.post('/api/voice-test/sessions')
+async def create_voice_test_session(request: Request):
+    """Create a voice test session (fixed or free mode)."""
+    body = await request.json()
+    mode = body.get('mode', 'fixed')
+    if mode not in ('fixed', 'free'):
+        raise HTTPException(400, 'mode must be "fixed" or "free"')
+    session = _voice_test_manager.create_session(
+        mode,
+        phrases=body.get('phrases'),
+        device=body.get('device'),
+        goal=body.get('goal'),
+        constraints=body.get('constraints'),
+        max_turns=body.get('max_turns', 10),
+        llm_model=body.get('llm_model'),
+    )
+    return session.to_dict()
+
+
+@app.get('/api/voice-test/sessions')
+def list_voice_test_sessions():
+    return {'sessions': [s.to_dict() for s in _voice_test_manager.sessions.values()]}
+
+
+@app.get('/api/voice-test/sessions/{session_id}')
+def get_voice_test_session(session_id: str):
+    session = _voice_test_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(404, 'Session not found')
+    return session.to_dict()
+
+
+@app.post('/api/voice-test/sessions/{session_id}/synthesize')
+async def synthesize_voice_test(session_id: str):
+    """Generate TTS audio for all phrases (fixed mode)."""
+    session = _voice_test_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(404, 'Session not found')
+    if session.mode != 'fixed':
+        raise HTTPException(400, 'Synthesis is for fixed mode only')
+    if session.status == 'generating':
+        raise HTTPException(409, 'Synthesis is already in progress')
+    session.status = 'generating'
+    try:
+        await run_in_threadpool(_voice_test_manager.synthesize_all, session_id)
+        # Return the complete snapshot so callers retain the session identifier
+        # and use the same phrase records for preview playback.
+        return session.to_dict()
+    except Exception as error:
+        session.status = 'failed'
+        raise HTTPException(502, str(error)) from None
+
+
+@app.get('/api/voice-test/sessions/{session_id}/audio/{phrase_index}')
+def get_voice_test_audio(session_id: str, phrase_index: int):
+    """Serve generated TTS audio for playback in the browser."""
+    audio_path = _voice_test_manager.get_audio_path(session_id, phrase_index)
+    if not audio_path or not audio_path.is_file():
+        raise HTTPException(404, 'Audio not found')
+    return FileResponse(str(audio_path), media_type='audio/wav')
+
+
+@app.post('/api/voice-test/sessions/{session_id}/start')
+def start_voice_test(session_id: str):
+    """Start a voice test session."""
+    try:
+        session = _voice_test_manager.start(session_id)
+        if not session:
+            raise HTTPException(404, 'Session not found')
+        return session.to_dict()
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
+
+
+@app.post('/api/voice-test/sessions/{session_id}/stop')
+def stop_voice_test(session_id: str):
+    """Stop a running voice test session."""
+    session = _voice_test_manager.stop(session_id)
+    if not session:
+        raise HTTPException(404, 'Session not found')
+    return session.to_dict()
+
+
+@app.post('/api/voice-test/sessions/{session_id}/device-audio')
+async def upload_device_audio(session_id: str, request: Request):
+    """Upload captured device audio for ASR (free mode).
+
+    The browser records the device's response and uploads it here. The backend
+    runs ASR and returns the transcript, which the WebSocket loop feeds to the
+    LLM agent.
+    """
+    session = _voice_test_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(404, 'Session not found')
+    if session.mode != 'free':
+        raise HTTPException(400, 'Device audio upload is for free mode only')
+    content = await request.body()
+    if len(content) > 60_000_000:
+        raise HTTPException(413, 'Audio too large')
+    audio_path = session.directory / f'device-turn-{len(session.turns):04d}.wav'
+    audio_path.write_bytes(content)
+    # Run ASR on the captured audio (near-real-time, not streaming)
+    try:
+        transcript = await run_in_threadpool(
+            _transcribe_device_audio, session_id, str(audio_path))
+        return {'transcript': transcript, 'audio_path': str(audio_path.relative_to(OUTPUT_ROOT))}
+    except Exception as error:
+        return {'transcript': '', 'error': str(error)}
+
+
+def _transcribe_device_audio(session_id, audio_path):
+    """Transcribe captured device audio using the configured ASR provider."""
+    from .asr import transcribe_file
+    from .model_settings import ModelSettings
+    settings = ModelSettings(OUTPUT_ROOT / '.model-settings')
+    _, providers = settings.capture()
+    if not providers or not providers.asr:
+        raise RuntimeError('No ASR provider configured')
+    provider = providers.asr(OUTPUT_ROOT)
+    _, transcript = transcribe_file(Path(audio_path), provider, OUTPUT_ROOT / 'voice-test' / session_id,
+                                    source_role='unknown')
+    return transcript.get('text', '')
+
+
+@app.websocket('/api/voice-test/sessions/{session_id}/ws')
+async def voice_test_websocket(websocket: WebSocket, session_id: str):
+    """WebSocket for real-time voice test control.
+
+    Fixed mode: the browser plays audio, detects device speech via VAD, and
+    reports events. The server advances the phrase sequence.
+
+    Free mode: the browser plays generated phrases, captures device audio, and
+    uploads it for ASR. The server calls the LLM agent to decide the next phrase.
+    """
+    session = _voice_test_manager.get_session(session_id)
+    if not session:
+        await websocket.close(code=4004, reason='Session not found')
+        return
+    await websocket.accept()
+    try:
+        while True:
+            message = await websocket.receive_json()
+            msg_type = message.get('type')
+
+            if msg_type == 'start':
+                session = _voice_test_manager.start(session_id)
+                if session.mode == 'fixed':
+                    # Send the first phrase to play
+                    await _send_play(websocket, session, 0)
+                else:
+                    # Free mode: generate the first phrase via LLM
+                    await _generate_and_send_free_phrase(websocket, session)
+
+            elif msg_type == 'stop':
+                _voice_test_manager.stop(session_id, reason='user_stop')
+                await websocket.send_json({'type': 'stopped', 'reason': 'user_stop'})
+                break
+
+            elif msg_type == 'device_speech_start':
+                await websocket.send_json({'type': 'listening',
+                                           'phrase_index': session.current_phrase_index})
+
+            elif msg_type == 'device_speech_end':
+                if session.mode == 'fixed':
+                    next_index = session.current_phrase_index + 1
+                    if next_index < len(session.phrases):
+                        session.current_phrase_index = next_index
+                        await _send_play(websocket, session, next_index)
+                    else:
+                        session.status = 'completed'
+                        session.stop_reason = 'all_phrases_done'
+                        await websocket.send_json({'type': 'complete',
+                                                   'reason': 'all_phrases_done'})
+                        break
+                else:
+                    # Free mode: the browser will upload audio separately,
+                    # then send 'device_audio_ready'. Nothing to do here yet.
+                    pass
+
+            elif msg_type == 'device_audio_ready':
+                # Free mode: ASR has been run (via the POST endpoint), and the
+                # browser reports the transcript. The server calls the LLM agent.
+                device_text = message.get('transcript', '')
+                await _generate_and_send_free_phrase(websocket, session, device_text)
+
+    except WebSocketDisconnect:
+        _voice_test_manager.stop(session_id, reason='disconnected')
+    except Exception as error:
+        await websocket.send_json({'type': 'error', 'reason': str(error)})
+        _voice_test_manager.stop(session_id, reason='error')
+
+
+async def _send_play(websocket, session, phrase_index):
+    """Send a play command for a fixed-mode phrase."""
+    phrase = session.phrases[phrase_index]
+    await websocket.send_json({
+        'type': 'play',
+        'phrase_index': phrase_index,
+        'text': phrase['text'],
+        'audio_url': f'/api/voice-test/sessions/{session.session_id}/audio/{phrase_index}',
+    })
+
+
+async def _generate_and_send_free_phrase(websocket, session, device_text=''):
+    """Generate the next test phrase via the LLM agent (free mode).
+
+    The agent receives the test goal, conversation history, and the device's
+    latest response. It decides what to say next, or whether to stop.
+    """
+    from .voice_agent import generate_next_phrase
+    history = [{'role': t.role, 'text': t.text} for t in session.turns]
+    try:
+        result = await run_in_threadpool(
+            generate_next_phrase, session, history, device_text,
+            OUTPUT_ROOT, _voice_test_manager)
+        if result is None:
+            # Agent decided to stop
+            session.status = 'completed'
+            session.stop_reason = 'agent_stop'
+            await websocket.send_json({'type': 'complete', 'reason': 'agent_stop'})
+            return
+        text, audio_path = result
+        turn_index = len(session.turns)
+        session.turns.append(VoiceTestTurn(
+            turn_index=turn_index, role='platform', text=text,
+            audio_path=audio_path, started_at=utc_now_iso(),
+            status='playing'))
+        if device_text:
+            session.turns.append(VoiceTestTurn(
+                turn_index=turn_index, role='device', text=device_text,
+                observation='speech_end', started_at=utc_now_iso(),
+                status='observed'))
+        await websocket.send_json({
+            'type': 'play',
+            'phrase_index': turn_index,
+            'text': text,
+            'audio_url': f'/api/voice-test/sessions/{session.session_id}/audio/{turn_index}',
+            'device_text': device_text,
+        })
+        if len(session.turns) >= session.max_turns * 2:
+            session.status = 'completed'
+            session.stop_reason = 'max_turns'
+            await websocket.send_json({'type': 'complete', 'reason': 'max_turns'})
+    except Exception as error:
+        await websocket.send_json({'type': 'error', 'reason': str(error)})
+        _voice_test_manager.stop(session.session_id, reason='error')
+
+
+def utc_now_iso():
+    from datetime import timezone
+    from datetime import datetime
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')

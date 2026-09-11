@@ -76,7 +76,7 @@ Validate with `python -m aivoicebench validate --kind metric --timeline examples
 
 Migrates inline evidence to the Timeline Evidence catalog; separates observation/defect and observation confidence/cause confidence. Adds explicit unknown/suspected/verified attribution, required review metadata for serious safety confirmation, and candidate/minimized/frozen regression links. Frozen candidate validation requires the linked versioned TestCase/Golden Set. See `08-findings-and-evidence.md` for severity guidance, provenance, lifecycle and CLI examples. Review timestamps require a full timezone-qualified ISO timestamp (no leap seconds); built-in validation does not rely on an optional date-format dependency.
 
-## Current import contracts (2026-09-11, main c612d36)
+## Import contracts (audited 2026-09-11 at main c612d36; re-checked at main 8d01ef2 / v0.3.2)
 
 - RecordingRun / AnalysisOutput bind Run/Analysis identity, stage status and artifact refs; they do not replace preparation RunManifest.
 - Transcript 1.1.0 supports nullable remote model hash, absent word detail/confidence and overlapping utterances in start order; 1.0.0 remains strict for legacy inputs. See [ASR](11-timestamped-asr.md) and [Backbone](23-recording-backbone.md).
