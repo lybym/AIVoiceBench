@@ -573,3 +573,8 @@
   workflow 启动测试服务时遗漏 `--free-mode`，导致外部服务没有注入脚本化 Streaming ASR
   与 Agent；常规 browser CI 由测试模块自行启动服务，因而此前未暴露。修复 workflow 并新增
   发布契约断言后必须重新合并、从新 main 提交重跑完整 Release；失败 run 未创建 Release。
+- **最终发布验证：** 修复 PR #68 在两套 Linux、两套 Windows 与两套 browser acceptance
+  全绿后以 `6200d6c` 合入 main。Release run `34665563581` 从该精确提交构建并依次通过版本/
+  notes 校验、镜像构建、容器冒烟、镜像保存后重新装载、固定对话验收、候选镜像内 9 项浏览器
+  验收和 SHA256 附件分发；`v0.4.0-alpha.2` 已公开为 **Pre-release**（非 draft，不接管稳定版
+  Latest），包含镜像 tarball、Windows 启动脚本、Compose、发布说明与 `SHA256SUMS.txt`。
