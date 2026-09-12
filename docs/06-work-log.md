@@ -720,3 +720,25 @@
   真实 ASR 测试仍缺的最小条件：云 Streaming ASR 与 File ASR 的可用凭据（含新控制台鉴权头与
   资源 ID），以及一台可被扬声器驱动、麦克风回采的实体 AI 设备。
 - **PR #54 仍未合并**（本轮未触碰）。
+
+### 2026-09-12 19:59 — 同一引擎清理事件再次发生（补充记录）
+
+- **同一模式再次出现。** 引擎事件显示 19:58:57–19:59:40 再次发生同类事件：先 `kill` 并销毁容器
+  （`avb-release-8003-reload`、`aivoicebench-preview`、`aivoicebench-free-fix-test`、
+  `aivoicebench-alpha2-test`），随后删除全部镜像（`aivoicebench:v0.4.0-alpha.1` /
+  `v0.4.0-alpha.2` / `v0.4.0-alpha.3` / `free-voice-fix-local`，以及本机其他镜像
+  `python:3.12-slim`、`alpine:latest`）。**数据卷与构建缓存同样未删除。** 距首次同类事件
+  （12:28）约 7.5 小时，说明该清理在本机是重复发生的；事件日志仍不包含发起者信息，
+  **本记录不作归因**，也不将其表述为代码缺陷、安全攻击或某个工具的行为。
+- **已再次恢复。** `aivoicebench:v0.4.0-alpha.1` 与 `aivoicebench:v0.4.0-alpha.2` 再次从各自
+  GitHub Release 附件装载，**镜像 ID 仍与事件前一致**（`sha256:14e46ecd3f50…` /
+  `sha256:e58826b8b59f…`）；`aivoicebench:free-voice-fix-local` 再次由 `release/v0.3.0` @
+  `c39ac92` 重建（镜像 ID 再次变化，本次为 `sha256:80197058e785…`）；`aivoicebench:v0.4.0-alpha.3`
+  由发布时导出的归档重新装载，镜像 ID 仍为 `sha256:57ffc1b81cdc…`。8000 / 8001 / 8002 与
+  8003 上的发布验收实例均按原名称、端口与数据卷恢复，`/health` 分别为 `0.4.0-alpha.1`、
+  `0.4.0-alpha.1`、`0.4.0-alpha.2`、`0.4.0-alpha.3`；三个既有实例的 `/api/models` 仍为
+  settings revision 8、2 个配置档（judge/tts 已配置），数据卷内容完整。
+- **不受影响的部分。** GitHub 上的 Release、Tag 与附件（含 `v0.4.0-alpha.3`、`v0.3.2` Latest、
+  `v0.4.0-alpha.2`）以及仓库代码均未受影响；本机需要重新装载镜像即可继续使用。
+- **说明。** 容器级环境变量与容器 ID/创建时间同样无法从数据卷恢复（同首次事件）。若需要长期
+  保持这些实例运行，建议排查本机是否存在周期性清理行为；本记录不对其来源作认定。
