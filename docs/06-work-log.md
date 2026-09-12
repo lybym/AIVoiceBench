@@ -578,3 +578,61 @@
   notes 校验、镜像构建、容器冒烟、镜像保存后重新装载、固定对话验收、候选镜像内 9 项浏览器
   验收和 SHA256 附件分发；`v0.4.0-alpha.2` 已公开为 **Pre-release**（非 draft，不接管稳定版
   Latest），包含镜像 tarball、Windows 启动脚本、Compose、发布说明与 `SHA256SUMS.txt`。
+
+## 2026-09-12 — 集成修复：预检门禁、时域判停与候选制品一致性（v0.4.0-alpha.3 候选）
+
+- **问题与判定：** 已发布的 `v0.4.0-alpha.2` 镜像 **不包含**此前只存在于本地分支的语音测试修复
+  （原修复提交 `6c34c74`，父提交 `9592775`，分支 `release/v0.3.0`，**从未推送、不是
+  `origin/main` 的祖先**）。本地镜像 `aivoicebench:free-voice-fix-local`（8001 实例）与发布镜像
+  因此长期不收敛。本次不接受“镜像构建成功/版本号正确/旧 CI 通过”作为目标行为已进入发布包的
+  证明，改为把修复重新表达并集成到当前 Streaming ASR 架构之上，再用候选提交本身构建镜像并
+  在镜像内运行定向验收。
+- **原修复 → 集成对应关系：**
+  `d1fbffd`（有线自由采集接线）与 `6c34c74`（完成自由采集与 ASR 控制路径）中的有效修复，
+  按“重新表达”而非整文件合并的方式落到本次候选提交：
+  ① 时域 PCM RMS 判停 → `aivoicebench/static/voice_test.js` 的 `timeDomainRms` / 噪声底校准；
+  ② 回答结束判据 → 同文件的 `start/end_threshold` 与 `finishFreeTurn`；
+  ③ 已检测到讲话后的有界观测退出 → `VAD_ROUND_MAX_MS` + `round_observation_max_ms`；
+  ④ 启动前能力预检 → `VoiceTestManager.capability_report` + `GET /api/voice-test/capabilities/{mode}`
+  并在 `start` 处强制；
+  ⑤ 降级路径真实格式转换/转写提取/失败状态 → `upload_device_audio` + `_transcribe_device_audio`
+  + `tests/browser_server.py` 的 `ScriptedFileASR`。
+  main 已有能力（连续采集 + AudioWorklet、独立音频通道、Streaming ASR 生命周期、partial/final、
+  取消/背压/重复与迟到事件守卫、固定对话停止与执行记录）全部保留；未采用 take-ours/take-theirs，
+  未把 `turn_file` 变回正式主路径，未改写百炼 LLM 与火山 TTS 适配器。因原提交不在 main 祖先链上，
+  包含关系以真实 diff 与行为用例判定，不以 SHA 祖先关系判定。
+- **行为收紧（本轮新增，非移植）：** `capture_mode=auto` 不再回落到 `turn_file`（缺少
+  Streaming ASR 时明确拒绝并在响应/记录中指名 `streaming_asr`）；预检默认不发起付费探测
+  （`connectivity: not_probed`），响应与日志不含凭据、地址或签名 URL；降级上传先经 FFmpeg
+  解码为 canonical 16 kHz mono PCM16 WAV 并做 canonical QA 再调用 File ASR，非法媒体/识别失败/
+  空结果分别记为 `invalid_audio` / `asr_failed`，不包装成成功的空 transcript、不推进下一轮；
+  停止后迟到的模型结果不再合成或播放；`vad_diagnostics`、观察超时原因与 `provider_calls`
+  进入执行记录。
+- **执行记录改为原子写入（集成过程中发现并修复）：** 候选镜像内再跑浏览器验收时，
+  `test_each_restart_is_a_new_run_and_keeps_the_previous_one` 出现过一次 `KeyError: 'runs'`
+  （导出端点读到正在被覆盖的记录文件）。根因是 `persist_record` 直接覆盖写：每个事件都会重写，
+  而停止流程会并发读取该文件（本版新增的 HTTP stop 让读取窗口更明显）。改为写同目录临时文件后
+  `os.replace` 原子替换（Windows 上替换被占用时有限次重试），`load_record` 对瞬时
+  `OSError`/`ValueError` 重试后再返回；新增
+  `test_execution_record_is_never_observed_half_written`（并发写 200 次、读循环从未观察到半截
+  记录，且不残留临时文件）。这是交付制品的真实缺陷修复，不是放宽测试断言。
+- **软件与浏览器验证：** 全量 `python -m unittest discover -s tests -p "test_*.py"`
+  **549 tests, OK**（含 9 项 `tests.test_voice_browser` 固定/自由模式回归与 8 项
+  `tests.test_voice_integration_acceptance` 定向验收 A～E）。新增用例：能力预检契约与强制
+  （`tests/test_voice_capability.py`，13 项）、降级上传状态机与空/失败/非法媒体（并入
+  `tests/test_voice_streaming.py`）、真实页面 A～E（`tests/test_voice_integration_acceptance.py`，
+  每档能力用独立受控服务：`full` / `streaming-only` / `no-asr` / `turn-file` / `turn-file-fail`）。
+  A 例证据为 HTTP `409` + 控制 socket `blocked` + `provider_calls == {"tts":0,"llm":0,"asr":0}`
+  且执行记录无 `play_issued`；B 例为完全没有 File ASR 时仍走 Streaming ASR，`file_asr_calls == []`
+  且 `streaming_audio_bytes > 0`；C 例为残留非零噪声仍结束并推进、持续噪声按轮次上限退出且
+  关闭原因为 `observation_end_unconfirmed`；D 例为脚本化识别器收到的输入是 16 kHz/mono/PCM16，
+  失败档 `stop_reason` 含 `device_audio_failed` 且只有 1 次 `play_issued`；E 例为连续三轮
+  `platform/device` 交替与 3 条 `device_observation`。
+- **发布契约与文档：** 应用版本、Docker label、Compose 与 Windows 启动脚本统一更新为
+  `0.4.0-alpha.3`（与 alpha.2 区分候选镜像身份），新增同版本发布说明；Release workflow 新增
+  在候选镜像内按能力档启动受控服务并按 `VT_ACCEPTANCE_PROFILE_BASES` 运行集成验收的步骤。
+  同步 PRD（F021/F023 与本轮变更行）、[Streaming ASR 边界](24-streaming-asr.md)、
+  [Docker/API](20-docker-api.md) 与文档导航。
+- **限制：** 无真实云凭据，未做任何真实 Streaming ASR / File ASR 调用；无实体设备、真实扬声器
+  与真实麦克风；浏览器验收使用合成麦克风与脚本化供应商。真实云三轮、真实标签契约、预算与
+  Coverage 仍待完成，未升级任何真实验收状态。

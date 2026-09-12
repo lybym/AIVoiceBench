@@ -19,6 +19,7 @@ device, no physical AI device.
 import hashlib
 import json
 import tempfile
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -377,6 +378,57 @@ class ExecutionRecordAvailabilityTests(ControlLoopTestCase):
         self.assertEqual(exported['record_version'], '1.1.0')
         self.assertTrue(exported['events'])
         self.assertTrue(self.current_run(exported)['turns'])
+
+    def test_execution_record_is_never_observed_half_written(self):
+        """A record rewrite must be atomic.
+
+        The export endpoint reads the file while the server keeps appending
+        events, so a direct overwrite can be observed truncated — which would look
+        like a missing record. A reader loop must always see a complete document.
+        """
+        import threading
+
+        session = self.manager.create_session('free', goal='原子写入')
+        session_id = session.session_id
+        path = session.record_path
+        observed = {'none': 0, 'partial': 0, 'complete': 0, 'transient': 0}
+        stop = threading.Event()
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    document = json.loads(path.read_text(encoding='utf-8'))
+                except FileNotFoundError:
+                    observed['none'] += 1
+                    continue
+                except OSError:
+                    # Windows can transiently refuse the open while the atomic
+                    # replace runs; that is not a torn record.
+                    observed['transient'] += 1
+                    continue
+                except ValueError:
+                    observed['partial'] += 1
+                    continue
+                if 'events' in document and 'runs' in document:
+                    observed['complete'] += 1
+                else:
+                    observed['partial'] += 1
+                time.sleep(0.002)
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        try:
+            for index in range(200):
+                self.manager.record_event(session, 'atomic_probe', detail={'index': index})
+        finally:
+            stop.set()
+            thread.join(timeout=10)
+
+        self.assertGreater(observed['complete'], 0, observed)
+        self.assertEqual(observed['partial'], 0, observed)
+        self.assertEqual(observed['none'], 0, observed)
+        # No temporary file is left behind next to the record.
+        self.assertEqual(list(path.parent.glob('execution-record.json*')), [path])
 
     def test_missing_session_and_missing_record_are_404(self):
         self.assertEqual(self.client.get('/api/voice-test/sessions/VT-nope').status_code, 404)

@@ -35,16 +35,33 @@ const VT = (function () {
   let synthesisProgressTimer = null;
   let synthesisProgressPolling = false;
 
+  // Labelled-fallback (whole-turn) recording state. Only used when the operator
+  // explicitly chose that downgrade path.
+  let mediaRecorder = null;
+  let recordedChunks = [];
+  let recording = null;
+  let uploadAbort = null;
+
   // The active control run. Everything that can arrive late (WebSocket
   // messages, audio callbacks, VAD ticks) is validated against it.
   let activeRun = null;
   let runSeq = 0;
 
   // VAD thresholds (tunable)
-  const VAD_THRESHOLD = 0.015; // RMS threshold for speech detection
-  const VAD_SPEAK_MS = 300; // RMS must be above threshold for this long → speech start
-  const VAD_SILENCE_MS = 1500; // RMS must be below threshold for this long → speech end
+  //
+  // The RMS is computed from the **time-domain** signal (`getFloatTimeDomainData`)
+  // in linear -1..1 units. The previous implementation read the frequency-domain
+  // bins and divided by 255, which is not an amplitude and made an absolute
+  // threshold meaningless: a non-zero noise floor could keep a turn "speaking"
+  // forever, and a quiet room could look like speech. An absolute floor is still
+  // only a starting point — the environment's own noise floor raises it.
+  const VAD_FLOOR = 0.004; // absolute linear-PCM RMS floor
+  const VAD_SPEAK_MS = 300; // RMS must be above the start threshold for this long → speech start
+  const VAD_SILENCE_MS = 1500; // RMS must be below the end threshold for this long → speech end
   const VAD_TIMEOUT_MS = 30000; // control bound: no suspected response within 30s
+  const VAD_CALIBRATION_MS = 1200; // short pre-observation noise-floor estimate
+  const VAD_CALIBRATION_MAX_RMS = 0.05; // samples at or above this are treated as speech, not floor
+  const VAD_ROUND_MAX_MS = 90000; // control escape hatch once speech was detected
 
   // Bounded control waits (not performance targets).
   const PLAYBACK_START_TIMEOUT_MS = 10000;
@@ -169,7 +186,9 @@ const VT = (function () {
         playback_start_timeout_ms: PLAYBACK_START_TIMEOUT_MS,
         playback_max_duration_ms: PLAYBACK_MAX_DURATION_MS,
         no_response_timeout_ms: VAD_TIMEOUT_MS,
+        round_observation_max_ms: VAD_ROUND_MAX_MS,
       },
+      vad: null,
       stats: {
         playReceived: 0, playbackStarted: 0, playbackEnded: 0,
         observations: 0, timeouts: 0, ignored: 0, failures: 0, lateDropped: 0,
@@ -196,6 +215,7 @@ const VT = (function () {
       capture_mode: activeRun.captureMode,
       capture_fallback_reason: activeRun.captureFallback,
       has_capture: !!activeRun.capture,
+      vad: activeRun.vad ? Object.assign({}, activeRun.vad) : null,
       stats: Object.assign({}, activeRun.stats),
     };
   }
@@ -271,6 +291,11 @@ const VT = (function () {
   function stopRun(run) {
     if (!run) return;
     if (!stopLocal(run, null)) return; // already stopped: repeated clicks do nothing
+    // A model call already in flight cannot be cancelled; the control socket is
+    // busy awaiting it, so tell the server through the bounded HTTP path as
+    // well. A late result then sees a stopped session and must not request TTS
+    // or playback.
+    fetch(`/api/voice-test/sessions/${run.sessionId}/stop`, { method: 'POST' }).catch(() => {});
     // Best effort only: a missing backend must never keep the UI from stopping.
     wsSend(run, { type: 'stop' });
     const socket = run.ws;
@@ -567,28 +592,88 @@ const VT = (function () {
     };
   }
 
+  /* Labelled fallback path (capture_mode = turn_file).
+   *
+   * The browser records the whole answer and uploads it for File ASR. The
+   * upload carries a capture identity so the server — not the browser's
+   * transcript payload — decides which capture belongs to which turn, and a
+   * failed upload/recognition is reported as a failure, never as an empty
+   * (successful-looking) transcript that would advance the conversation.
+   */
   function startTurnFileCapture(run) {
-    if (!micStream || typeof MediaRecorder === 'undefined') return;
-    const capture = { mode: 'turn_file', recorder: null, chunks: [], started: false };
+    if (!micStream || typeof MediaRecorder === 'undefined') {
+      captureStatus('本机浏览器不支持整轮录音，降级路径不可用。');
+      failRun(run, 'recorder_unavailable');
+      return;
+    }
+    const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']
+      .find(type => MediaRecorder.isTypeSupported(type));
+    if (!mimeType) {
+      captureStatus('浏览器没有可用的录音格式，降级路径不可用。');
+      failRun(run, 'recorder_format_unavailable');
+      return;
+    }
+    const capture = {
+      mode: 'turn_file', recorder: null, chunks: [], started: false,
+      captureId: run.captureId, turnId: run.turnId, mimeType, complete: false,
+    };
     run.capture = capture;
     try {
-      const recorder = new MediaRecorder(micStream);
+      const recorder = new MediaRecorder(micStream, { mimeType, audioBitsPerSecond: 64000 });
       capture.recorder = recorder;
       recorder.ondataavailable = (event) => { if (event.data.size > 0) capture.chunks.push(event.data); };
       recorder.onstop = async () => {
-        const blob = new Blob(capture.chunks, { type: 'audio/webm' });
-        captureStatus('降级模式：整轮录音已停止，正在上传做文件识别。');
+        const item = capture;
+        run.capture = null;
+        if (!item.complete || !isActive(run)) return;
+        const blob = new Blob(item.chunks, { type: item.mimeType });
+        if (blob.size < 512) {
+          captureStatus('本轮录音过短，未上传，也未记为回答。');
+          wsSend(run, { type: 'device_audio_failed', turn_id: item.turnId,
+                        reason: 'capture_too_small' });
+          return;
+        }
+        captureStatus('降级模式：正在上传整轮录音并做文件识别…');
+        uploadAbort = new AbortController();
         try {
           const response = await fetch(
             `/api/voice-test/sessions/${run.sessionId}/device-audio`,
-            { method: 'POST', body: blob });
-          const body = response.ok ? await response.json() : {};
+            {
+              method: 'POST', body: blob, signal: uploadAbort.signal,
+              headers: {
+                'Content-Type': item.mimeType,
+                'X-Voice-Capture-Id': item.captureId,
+                'X-Voice-Turn-Id': item.turnId,
+                'X-Voice-Mime-Type': item.mimeType,
+              },
+            });
+          if (!response.ok) {
+            const detail = await responseMessage(response);
+            if (isActive(run)) {
+              captureStatus(`文件识别失败：${detail}`);
+              wsSend(run, { type: 'device_audio_failed', turn_id: item.turnId,
+                            reason: `upload_http_${response.status}`, detail: detail });
+            }
+            return;
+          }
+          const body = await response.json();
           if (!isActive(run)) return;
-          wsSend(run, { type: 'device_audio_ready', turn_id: run.turnId,
-                        transcript: body.transcript || '' });
+          if (body.status !== 'recognized') {
+            captureStatus(`文件识别未产出有效文本（${body.status || 'unknown'}）。`);
+            wsSend(run, { type: 'device_audio_failed', turn_id: item.turnId,
+                          reason: `asr_${body.status || 'unrecognized'}` });
+            return;
+          }
+          wsSend(run, { type: 'device_audio_ready', turn_id: item.turnId,
+                        capture_id: body.capture_id });
         } catch (_) {
-          if (isActive(run)) wsSend(run, { type: 'device_audio_ready', turn_id: run.turnId,
-                                           transcript: '' });
+          if (isActive(run)) {
+            captureStatus('上传或识别请求失败。');
+            wsSend(run, { type: 'device_audio_failed', turn_id: item.turnId,
+                          reason: 'upload_failed' });
+          }
+        } finally {
+          uploadAbort = null;
         }
       };
       recorder.start();
@@ -605,6 +690,9 @@ const VT = (function () {
     if (!capture || capture.stopping) return null;
     capture.stopping = true;
     if (capture.mode === 'turn_file') {
+      // Only a turn that ended on an observed answer end is uploaded; a stop or
+      // a control-bound exit marks the recording incomplete and it is discarded.
+      capture.complete = (reason === 'speech_end');
       if (capture.recorder && capture.recorder.state === 'recording') capture.recorder.stop();
       return null;
     }
@@ -629,7 +717,9 @@ const VT = (function () {
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioContext.createMediaStreamSource(micStream);
       analyser = audioContext.createAnalyser();
-      analyser.fftSize = 512;
+      // A time-domain RMS needs a window long enough to cover several pitch
+      // periods; 512 samples at 48 kHz is ~10 ms and made the reading jittery.
+      analyser.fftSize = 2048;
       analyser.smoothingTimeConstant = 0.5;
       source.connect(analyser);
       notify('');
@@ -642,10 +732,28 @@ const VT = (function () {
 
   function stopMic() {
     if (vadTimer) { clearInterval(vadTimer); vadTimer = null; }
+    if (uploadAbort) { try { uploadAbort.abort(); } catch (_) { /* ignore */ } uploadAbort = null; }
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      // A stop is not a completed answer: the recorder must not upload it.
+      if (recording) recording.complete = false;
+      try { mediaRecorder.stop(); } catch (_) { /* ignore */ }
+    }
+    recording = null;
     if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
     if (audioContext) { audioContext.close(); audioContext = null; }
     analyser = null;
     vadState = 'idle';
+  }
+
+  /* One VAD tick's amplitude, as linear PCM RMS in -1..1.
+   *
+   * Time domain, not frequency domain: this is the amplitude the thresholds are
+   * expressed in, so "louder than the room" is a real comparison.
+   */
+  function timeDomainRms(data) {
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    return Math.sqrt(sum / data.length);
   }
 
   function startVAD(run) {
@@ -656,20 +764,63 @@ const VT = (function () {
     silenceStartMs = 0;
     const startTime = Date.now();
     const timeoutMs = Number(run.bounds.no_response_timeout_ms) || VAD_TIMEOUT_MS;
-    const data = new Uint8Array(analyser.frequencyBinCount);
+    const roundMaxMs = Number(run.bounds.round_observation_max_ms) || VAD_ROUND_MAX_MS;
+    const data = new Float32Array(analyser.fftSize);
+    const noise = [];
+    let calibrated = false;
+    // Provisional thresholds until the room's own floor is known. Detection is
+    // NOT paused during calibration: the device may answer immediately, and the
+    // capture is already running, so a dead window would lose the speech start.
+    let startThreshold = VAD_FLOOR * 3;
+    let endThreshold = VAD_FLOOR * 1.8;
+    run.vad = { calibrated: false, baseline: VAD_FLOOR, baseline_basis: 'absolute_floor',
+                start_threshold: startThreshold, end_threshold: endThreshold,
+                clean_samples: 0, last_rms: null };
 
     vadTimer = setInterval(() => {
       if (!isActive(run)) { stopVAD(); return; }
       if (vadState !== 'listening' && vadState !== 'device_speaking') return;
 
-      analyser.getByteFrequencyData(data);
-      let sum = 0;
-      for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
-      const rms = Math.sqrt(sum / data.length) / 255;
+      analyser.getFloatTimeDomainData(data);
+      const rms = timeDomainRms(data);
       const now = Date.now();
+      run.vad.last_rms = rms;
+
+      if (!calibrated) {
+        // Speech must not be folded into the noise floor.
+        if (rms < VAD_CALIBRATION_MAX_RMS) noise.push(rms);
+        run.vad.clean_samples = noise.length;
+        if (now - startTime >= VAD_CALIBRATION_MS) {
+          if (noise.length >= 8) {
+            noise.sort((a, b) => a - b);
+            const baseline = Math.max(VAD_FLOOR, noise[Math.floor(noise.length * 0.8)]);
+            startThreshold = Math.max(VAD_FLOOR * 3, baseline * 3);
+            endThreshold = Math.max(VAD_FLOOR * 1.8, baseline * 1.8);
+            run.vad.baseline = baseline;
+            run.vad.baseline_basis = 'measured_noise_floor';
+          }
+          // Too few quiet samples means the input never rested; say so and keep
+          // the absolute floor rather than inventing a baseline.
+          calibrated = true;
+          run.vad.calibrated = true;
+          run.vad.start_threshold = startThreshold;
+          run.vad.end_threshold = endThreshold;
+          wsSend(run, {
+            type: 'vad_diagnostics', turn_id: run.turnId,
+            detail: {
+              rms: rms, baseline: run.vad.baseline, baseline_basis: run.vad.baseline_basis,
+              clean_samples: noise.length,
+              start_threshold: startThreshold, end_threshold: endThreshold,
+              calibration_ms: VAD_CALIBRATION_MS,
+            },
+          });
+        }
+        // Detection itself is not paused while the floor is being estimated: the
+        // device may answer immediately, and a dead window would lose the start.
+      }
 
       if (vadState === 'listening') {
-        if (rms > VAD_THRESHOLD) {
+        if (rms > startThreshold) {
           if (!speechStartMs) speechStartMs = now;
           if (now - speechStartMs > VAD_SPEAK_MS) {
             vadState = 'device_speaking';
@@ -686,13 +837,14 @@ const VT = (function () {
           // its own so the run cannot look like a completed answer.
           vadState = 'idle';
           run.stats.timeouts += 1;
-          wsSend(run, { type: 'observation_timeout', turn_id: run.turnId, wait_ms: timeoutMs });
+          wsSend(run, { type: 'observation_timeout', turn_id: run.turnId, wait_ms: timeoutMs,
+                        reason: 'no_response_observed' });
           updateStatus('未观察到设备回答（已达到控制等待上限）。');
           stopVAD();
           if (run.mode === 'free') finishFreeTurn(run, 'vad_timeout');
         }
       } else if (vadState === 'device_speaking') {
-        if (rms < VAD_THRESHOLD) {
+        if (rms < endThreshold) {
           if (!silenceStartMs) silenceStartMs = now;
           if (now - silenceStartMs > VAD_SILENCE_MS) {
             vadState = 'listening';
@@ -706,6 +858,18 @@ const VT = (function () {
           }
         } else {
           silenceStartMs = 0;
+        }
+        if (now - startTime > roundMaxMs) {
+          // Speech was detected but its end cannot be confirmed (sustained
+          // noise, continuous speech, or a stuck input). Exit explicitly at the
+          // control bound; this is never reported as a completed answer.
+          vadState = 'idle';
+          run.stats.timeouts += 1;
+          wsSend(run, { type: 'observation_timeout', turn_id: run.turnId,
+                        reason: 'cannot_confirm_response_end', wait_ms: roundMaxMs });
+          updateStatus('无法确认回答结束，已按控制上限停止本轮（未记为回答完成）。');
+          stopVAD();
+          if (run.mode === 'free') finishFreeTurn(run, 'cannot_confirm_response_end');
         }
       }
     }, 50);
@@ -744,6 +908,7 @@ const VT = (function () {
     if (!isActive(run)) { run.stats.lateDropped += 1; return; }
     run.stats.playReceived += 1;
     run.turnId = msg.turn_id;
+    run.captureId = msg.capture_id || null;
     run.pendingCaptureFinish = false;
     if (msg.capture && msg.capture.mode) {
       run.captureMode = msg.capture.mode;
@@ -752,6 +917,7 @@ const VT = (function () {
     if (msg.playback_start_timeout_ms) run.bounds.playback_start_timeout_ms = msg.playback_start_timeout_ms;
     if (msg.playback_max_duration_ms) run.bounds.playback_max_duration_ms = msg.playback_max_duration_ms;
     if (msg.no_response_timeout_ms) run.bounds.no_response_timeout_ms = msg.no_response_timeout_ms;
+    if (msg.round_observation_max_ms) run.bounds.round_observation_max_ms = msg.round_observation_max_ms;
 
     updateStatus(`正在播放第 ${msg.phrase_index + 1} 句：${msg.text}`);
     const result = await playAudio(run, msg.audio_url);
@@ -776,6 +942,14 @@ const VT = (function () {
     if (phrases.length === 0) { notify('请输入至少一句话术'); return; }
 
     const device = $('vt-device')?.value || '';
+    // Fixed mode reuses already-generated audio without requiring ASR or an LLM;
+    // only a run that must synthesize new audio needs TTS.
+    const browserMissing = browserCapability('fixed', null);
+    const report = await fetchCapability('fixed', null, null);
+    if (browserMissing.length || !report || !report.ready) {
+      notify(`语音生成尚不能启动：${capabilityText(report, browserMissing)}。未发起语音调用。`);
+      return;
+    }
     setFixedGenerationBusy(true);
     notify('正在创建会话…');
     updateGenerationProgress('正在创建测试会话…');
@@ -828,8 +1002,108 @@ const VT = (function () {
     container.hidden = false;
   }
 
+  /* ------------------------------------------------------- capability precheck
+   *
+   * "Configured" is not the same as "callable", and a probe that spends money is
+   * not run here. The server reports which required items are missing for the
+   * mode the operator chose; the page checks the browser's own audio capability
+   * separately. A run whose required items are missing is refused **before** the
+   * microphone is raised and before any model or speech call is made.
+   */
+  function requestedFreeCaptureMode() {
+    const select = $('vt-free-capture-mode');
+    return (select && select.value) || 'streaming';
+  }
+
+  /* AudioWorklet availability, checked without touching the accessor:
+   * `AudioContext.prototype.audioWorklet` is a getter that throws when it is read
+   * off the prototype instead of a context instance ("Illegal invocation"), so
+   * the property is only tested with `in`. */
+  function hasAudioWorklet(Context) {
+    if (!Context) return false;
+    const base = window.BaseAudioContext;
+    return (!!Context.prototype && 'audioWorklet' in Context.prototype)
+      || (!!(base && base.prototype) && 'audioWorklet' in base.prototype);
+  }
+
+  function browserCapability(mode, captureMode) {
+    const missing = [];
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      missing.push('浏览器麦克风接口');
+    }
+    if (mode === 'free') {
+      const Context = window.AudioContext || window.webkitAudioContext;
+      if (captureMode === 'turn_file') {
+        if (typeof MediaRecorder === 'undefined') missing.push('浏览器整轮录音（MediaRecorder）');
+      } else if (!Context || !hasAudioWorklet(Context)) {
+        missing.push('浏览器连续采集（AudioWorklet）');
+      }
+    }
+    return missing;
+  }
+
+  function capabilityText(report, browserMissing) {
+    const parts = [];
+    if (report) {
+      const names = (report.missing_names || report.missing || []).join('、');
+      parts.push(report.ready
+        ? `服务端能力检查通过（${report.capture_mode === 'turn_file' ? '降级：整轮录音 + 文件识别' : '实时 Streaming ASR'}）`
+        : `服务端缺少：${names}`);
+    }
+    if (browserMissing && browserMissing.length) parts.push(`浏览器缺少：${browserMissing.join('、')}`);
+    return parts.join('；');
+  }
+
+  async function fetchCapability(mode, captureMode, sessionId) {
+    const params = new URLSearchParams();
+    if (captureMode) params.set('capture_mode', captureMode);
+    if (sessionId) params.set('session_id', sessionId);
+    const query = params.toString();
+    let response;
+    try {
+      response = await fetch(`/api/voice-test/capabilities/${mode}${query ? `?${query}` : ''}`);
+    } catch (_) {
+      return null;
+    }
+    // A session the backend no longer knows about is reported as lost, not as a
+    // capability problem: the page must say "restart" rather than "configure".
+    if (response.status === 404 && sessionId) return { lost: true };
+    if (!response.ok) return null;
+    try {
+      return await response.json();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /* Check without starting anything (the 检查能力 button and the test hooks). */
+  async function checkCapability() {
+    const mode = $('vt-free') && !$('vt-free').hidden ? 'free' : 'fixed';
+    const captureMode = mode === 'free' ? requestedFreeCaptureMode() : null;
+    const report = await fetchCapability(mode, captureMode, session ? session.session_id : null);
+    const browserMissing = browserCapability(mode, captureMode);
+    const text = capabilityText(report, browserMissing);
+    const el = $('vt-capability');
+    if (el) el.textContent = text;
+    notify(report && report.ready && !browserMissing.length ? '' : `能力检查未通过：${text}。未发起模型或语音调用。`);
+    return { report, browserMissing, text };
+  }
+
   async function startFixedTest() {
     if (!session) { notify('请先生成语音'); return; }
+    const browserMissing = browserCapability('fixed', null);
+    const report = await fetchCapability('fixed', null, session.session_id);
+    if (report && report.lost) {
+      // The backend restarted and lost the session: say so and stay restartable.
+      setRunningButtons('fixed', false);
+      updateStatus('会话已失效（后端可能已重启）。请重新生成语音后再开始。');
+      notify('会话已失效（后端可能已重启）。');
+      return;
+    }
+    if (browserMissing.length || !report || !report.ready) {
+      notify(`固定对话尚不能启动：${capabilityText(report, browserMissing)}。未发起模型或语音调用。`);
+      return;
+    }
     const hasMic = await requestMic();
     if (!hasMic) return;
 
@@ -902,14 +1176,28 @@ const VT = (function () {
     if (!goal) { notify('请输入测试目标'); return; }
     const constraints = ($('vt-free-constraints').value || '').split('\n').map(s => s.trim()).filter(Boolean);
     const maxTurns = parseInt($('vt-free-max-turns').value || '10', 10);
+    // The downgrade is an explicit operator choice, never an automatic switch.
+    const captureMode = requestedFreeCaptureMode();
+
+    // Refuse before raising the microphone and before any model or speech call.
+    const browserMissing = browserCapability('free', captureMode);
+    const report = await fetchCapability('free', captureMode, null);
+    const capabilityEl = $('vt-capability');
+    const text = capabilityText(report, browserMissing);
+    if (capabilityEl) capabilityEl.textContent = text;
+    if (browserMissing.length || !report || !report.ready) {
+      notify(`自由对话尚不能启动：${text}。未发起模型或语音调用。`);
+      return;
+    }
 
     notify('正在创建会话…');
     const resp = await fetch('/api/voice-test/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'free', goal, constraints, max_turns: maxTurns }),
+      body: JSON.stringify({ mode: 'free', goal, constraints, max_turns: maxTurns,
+                             capture_mode: captureMode }),
     });
-    if (!resp.ok) { notify('创建会话失败'); return; }
+    if (!resp.ok) { notify('创建会话失败：' + await responseMessage(resp)); return; }
     session = await resp.json();
     notify('');
 
@@ -941,6 +1229,14 @@ const VT = (function () {
         appendFreeLog('平台', msg.text);
         if (msg.device_text) appendFreeLog('设备', msg.device_text);
         handlePlay(run, msg);
+      } else if (msg.type === 'blocked') {
+        // The server refused the start: nothing was called, nothing is running.
+        run.finished = true;
+        stopLocal(run, null, { silent: true });
+        const names = (msg.missing_names || msg.missing || []).join('、');
+        updateStatus(`自由对话已拒绝启动（缺少 ${names}）。未发起模型或语音调用。`);
+        appendFreeLog('系统', `拒绝启动：缺少 ${names}`);
+        notify(`自由对话尚不能启动：缺少 ${names}。未发起模型或语音调用。`);
       } else if (msg.type === 'capture_mode') {
         // Say which observation path this run uses; never imply streaming when
         // the run is on the labelled fallback.
@@ -950,8 +1246,8 @@ const VT = (function () {
           captureStatus('本轮使用实时 Streaming ASR 观察设备回答。');
           appendFreeLog('系统', '观察方式：实时 Streaming ASR（Control Evidence）');
         } else {
-          const why = msg.fallback_reason === 'streaming_asr_not_configured'
-            ? '未配置实时语音识别' : '按配置选择';
+          const why = msg.fallback_reason === 'configured_turn_file'
+            ? '操作者显式选择降级' : (msg.fallback_reason || '按配置选择');
           captureStatus(`本轮使用降级路径：整轮录音 + 文件识别（${why}），不是实时 Streaming ASR。`);
           appendFreeLog('系统', `观察方式：降级（整轮录音 + 文件识别，${why}）`);
         }
@@ -972,7 +1268,7 @@ const VT = (function () {
         appendFreeLog('系统', '已停止');
         updateStatus(timedOut
           ? '已停止：未观察到设备回答（已达到控制等待上限）。'
-          : '已停止');
+          : `已停止：${msg.reason || ''}`);
       } else if (msg.type === 'failed') {
         failRun(run, msg.detail || msg.reason);
       } else if (msg.type === 'error') {
@@ -1016,6 +1312,7 @@ const VT = (function () {
     stopFixedTest,
     startFreeTest,
     stopFreeTest,
+    checkCapability,
     stopMic,
     controlState,
   };

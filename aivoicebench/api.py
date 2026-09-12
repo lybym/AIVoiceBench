@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
+import subprocess
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -269,7 +273,11 @@ async def update_models(request: Request):
         raise HTTPException(413, '配置请求过大')
     try:
         payload = await request.json()
-        return _model_settings().update(payload)
+        result = _model_settings().update(payload)
+        # A new configuration must be visible to the next voice-test precheck and
+        # run, not only to the next analysis.
+        _voice_test_manager.invalidate_providers()
+        return result
     except RevisionConflict as error:
         raise HTTPException(409, str(error)) from None
     except (SettingsError, ValueError):
@@ -281,9 +289,31 @@ async def update_models(request: Request):
 # Active Voice Test (PRD-F020/F021/F023)
 # ---------------------------------------------------------------------------
 
-from .voice_test import VoiceTestManager, PHASE_OBSERVED
+from .voice_test import VoiceTestManager, PHASE_OBSERVED, PHASE_FAILED, CapabilityError
 
 _voice_test_manager = VoiceTestManager(OUTPUT_ROOT)
+
+
+@app.get('/api/voice-test/capabilities/{mode}')
+def voice_test_capabilities(mode: str, capture_mode: str | None = None,
+                            session_id: str | None = None):
+    """What this mode needs, and what is missing (PRD-F021 precheck).
+
+    Presence and adapter readiness only: no paid probe is issued, so this is not
+    a connectivity claim, and the response never contains credentials, service
+    addresses or signed URLs. The same check is enforced at ``start`` — this
+    endpoint only lets the page refuse a run before it raises the microphone.
+    """
+    if mode not in ('fixed', 'free'):
+        raise HTTPException(400, 'Unknown voice-test mode')
+    session = _voice_test_manager.get_session(session_id) if session_id else None
+    if session_id and session is None:
+        raise HTTPException(404, 'Session not found')
+    try:
+        return _voice_test_manager.capability_report(
+            mode, requested_capture_mode=capture_mode, session=session)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
 
 
 @app.post('/api/voice-test/sessions')
@@ -304,6 +334,7 @@ async def create_voice_test_session(request: Request):
             llm_model=body.get('llm_model'),
             on_no_response=body.get('on_no_response', 'pause'),
             no_response_timeout_ms=body.get('no_response_timeout_ms'),
+            round_observation_max_ms=body.get('round_observation_max_ms'),
             capture_mode=body.get('capture_mode', 'auto'),
         )
     except ValueError as error:
@@ -374,12 +405,24 @@ def get_voice_test_audio(session_id: str, phrase_index: int):
 
 @app.post('/api/voice-test/sessions/{session_id}/start')
 def start_voice_test(session_id: str):
-    """Start a voice test session."""
+    """Start a voice test session.
+
+    The per-mode capability precheck is enforced by the manager, so this endpoint
+    and the control socket cannot bypass it. A refused start names what is
+    missing and makes no provider call.
+    """
     try:
         session = _voice_test_manager.start(session_id)
         if not session:
             raise HTTPException(404, 'Session not found')
         return session.to_dict()
+    except CapabilityError as error:
+        raise HTTPException(409, {'reason': 'capability_precheck_failed',
+                                  'mode': error.mode,
+                                  'missing': error.report.get('missing', []),
+                                  'missing_names': error.report.get('missing_names', []),
+                                  'connectivity': error.report.get('connectivity'),
+                                  'note': '未发起模型或语音调用；缺少项必须补齐，或显式选择降级路径'}) from None
     except ValueError as error:
         raise HTTPException(400, str(error)) from None
 
@@ -395,43 +438,127 @@ def stop_voice_test(session_id: str):
 
 @app.post('/api/voice-test/sessions/{session_id}/device-audio')
 async def upload_device_audio(session_id: str, request: Request):
-    """Upload captured device audio for ASR (free mode).
+    """Upload a whole-turn recording for File ASR (free-mode labelled fallback).
 
-    The browser records the device's response and uploads it here. The backend
-    runs ASR and returns the transcript, which the WebSocket loop feeds to the
-    LLM agent.
+    The browser records the device's whole answer and uploads the container it
+    actually produced. The server decodes and converts it to canonical 16 kHz
+    mono PCM16 WAV before File ASR, extracts the transcript from the normalized
+    segments, and records an explicit failure state when the media is invalid,
+    recognition fails, or no segment carries text. A failure is never returned as
+    a successful empty transcript, and the browser's own transcript payload is
+    never trusted: only the server-side capture record can advance a turn.
     """
     session = _voice_test_manager.get_session(session_id)
     if not session:
         raise HTTPException(404, 'Session not found')
     if session.mode != 'free':
         raise HTTPException(400, 'Device audio upload is for free mode only')
-    content = await request.body()
-    if len(content) > 60_000_000:
-        raise HTTPException(413, 'Audio too large')
-    audio_path = session.directory / f'device-turn-{len(session.turns):04d}.wav'
-    audio_path.write_bytes(content)
-    # Run ASR on the captured audio (near-real-time, not streaming)
+    capture_id = request.headers.get('x-voice-capture-id', '')
+    turn_id = request.headers.get('x-voice-turn-id', '')
+    declared = request.headers.get('x-voice-mime-type') or request.headers.get('content-type', '')
+    mime_type = declared.split(';', 1)[0].strip().lower()
+    if not re.fullmatch(r'[A-Za-z0-9_-]{8,100}', capture_id):
+        raise HTTPException(400, 'Invalid capture identity')
+    extension = {'audio/webm': '.webm', 'audio/ogg': '.ogg', 'audio/mp4': '.m4a',
+                 'audio/wav': '.wav', 'audio/wave': '.wav'}.get(mime_type)
+    if not extension:
+        raise HTTPException(415, 'Unsupported captured-audio MIME type')
     try:
-        transcript = await run_in_threadpool(
+        capture = _voice_test_manager.begin_upload(session, capture_id, turn_id, mime_type)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    if capture.get('status') == 'recognized':
+        return _capture_response(capture)
+    content = await request.body()
+    if not 512 <= len(content) <= 60_000_000:
+        _voice_test_manager.finish_upload(session, capture_id, status='invalid_audio',
+                                          reason='capture_size_out_of_range')
+        raise HTTPException(413, 'Captured audio size is out of range')
+    if not _looks_like_audio(content, extension):
+        _voice_test_manager.finish_upload(session, capture_id, status='invalid_audio',
+                                          reason='content_signature_mismatch')
+        raise HTTPException(422, 'Captured audio does not match its declared format')
+    audio_path = session.directory / f'capture-{capture_id}{extension}'
+    audio_path.write_bytes(content)
+    try:
+        result = await run_in_threadpool(
             _transcribe_device_audio, session_id, str(audio_path))
-        return {'transcript': transcript, 'audio_path': str(audio_path.relative_to(OUTPUT_ROOT))}
     except Exception as error:
-        return {'transcript': '', 'error': str(error)}
+        _voice_test_manager.finish_upload(session, capture_id, status='asr_failed',
+                                          reason=type(error).__name__)
+        raise HTTPException(502, 'File ASR did not produce a valid transcript') from None
+    if not session.is_running or not _voice_test_manager.is_current_turn(
+            session, _voice_test_manager.turn_by_id(session, turn_id)):
+        _voice_test_manager.finish_upload(session, capture_id, status='discarded',
+                                          reason='session_stopped_or_stale')
+        raise HTTPException(409, 'Capture completed after the active turn changed')
+    capture = _voice_test_manager.finish_upload(
+        session, capture_id, status='recognized', audio_path=str(audio_path.relative_to(OUTPUT_ROOT)),
+        mime_type=mime_type, size_bytes=len(content), **result)
+    return _capture_response(capture)
+
+
+def _capture_response(capture):
+    """The upload's server-side outcome. No credential or signed URL is included."""
+    return {'capture_id': capture['capture_id'], 'turn_id': capture['turn_id'],
+            'status': capture['status'], 'transcript_status': capture.get('transcript_status'),
+            'asr_reference': capture.get('asr_reference'), 'audio_qa': capture.get('audio_qa')}
+
+
+# The container signatures the browser's MediaRecorder can produce. This is a
+# cheap format check, not a decode: ffmpeg decides whether the media is real.
+AUDIO_SIGNATURES = {
+    '.webm': lambda content: content.startswith(b'\x1a\x45\xdf\xa3'),
+    '.ogg': lambda content: content.startswith(b'OggS'),
+    '.wav': lambda content: content.startswith(b'RIFF') and content[8:12] == b'WAVE',
+    '.m4a': lambda content: len(content) > 12 and content[4:8] == b'ftyp',
+}
+
+
+def _looks_like_audio(content, extension):
+    return AUDIO_SIGNATURES[extension](content)
 
 
 def _transcribe_device_audio(session_id, audio_path):
-    """Transcribe captured device audio using the configured ASR provider."""
+    """Decode a browser recording and transcribe it with the session's File ASR.
+
+    The browser container (webm/ogg/mp4) is not a File ASR input: it is decoded
+    and converted to canonical 16 kHz mono PCM16 WAV first, checked with the same
+    canonical QA used by recording import, and only then recognized. The
+    transcript text comes from the normalized segments, and an empty result is an
+    error rather than an empty success.
+    """
     from .asr import transcribe_file
-    from .model_settings import ModelSettings
-    settings = ModelSettings(OUTPUT_ROOT / '.model-settings')
-    _, providers = settings.capture()
+    from .audio_processing import canonical_qa
+    session = _voice_test_manager.get_session(session_id)
+    if session is None:
+        raise RuntimeError('Session not found')
+    providers = session.config_providers or _voice_test_manager.get_providers()
     if not providers or not providers.asr:
-        raise RuntimeError('No ASR provider configured')
+        raise RuntimeError('No File ASR provider configured')
+    source = Path(audio_path)
+    decoded = source.with_suffix('.decoded.wav')
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffmpeg:
+        raise RuntimeError('FFmpeg is unavailable for browser audio decoding')
+    _voice_test_manager.note_provider_call(session, 'asr')
+    subprocess.run(
+        [ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-xerror', '-i', str(source),
+         '-vn', '-sn', '-dn', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', str(decoded)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        timeout=45, check=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    qa = canonical_qa(decoded, max_duration_ms=120000)
     provider = providers.asr(OUTPUT_ROOT)
-    _, transcript = transcribe_file(Path(audio_path), provider, OUTPUT_ROOT / 'voice-test' / session_id,
-                                    source_role='unknown')
-    return transcript.get('text', '')
+    directory, transcript = transcribe_file(
+        decoded, provider, OUTPUT_ROOT / 'voice-test' / session_id, source_role='unknown')
+    text = ' '.join(str(segment.get('text', '')).strip()
+                    for segment in transcript.get('segments', []) if segment.get('text')).strip()
+    if not text:
+        raise RuntimeError('File ASR returned no usable transcript text')
+    return {'transcript': text, 'transcript_status': transcript.get('status'),
+            'asr_reference': str(directory.relative_to(OUTPUT_ROOT)),
+            'audio_qa': {'duration_ms': qa['duration_ms'], 'all_silent': qa['all_silent'],
+                         'peak': qa['peak'], 'rms': qa['rms']}}
 
 
 @app.websocket('/api/voice-test/sessions/{session_id}/ws')
@@ -466,14 +593,39 @@ async def voice_test_websocket(websocket: WebSocket, session_id: str):
             turn_id = message.get('turn_id')
 
             if msg_type == 'start':
-                session = _voice_test_manager.start(session_id)
+                try:
+                    session = _voice_test_manager.start(session_id)
+                except CapabilityError as error:
+                    # Refuse before any provider call; the session is left as it
+                    # was so the operator can fix the configuration and retry.
+                    await websocket.send_json({
+                        'type': 'blocked', 'reason': 'capability_precheck_failed',
+                        'mode': error.mode,
+                        'missing': error.report.get('missing', []),
+                        'missing_names': error.report.get('missing_names', []),
+                        'connectivity': error.report.get('connectivity'),
+                        'note': '未发起模型或语音调用；缺少项必须补齐，或显式选择降级路径',
+                    })
+                    continue
+                except ValueError as error:
+                    await websocket.send_json({
+                        'type': 'blocked', 'reason': 'start_refused',
+                        'missing': [], 'missing_names': [],
+                        'note': str(error),
+                    })
+                    continue
                 if session.mode == 'fixed':
                     await _send_play(websocket, session, 0)
                 else:
-                    # Free mode answers need device speech; decide once per run
-                    # whether that uses Streaming ASR or the labelled fallback.
-                    resolution = _resolve_capture_mode(session)
-                    await websocket.send_json({'type': 'capture_mode', **resolution})
+                    # The manager resolved (and enforced) how this run's device
+                    # answers become text; report that, never a silent fallback.
+                    await websocket.send_json({
+                        'type': 'capture_mode',
+                        'mode': session.resolved_capture_mode,
+                        'requested': session.capture_mode,
+                        'fallback_reason': session.capture_fallback_reason,
+                        'streaming_available': session.resolved_capture_mode == 'streaming',
+                    })
                     await _generate_and_send_free_phrase(websocket, session)
 
             elif msg_type == 'capture_result':
@@ -537,6 +689,18 @@ async def voice_test_websocket(websocket: WebSocket, session_id: str):
                                            'note': 'suspected response (browser VAD)',
                                            'phrase_index': session.current_phrase_index})
 
+            elif msg_type == 'vad_diagnostics':
+                # The browser's noise-floor estimate for this round. Recorded as
+                # control evidence so a turn's end decision can be explained;
+                # it is not a measurement of the room.
+                turn = _voice_test_manager.turn_by_id(session, turn_id)
+                if _voice_test_manager.is_current_turn(session, turn):
+                    _voice_test_manager.record_event(
+                        session, 'vad_diagnostics', turn_id=turn.turn_id, source='browser',
+                        detail=dict(message.get('detail') or {},
+                                    evidence_scope='control_evidence',
+                                    note='browser time-domain RMS thresholds; not a room measurement'))
+
             elif msg_type == 'device_speech_end':
                 turn = _voice_test_manager.turn_by_id(session, turn_id)
                 if not _voice_test_manager.is_current_turn(session, turn):
@@ -556,14 +720,23 @@ async def voice_test_websocket(websocket: WebSocket, session_id: str):
                     await _send_ignored(websocket, msg_type, turn_id,
                                         'not the turn awaiting an observation')
                     continue
+                reason = message.get('reason') or 'no_response_observed'
+                # A silent device and "speech started but its end cannot be
+                # confirmed" are different control outcomes and must not be
+                # recorded under the same closure reason.
+                unconfirmed = reason == 'cannot_confirm_response_end'
                 _voice_test_manager.record_event(
                     session, 'observation_timeout', turn_id=turn.turn_id,
                     source='browser',
-                    detail={'note': 'no response observed before the control wait bound',
+                    detail={'note': ('speech was detected but its end could not be confirmed '
+                                     'before the round bound' if unconfirmed else
+                                     'no response observed before the control wait bound'),
+                            'reason': reason,
                             'wait_ms': message.get('wait_ms')})
                 _voice_test_manager.close_turn(
                     session, turn, phase='no_response', status='no_response',
-                    closure_reason='no_response_timeout',
+                    closure_reason='observation_end_unconfirmed' if unconfirmed
+                    else 'no_response_timeout',
                     observation='no_response', observation_basis=None)
                 if session.on_no_response == 'continue':
                     if session.mode == 'fixed':
@@ -590,18 +763,45 @@ async def voice_test_websocket(websocket: WebSocket, session_id: str):
                     continue
                 # Fallback path (capture_mode = turn_file): the browser recorded
                 # the whole answer and the backend transcribed it with File ASR.
-                # It is routed through the same observation handling so an empty
-                # transcript is never treated as an answer, and it is labelled so
-                # it can never be reported as streaming.
-                device_text = message.get('transcript', '')
+                # The transcript is read from the server-side capture record, not
+                # from the browser payload, so only a recognized upload advances.
+                try:
+                    capture = _voice_test_manager.consume_upload(
+                        session, message.get('capture_id', ''), turn_id or session.awaiting_turn_id)
+                except ValueError as error:
+                    await _send_ignored(websocket, msg_type, turn_id, str(error))
+                    continue
                 await _consume_device_observation(websocket, session, {
-                    'turn_id': turn_id or session.awaiting_turn_id,
+                    'turn_id': capture['turn_id'],
                     'mode': 'turn_file',
-                    'final_text': device_text,
+                    'final_text': capture.get('transcript', ''),
                     'final_basis': 'file_asr_fallback',
                     'final_source': 'turn_file_file_asr',
-                    'failure': None if device_text.strip() else 'asr_no_final',
+                    'failure': None,
                 })
+
+            elif msg_type == 'device_audio_failed':
+                # A failed fallback observation is not a silent "no answer": it
+                # is a control failure with its own reason, and it never advances
+                # the conversation.
+                turn = _voice_test_manager.turn_by_id(session, turn_id)
+                if not _voice_test_manager.is_current_turn(session, turn):
+                    await _send_ignored(websocket, msg_type, turn_id,
+                                        'not the turn awaiting an observation')
+                    continue
+                reason = message.get('reason') or 'device_audio_failed'
+                _voice_test_manager.record_event(
+                    session, 'device_audio_failed', turn_id=turn.turn_id, source='browser',
+                    detail={'reason': reason, 'detail': message.get('detail'),
+                            'note': 'fallback observation failed; not recorded as an answer'})
+                _voice_test_manager.close_turn(
+                    session, turn, phase=PHASE_FAILED, status='failed',
+                    closure_reason=f'device_audio_failed:{reason}',
+                    observation='no_response', observation_basis=None)
+                _voice_test_manager.fail(session_id, reason=f'device_audio_failed:{reason}')
+                await websocket.send_json({'type': 'failed', 'reason': 'device_audio_failed',
+                                           'detail': reason, 'turn_id': turn.turn_id})
+                break
 
             else:
                 await _send_ignored(websocket, msg_type, turn_id, 'unknown message type')
@@ -675,7 +875,11 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
                                        'note': 'a capture is already active for this run'})
             await websocket.close(code=4009, reason='capture already active')
             return
-        factory = _streaming_asr_factory()
+        # The run's own provider snapshot decides: it is the set the precheck
+        # admitted the run against, so a settings change mid-run cannot swap the
+        # recogniser under an active conversation.
+        providers = session.config_providers or _voice_test_manager.get_providers()
+        factory = getattr(providers, 'streaming_asr', None) if providers else None
         if factory is None:
             await websocket.send_json({'type': 'capture_error',
                                        'error': 'stream_open_failed',
@@ -902,45 +1106,15 @@ async def _advance_fixed(websocket, session, turn, *, already_closed=False):
 
 
 def _streaming_asr_factory():
-    """Resolve the configured streaming ASR provider factory, if any."""
+    """Resolve the configured streaming ASR provider factory, if any.
+
+    Kept for callers that need the settings-file view without a session (the
+    capability precheck uses the manager's snapshot instead).
+    """
     from .model_settings import ModelSettings
     settings = ModelSettings(OUTPUT_ROOT / '.model-settings')
     _, providers = settings.capture()
     return getattr(providers, 'streaming_asr', None)
-
-
-def _resolve_capture_mode(session):
-    """Decide, once per run, how device speech becomes text (PRD-F021).
-
-    Returns the message the browser receives. A fallback is always named: the UI
-    must never present the turn-file path as streaming.
-    """
-    if session.mode != 'free':
-        session.resolved_capture_mode = None
-        return {'mode': None, 'fallback_reason': None}
-    factory = _streaming_asr_factory()
-    available = factory is not None
-    reason = None
-    if session.capture_mode == 'streaming' and not available:
-        mode = 'turn_file'
-        reason = 'streaming_asr_not_configured'
-    elif session.capture_mode == 'streaming':
-        mode = 'streaming'
-    elif session.capture_mode == 'turn_file':
-        mode = 'turn_file'
-        reason = 'configured_turn_file'
-    else:  # auto
-        mode = 'streaming' if available else 'turn_file'
-        if not available:
-            reason = 'streaming_asr_not_configured'
-    session.resolved_capture_mode = mode
-    session.capture_fallback_reason = reason
-    _voice_test_manager.record_event(session, 'capture_mode_resolved', detail={
-        'requested': session.capture_mode, 'resolved': mode,
-        'streaming_available': available, 'fallback_reason': reason,
-        'note': 'turn_file is a fallback path; it is not streaming ASR'})
-    return {'mode': mode, 'requested': session.capture_mode,
-            'fallback_reason': reason, 'streaming_available': available}
 
 
 async def _consume_device_observation(websocket, session, result):
@@ -995,6 +1169,7 @@ async def _send_play(websocket, session, phrase_index):
         'playback_start_timeout_ms': 10000,
         'playback_max_duration_ms': 180000,
         'no_response_timeout_ms': session.no_response_timeout_ms,
+        'round_observation_max_ms': session.round_observation_max_ms,
     })
 
 
@@ -1018,17 +1193,32 @@ async def _generate_and_send_free_phrase(websocket, session, device_text='', cap
         result = await run_in_threadpool(
             generate_next_phrase, session, history, device_text,
             OUTPUT_ROOT, _voice_test_manager, platform_index)
+        if device_text:
+            # Recorded before the stop decision so a final answer that ends the
+            # conversation is still part of the trace and the history.
+            _voice_test_manager.note_device_response(session, device_text)
         if result is None:
             _voice_test_manager.complete(session.session_id, 'agent_stop')
             await websocket.send_json({'type': 'complete', 'reason': 'agent_stop'})
             return
+        if not session.is_running:
+            # A Stop arrived while the non-cancellable model call was in flight.
+            # Its late result stays provider-side evidence: never synthesize or
+            # play it, and never open a turn for a stopped run.
+            _voice_test_manager.record_event(
+                session, 'late_agent_result_dropped',
+                detail={'note': 'session stopped while the model call was in flight',
+                        'evidence_scope': 'control_evidence'})
+            return
         text, audio_path = result
-        if device_text:
-            _voice_test_manager.note_device_response(session, device_text)
         turn = _voice_test_manager.open_turn(
             session, text=text, audio_path=audio_path,
             audio_url=f'/api/voice-test/sessions/{session.session_id}/audio/{platform_index}')
         audio_url = turn.audio_url
+        # A free-mode turn always carries the capture identity the server expects
+        # back: the browser's answer audio is bound to this turn, not to whatever
+        # turn happens to be current when the upload finishes.
+        capture_id = 'cap-' + uuid.uuid4().hex
         await websocket.send_json({
             'type': 'play',
             'turn_id': turn.turn_id,
@@ -1036,6 +1226,7 @@ async def _generate_and_send_free_phrase(websocket, session, device_text='', cap
             'text': text,
             'audio_url': audio_url,
             'device_text': device_text,
+            'capture_id': capture_id,
             'observation_scope': 'control_evidence' if device_text else None,
             'capture': {
                 'mode': session.resolved_capture_mode,
@@ -1045,6 +1236,7 @@ async def _generate_and_send_free_phrase(websocket, session, device_text='', cap
             'playback_start_timeout_ms': 10000,
             'playback_max_duration_ms': 180000,
             'no_response_timeout_ms': session.no_response_timeout_ms,
+            'round_observation_max_ms': session.round_observation_max_ms,
         })
         platform_turns = sum(1 for t in session.turns if t.role == 'platform')
         if platform_turns >= session.max_turns:

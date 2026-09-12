@@ -40,6 +40,8 @@ not a Timeline, and not an input to metric computation.
 """
 
 import json
+import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -58,6 +60,32 @@ CAPTURE_MODE_STREAMING = 'streaming'
 CAPTURE_MODE_TURN_FILE = 'turn_file'
 CAPTURE_MODE_AUTO = 'auto'
 CAPTURE_MODES = (CAPTURE_MODE_STREAMING, CAPTURE_MODE_TURN_FILE, CAPTURE_MODE_AUTO)
+# Not a capture mode: the mode the operator asked for cannot be honoured with the
+# current configuration. Falling back silently is forbidden (PRD-F021).
+CAPTURE_MODE_UNAVAILABLE = 'unavailable'
+
+# Precheck items (PRD-F021). "Configured" is not a connectivity claim: the
+# precheck never spends money on a probe, so a real authentication failure is
+# still only discovered by the actual call and is recorded there.
+CAPABILITY_ITEMS = {
+    'tts': '语音生成（TTS）',
+    'judge': '对话模型（LLM）',
+    'streaming_asr': '实时语音识别（Streaming ASR）',
+    'asr': '文件语音识别（File ASR）',
+    'asr_publication': '录音音频发布（Signed URL）',
+}
+CAPABILITY_CONNECTIVITY = 'not_probed'
+
+# Browser-side checks the page must run for itself; the backend cannot see them.
+BROWSER_CAPABILITY_ITEMS = {
+    'microphone': '浏览器麦克风权限与接口',
+    'continuous_capture': '浏览器连续采集（AudioWorklet）',
+    'turn_file_recorder': '浏览器整轮录音（MediaRecorder）',
+}
+
+# Fallback upload states. A failed upload is never stored as a successful empty
+# transcript.
+UPLOAD_STATES = ('uploading', 'recognized', 'invalid_audio', 'asr_failed', 'discarded')
 
 # Bounded wait for the provider's last package after the browser stops sending
 # audio. A control guard, not a product latency target.
@@ -97,11 +125,49 @@ CONTROL_POLICY = {
     'playback_start_timeout_ms': 10000,
     'playback_max_duration_ms': 180000,
     'no_response_timeout_ms': 30000,
+    # Once speech *has* been detected the no-response bound no longer applies;
+    # this bounds how long control waits for a confirmable answer end.
+    'round_observation_max_ms': 90000,
 }
 
 # Accepted range for a caller-supplied no-response wait bound (milliseconds).
 NO_RESPONSE_TIMEOUT_MIN_MS = 1000
 NO_RESPONSE_TIMEOUT_MAX_MS = 600000
+
+# Accepted range for the observation-round bound (milliseconds).
+ROUND_OBSERVATION_MAX_MIN_MS = 2000
+ROUND_OBSERVATION_MAX_MAX_MS = 600000
+
+
+class CapabilityError(ValueError):
+    """A run was refused by the precheck: a required capability is missing.
+
+    Carries the machine-readable report so the API layer can name the missing
+    item instead of returning a generic failure.
+    """
+
+    def __init__(self, mode, report):
+        self.mode = mode
+        self.report = report
+        missing = report.get('missing', [])
+        super().__init__('Capability precheck failed for %s mode: %s'
+                         % (mode, ', '.join(missing) or 'unknown'))
+
+
+def resolve_capture_mode(requested, streaming_available):
+    """Decide how a free-mode answer becomes text (PRD-F021).
+
+    Returns ``(resolved, reason)``. ``auto`` only ever resolves to streaming: a
+    fallback to whole-turn recording + File ASR is a **product downgrade** and
+    must be chosen explicitly by the operator, never switched to silently.
+    """
+    if requested == CAPTURE_MODE_TURN_FILE:
+        return CAPTURE_MODE_TURN_FILE, 'configured_turn_file'
+    if requested in (CAPTURE_MODE_STREAMING, CAPTURE_MODE_AUTO):
+        if streaming_available:
+            return CAPTURE_MODE_STREAMING, None
+        return CAPTURE_MODE_UNAVAILABLE, 'streaming_asr_not_configured'
+    raise ValueError('capture_mode must be one of %s' % (CAPTURE_MODES,))
 
 
 def utc_now():
@@ -280,6 +346,19 @@ class VoiceTestSession:
     capture_fallback_reason: Optional[str] = None
     streaming_asr_error: Optional[str] = None
     capture: Optional['VoiceTestCapture'] = None
+    # The check that admitted this run, kept so the record shows what the run was
+    # admitted against (never a connectivity claim; see CAPABILITY_CONNECTIVITY).
+    capability_report: Optional[dict] = None
+    # Immutable provider snapshot resolved for this run, so a configuration
+    # change mid-run cannot swap the providers under an active conversation.
+    config_providers: object = field(default=None, repr=False)
+    # Counts of provider calls actually made for this session. A start refused by
+    # the precheck must leave every counter at zero.
+    provider_calls: dict = field(default_factory=lambda: {'tts': 0, 'llm': 0, 'asr': 0})
+    # Free-mode fallback uploads keyed by capture id. The server, not the
+    # browser's payload, decides which capture belongs to which turn.
+    uploads: dict = field(default_factory=dict)
+    round_observation_max_ms: int = CONTROL_POLICY['round_observation_max_ms']
     # Authoritative copy of the last finished capture, written by the audio
     # socket and read by the control loop. The browser's echo is never trusted.
     last_capture_result: Optional[dict] = None
@@ -322,6 +401,8 @@ class VoiceTestSession:
             'capture_mode': self.capture_mode,
             'resolved_capture_mode': self.resolved_capture_mode,
             'capture_fallback_reason': self.capture_fallback_reason,
+            'round_observation_max_ms': self.round_observation_max_ms,
+            'provider_calls': dict(self.provider_calls),
             'run_index': self.run_index,
             'turns': [t.to_dict() for t in self.turns],
             'stop_reason': self.stop_reason,
@@ -347,23 +428,158 @@ class VoiceTestManager:
         self.output_root.mkdir(parents=True, exist_ok=True)
         self.sessions = {}  # session_id -> VoiceTestSession
         self._providers = providers
+        # The provider object this manager itself resolved from the settings
+        # file. Anything else in ``_providers`` was injected from outside (tests,
+        # controlled acceptance) and is authoritative.
+        self._settings_providers = None
 
-    def get_providers(self):
-        """Resolve providers from model settings if not pre-injected."""
-        if self._providers is not None:
+    def get_providers(self, force=False):
+        """Resolve providers from model settings if not pre-injected.
+
+        ``force`` re-reads the settings file — that is how the capability
+        precheck sees a configuration change made since the last run — but it
+        never overrides providers injected from outside.
+        """
+        injected = self._providers is not None and self._providers is not self._settings_providers
+        if injected:
             return self._providers
-        from .model_settings import ModelSettings
-        settings = ModelSettings(self.output_root / '.model-settings')
-        _, providers = settings.capture()
-        self._providers = providers
+        if self._providers is None or force:
+            from .model_settings import ModelSettings
+            settings = ModelSettings(self.output_root / '.model-settings')
+            _, providers = settings.capture()
+            self._providers = providers
+            self._settings_providers = providers
         return self._providers
+
+    def invalidate_providers(self):
+        """Drop a settings-derived provider snapshot after a configuration change."""
+        if self._providers is not None and self._providers is self._settings_providers:
+            self._providers = None
+            self._settings_providers = None
+
+    def _settings_document(self):
+        """The current settings document; {} when providers were injected."""
+        if self._providers is not None and self._providers is not self._settings_providers:
+            return {}
+        from .model_settings import ModelSettings
+        doc, _ = ModelSettings(self.output_root / '.model-settings').capture()
+        return doc
+
+    @staticmethod
+    def _readiness(doc, providers):
+        """Which roles are usable, without ever reading a credential value."""
+        if doc.get('readiness'):
+            return dict(doc['readiness'])
+        from .llm import UnavailableLLMProvider
+        judge = getattr(providers, 'judge', None) if providers else None
+        return {
+            'tts': 'configured' if getattr(providers, 'tts', None) else 'not_configured',
+            'asr': 'configured' if getattr(providers, 'asr', None) else 'not_configured',
+            'streaming_asr': 'configured' if getattr(providers, 'streaming_asr', None) else 'not_configured',
+            'diarization': 'not_configured',
+            'judge': 'not_configured' if judge is None or isinstance(judge, UnavailableLLMProvider)
+                     else 'configured',
+        }
+
+    def _fixed_audio_ready(self, session):
+        """True when every fixed phrase already has usable audio on disk.
+
+        Fixed mode reuses existing audio; only a run that must synthesize new
+        audio needs TTS (PRD-F020: fixed control does not depend on ASR).
+        """
+        if not session or not session.phrases:
+            return False
+        for index, phrase in enumerate(session.phrases):
+            if phrase.get('status') != 'ready':
+                return False
+            path = self.get_audio_path(session.session_id, index)
+            if not path or not path.is_file() or path.stat().st_size == 0:
+                return False
+        return True
+
+    def capability_report(self, mode, *, requested_capture_mode=None, session=None):
+        """What this mode needs, and which of those items is missing.
+
+        This is a configuration/presence check, never a paid probe: it reports
+        ``connectivity: not_probed`` and never includes credentials, endpoints or
+        signed URLs.
+        """
+        if mode not in ('fixed', 'free'):
+            raise ValueError('Unknown voice-test mode')
+        providers = self.get_providers(force=True)
+        doc = self._settings_document()
+        readiness = self._readiness(doc, providers)
+        requested = requested_capture_mode or (session.capture_mode if session else CAPTURE_MODE_AUTO)
+        checks = []
+
+        def add(item, ok, detail=None):
+            checks.append({'item': item, 'label': CAPABILITY_ITEMS.get(item, item),
+                           'status': 'ok' if ok else 'missing', 'detail': detail})
+
+        resolved_capture = None
+        fallback_reason = None
+        if mode == 'fixed':
+            reuse = self._fixed_audio_ready(session)
+            if not reuse:
+                add('tts', readiness.get('tts') == 'configured',
+                    '需要生成固定话术音频后运行' if session and session.phrases
+                    else '需要生成固定话术音频')
+        else:
+            streaming_available = readiness.get('streaming_asr') == 'configured'
+            resolved_capture, fallback_reason = resolve_capture_mode(requested, streaming_available)
+            add('judge', readiness.get('judge') == 'configured', '自由对话由对话模型决定下一句话术')
+            add('tts', readiness.get('tts') == 'configured', '自由对话逐轮生成话术语音')
+            if resolved_capture == CAPTURE_MODE_TURN_FILE:
+                add('asr', readiness.get('asr') == 'configured', '降级路径需要文件语音识别')
+                if readiness.get('asr') == 'configured' and 'asr_publication_configured' in doc:
+                    add('asr_publication', bool(doc.get('asr_publication_configured')),
+                        '该文件识别适配器要求通过 Signed URL 发布待识别音频')
+            elif resolved_capture == CAPTURE_MODE_STREAMING:
+                add('streaming_asr', True, '浏览器连续采集经后端转发给 Streaming ASR')
+            else:
+                add('streaming_asr', False,
+                    '未配置实时 Streaming ASR；整轮录音 + File ASR 只能在页面上显式选择为降级路径')
+
+        missing = [check['item'] for check in checks if check['status'] == 'missing']
+        browser = [{'item': 'microphone', 'label': BROWSER_CAPABILITY_ITEMS['microphone']}]
+        if mode == 'free':
+            browser.append({'item': 'continuous_capture',
+                            'label': BROWSER_CAPABILITY_ITEMS['continuous_capture']})
+            if resolved_capture == CAPTURE_MODE_TURN_FILE:
+                browser.append({'item': 'turn_file_recorder',
+                                'label': BROWSER_CAPABILITY_ITEMS['turn_file_recorder']})
+        return {
+            'mode': mode,
+            'ready': not missing,
+            'missing': missing,
+            'missing_names': [CAPABILITY_ITEMS.get(item, item) for item in missing],
+            'checks': checks,
+            'requested_capture_mode': requested if mode == 'free' else None,
+            'capture_mode': resolved_capture,
+            'fallback_reason': fallback_reason,
+            'write_audio_required': mode == 'fixed' and not self._fixed_audio_ready(session),
+            'readiness': readiness,
+            'browser_checks': browser,
+            'connectivity': CAPABILITY_CONNECTIVITY,
+            'note': ('配置与适配器就绪检查；不发起付费探测，也不代表服务已连通。'
+                     '鉴权或网络失败在真实调用时另行记录。'),
+        }
+
+    def note_provider_call(self, session, kind):
+        """Count a provider call actually made for this session."""
+        if session is None:
+            return
+        if kind not in session.provider_calls:
+            session.provider_calls[kind] = 0
+        session.provider_calls[kind] += 1
 
     # -------------------------------------------------------------- sessions
 
     def create_session(self, mode, *, phrases=None, device=None, goal=None,
                        constraints=None, max_turns=10, llm_model=None,
                        on_no_response=ON_NO_RESPONSE_PAUSE,
-                       no_response_timeout_ms=None, capture_mode=CAPTURE_MODE_AUTO):
+                       no_response_timeout_ms=None, capture_mode=CAPTURE_MODE_AUTO,
+                       round_observation_max_ms=None):
         if on_no_response not in (ON_NO_RESPONSE_PAUSE, ON_NO_RESPONSE_CONTINUE):
             raise ValueError("on_no_response must be 'pause' or 'continue'")
         if capture_mode not in CAPTURE_MODES:
@@ -378,6 +594,17 @@ class VoiceTestManager:
             raise ValueError(
                 f'no_response_timeout_ms must be between {NO_RESPONSE_TIMEOUT_MIN_MS} '
                 f'and {NO_RESPONSE_TIMEOUT_MAX_MS}')
+        if round_observation_max_ms is None:
+            round_observation_max_ms = CONTROL_POLICY['round_observation_max_ms']
+        try:
+            round_observation_max_ms = int(round_observation_max_ms)
+        except (TypeError, ValueError):
+            raise ValueError('round_observation_max_ms must be an integer') from None
+        if not (ROUND_OBSERVATION_MAX_MIN_MS <= round_observation_max_ms
+                <= ROUND_OBSERVATION_MAX_MAX_MS):
+            raise ValueError(
+                f'round_observation_max_ms must be between {ROUND_OBSERVATION_MAX_MIN_MS} '
+                f'and {ROUND_OBSERVATION_MAX_MAX_MS}')
         session_id = 'VT-' + uuid.uuid4().hex[:12]
         session = VoiceTestSession(
             session_id=session_id,
@@ -392,6 +619,7 @@ class VoiceTestManager:
             on_no_response=on_no_response,
             no_response_timeout_ms=no_response_timeout_ms,
             capture_mode=capture_mode,
+            round_observation_max_ms=round_observation_max_ms,
             directory=self.output_root / 'voice-test' / session_id,
         )
         session.directory.mkdir(parents=True, exist_ok=True)
@@ -400,6 +628,7 @@ class VoiceTestManager:
             'mode': mode, 'phrase_count': len(session.phrases),
             'device': device, 'on_no_response': session.on_no_response,
             'no_response_timeout_ms': session.no_response_timeout_ms,
+            'round_observation_max_ms': session.round_observation_max_ms,
             'capture_mode': session.capture_mode,
         })
         return session
@@ -436,12 +665,13 @@ class VoiceTestManager:
         if phrase['status'] == 'ready':
             return phrase  # Already generated, reuse
 
-        providers = self.get_providers()
+        providers = session.config_providers or self.get_providers()
         tts = providers.tts(session.directory) if providers and providers.tts else None
         if tts is None:
             raise ProviderFailure('No TTS provider configured; add a volcengine_tts profile')
 
         audio_path = session.directory / f'phrase-{phrase_index:04d}.wav'
+        self.note_provider_call(session, 'tts')
         result = tts.synthesize(phrase['text'], audio_path)
         phrase['audio_path'] = str(audio_path.relative_to(self.output_root))
         phrase['audio_sha256'] = result.get('sha256')
@@ -469,13 +699,14 @@ class VoiceTestManager:
         session = self.sessions.get(session_id)
         if not session:
             raise ValueError('Session not found')
-        providers = self.get_providers()
+        providers = session.config_providers or self.get_providers()
         tts = providers.tts(session.directory) if providers and providers.tts else None
         if tts is None:
             raise ProviderFailure('No TTS provider configured')
         if turn_index is None:
             turn_index = len(session.turns)
         audio_path = session.directory / f'free-turn-{turn_index:04d}.wav'
+        self.note_provider_call(session, 'tts')
         result = tts.synthesize(text, audio_path)
         rel_path = str(audio_path.relative_to(self.output_root))
         return {'path': rel_path, 'sha256': result.get('sha256'), 'text': text}
@@ -551,12 +782,40 @@ class VoiceTestManager:
         session.runs.append(archived)
 
     def persist_record(self, session):
+        """Write the control trace atomically.
+
+        The record is rewritten on every event, and the export endpoint can read
+        it concurrently (the browser reads it right after a stop while the server
+        is still closing turns). A direct write can therefore be observed
+        half-written, which would look like a missing record instead of a
+        complete one. Write to a sibling file and replace it in one step.
+
+        On Windows a replace can transiently fail while another handle is open,
+        so it is retried a few times; the run must not fail because a trace
+        reader got in the way.
+        """
         path = session.record_path
         if path is None:
             return None
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.build_record(session), ensure_ascii=False, indent=2),
-                        encoding='utf-8')
+        payload = json.dumps(self.build_record(session), ensure_ascii=False, indent=2)
+        temporary = path.with_name(path.name + '.tmp')
+        temporary.write_text(payload, encoding='utf-8')
+        for attempt in range(25):
+            try:
+                os.replace(temporary, path)
+                return path
+            except OSError:
+                # Windows refuses the replace while a reader holds the file open.
+                time.sleep(0.02)
+        # Last resort: never fail the control loop because a trace reader was in
+        # the way. The reader retries a torn read, so no half-written document is
+        # ever reported.
+        path.write_text(payload, encoding='utf-8')
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
         return path
 
     def load_record(self, session_id):
@@ -566,10 +825,19 @@ class VoiceTestManager:
         path = directory / 'execution-record.json'
         if not path.is_file():
             return None
-        try:
-            return json.loads(path.read_text(encoding='utf-8'))
-        except (ValueError, OSError):
-            return None
+        # A concurrent atomic replace can make the open itself transiently fail on
+        # Windows; retry instead of reporting a missing record.
+        for attempt in range(3):
+            try:
+                return json.loads(path.read_text(encoding='utf-8'))
+            except ValueError:
+                if attempt == 2:
+                    return None
+            except OSError:
+                if attempt == 2:
+                    return None
+                time.sleep(0.02)
+        return None
 
     # -------------------------------------------------------- turn lifecycle
 
@@ -800,6 +1068,11 @@ class VoiceTestManager:
         stopped attempt keeps its execution record. Turn ids stay unique for
         the whole session, so a late event from an earlier run can never be
         mistaken for the current one.
+
+        The per-mode capability precheck is enforced **here**, before any state
+        changes and before any provider call, so neither the HTTP start endpoint
+        nor the control socket can bypass it. A refused start raises
+        :class:`CapabilityError` and leaves the session exactly as it was.
         """
         session = self.sessions.get(session_id)
         if not session:
@@ -808,6 +1081,13 @@ class VoiceTestManager:
             unready = [i for i, p in enumerate(session.phrases) if p['status'] != 'ready']
             if unready:
                 raise ValueError(f'Phrases not ready: {unready}. Generate audio first.')
+        report = self.capability_report(session.mode, session=session)
+        if not report['ready']:
+            self.record_event(session, 'session_start_refused', detail={
+                'mode': session.mode, 'missing': report['missing'],
+                'connectivity': report['connectivity'],
+                'note': 'precheck refused the start; no provider call was made'})
+            raise CapabilityError(session.mode, report)
         self._archive_current_run(session)
         session.run_index += 1
         session.status = 'running'
@@ -818,11 +1098,21 @@ class VoiceTestManager:
         session.capture = None
         session.last_capture_result = None
         session.streaming_asr_error = None
+        session.capability_report = report
+        session.config_providers = self.get_providers()
+        session.provider_calls = {'tts': 0, 'llm': 0, 'asr': 0}
+        session.uploads = {}
+        session.resolved_capture_mode = report.get('capture_mode')
+        session.capture_fallback_reason = report.get('fallback_reason')
         session.started_at = utc_now()
         session.finished_at = None
         self.record_event(session, 'session_started', detail={
             'mode': session.mode, 'phrase_count': len(session.phrases),
             'run_index': session.run_index,
+            'capture_mode': session.resolved_capture_mode,
+            'capture_fallback_reason': session.capture_fallback_reason,
+            'capability_checks': report['checks'],
+            'connectivity': report['connectivity'],
         })
         return session
 
@@ -872,3 +1162,49 @@ class VoiceTestManager:
         session.finished_at = utc_now()
         self.record_event(session, 'session_failed', detail={'reason': reason})
         return session
+
+    # -------------------------------------------- fallback upload registry
+    #
+    # The labelled fallback (whole-turn recording + File ASR) uploads a binary
+    # recording. The server owns which capture belongs to which turn, whether it
+    # was recognisable at all, and whether it has already been consumed, so a
+    # browser-supplied transcript can never advance the conversation by itself.
+
+    def begin_upload(self, session, capture_id, turn_id, mime_type):
+        """Register an incoming fallback upload for the turn awaiting one."""
+        turn = self.turn_by_id(session, turn_id)
+        if not session.is_running or not self.is_current_turn(session, turn):
+            raise ValueError('stale or inactive capture turn')
+        existing = session.uploads.get(capture_id)
+        if existing:
+            return existing
+        item = {'capture_id': capture_id, 'turn_id': turn_id, 'mime_type': mime_type,
+                'status': 'uploading', 'consumed': False}
+        session.uploads[capture_id] = item
+        self.record_event(session, 'fallback_upload_started', turn_id=turn_id,
+                          detail={'capture_id': capture_id, 'mime_type': mime_type,
+                                  'evidence_scope': STREAMING_EVIDENCE_SCOPE})
+        return item
+
+    def finish_upload(self, session, capture_id, **values):
+        """Record the upload's real outcome (recognized / invalid_audio / ...)."""
+        item = session.uploads.get(capture_id)
+        if not item:
+            raise ValueError('unknown capture')
+        item.update(values)
+        if item.get('status') not in UPLOAD_STATES:
+            raise ValueError('unknown upload status')
+        self.record_event(session, 'fallback_upload_finished', turn_id=item['turn_id'],
+                          detail={key: value for key, value in item.items()
+                                  if key not in ('transcript',)})
+        return item
+
+    def consume_upload(self, session, capture_id, turn_id):
+        """Read a recognised upload once, for the turn it was recorded against."""
+        item = session.uploads.get(capture_id)
+        if (not item or item.get('status') != 'recognized' or item.get('consumed')
+                or item.get('turn_id') != turn_id
+                or not self.is_current_turn(session, self.turn_by_id(session, turn_id))):
+            raise ValueError('capture is unavailable, stale, or already consumed')
+        item['consumed'] = True
+        return item

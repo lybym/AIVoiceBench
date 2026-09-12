@@ -25,10 +25,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from aivoicebench import api  # noqa: E402
 from aivoicebench import voice_agent  # noqa: E402
+from aivoicebench.asr import ProviderOutput, normalize_vosk  # noqa: E402
 from aivoicebench.model_settings import RunProviders  # noqa: E402
 from aivoicebench.streaming_asr import (EVENT_FINAL, EVENT_PARTIAL, EVENT_SPEECH_ENDED,
                                         SOURCE_PROVIDER, StreamingASREvent)  # noqa: E402
 from aivoicebench.voice_test import VoiceTestManager  # noqa: E402
+
+# Which providers each controlled-acceptance profile injects. "Which capability
+# is missing" is the variable the integration acceptance needs to control, so it
+# is a first-class profile rather than an accident of the environment.
+#   streaming: scripted Streaming ASR | file_asr: scripted File ASR | judge: scripted LLM
+PROFILES = {
+    'full': {'streaming': True, 'file_asr': True, 'judge': True},
+    'streaming-only': {'streaming': True, 'file_asr': False, 'judge': True},
+    'no-asr': {'streaming': False, 'file_asr': False, 'judge': True},
+    'turn-file': {'streaming': False, 'file_asr': True, 'judge': True},
+    'turn-file-fail': {'streaming': False, 'file_asr': 'fail', 'judge': True},
+    'no-llm': {'streaming': True, 'file_asr': True, 'judge': False},
+}
 
 
 class SyntheticTTS:
@@ -154,24 +168,81 @@ class ScriptedStreamingProvider:
         return session
 
 
+class ScriptedFileASR:
+    """Deterministic File ASR stand-in for the labelled fallback path.
+
+    Records the canonical audio it was actually handed, so a test can prove the
+    browser's recording was decoded and converted (16 kHz mono PCM16 WAV) before
+    recognition instead of being fed to the recogniser raw. ``fail=True`` gives
+    the failure path a deterministic trigger, and an empty text gives the
+    "recognised but no usable text" path.
+    """
+
+    def __init__(self, *, text='降级路径转写：南京明天晴', fail=False):
+        self.text = text
+        self.fail = fail
+        self.calls = []
+
+    def transcribe(self, source):
+        if self.fail:
+            raise RuntimeError('scripted File ASR failure')
+        with wave.open(str(source), 'rb') as handle:
+            self.calls.append({'path': str(source), 'sample_rate': handle.getframerate(),
+                               'channels': handle.getnchannels(),
+                               'sample_width': handle.getsampwidth(),
+                               'frames': handle.getnframes()})
+        if self.text:
+            message = json.dumps({'text': self.text, 'result': [
+                {'word': self.text, 'start': 0.0, 'end': 0.5, 'conf': 0.9}]})
+        else:
+            message = json.dumps({'text': ''})
+        return ProviderOutput(
+            dict(provider='scripted-file-asr', library_version='test', model_id='scripted',
+                 model_version='test', model_sha256='0' * 64, config={'synthetic': True}),
+            [message])
+
+    def normalize(self, messages, duration):
+        return normalize_vosk(messages, duration)
+
+
+class ScriptedJudge:
+    """Minimal LLM stand-in. The precheck needs a real (non-unavailable) provider;
+    the browser tests replace the agent call itself, so this is never asked to
+    decide anything."""
+
+    def __init__(self, text='第1个问题'):
+        self.text = text
+
+    def complete_raw(self, system_prompt, user_prompt):
+        return json.dumps({'action': 'speak', 'text': self.text, 'reason': 'scripted'}), {}
+
+
 def build_app(args):
     output_root = Path(args.output).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
+    profile = PROFILES[args.profile]
     tts = SyntheticTTS(output_root, first_phrase_ms=args.first_phrase_ms,
                        phrase_ms=args.phrase_ms, slow_phrase_ms=args.slow_phrase_ms)
+    streaming = ScriptedStreamingProvider() if profile['streaming'] else None
+    file_asr = None
+    if profile['file_asr']:
+        file_asr = ScriptedFileASR(fail=profile['file_asr'] == 'fail')
     manager = VoiceTestManager(output_root)
-    manager._providers = RunProviders(tts=lambda root: tts)
+    manager._providers = RunProviders(
+        tts=lambda root: tts,
+        asr=(lambda root: file_asr) if file_asr else None,
+        streaming_asr=(lambda root: streaming) if streaming else None,
+        judge=ScriptedJudge() if profile['judge'] else None,
+    )
+    manager.scripted = {'tts': tts, 'file_asr': file_asr, 'streaming': streaming}
 
     api._voice_test_manager = manager
     api.OUTPUT_ROOT = output_root
 
-    streaming = ScriptedStreamingProvider()
-    if args.free_mode:
-        # Free mode needs an observation provider and a decision maker. Both are
-        # test doubles; the browser-side capture path is the real one under test.
-        api._streaming_asr_factory = lambda: (lambda root: streaming)
-
+    if profile['judge']:
+        # The browser tests drive capture and control; the decision maker is a
+        # test double so the number of turns is deterministic.
         def fake_agent(session, history, device_text, output_root_arg, manager_arg,
                        turn_index=None):
             if len([t for t in session.turns if t.role == 'platform']) >= args.free_max_turns:
@@ -199,6 +270,17 @@ def build_app(args):
         record = manager.load_record(session_id)
         return record if record else {'missing': True}
 
+    @api.app.get('/__test__/scripted')
+    def _scripted():
+        """What the controlled providers actually received."""
+        return {'profile': args.profile,
+                'tts_calls': list(tts.calls),
+                'tts_call_count': len(tts.calls),
+                'file_asr_calls': list(file_asr.calls) if file_asr else [],
+                'streaming_sessions': len(streaming.sessions) if streaming else 0,
+                'streaming_audio_bytes': (sum(s.audio_bytes for s in streaming.sessions)
+                                          if streaming else 0)}
+
     return manager
 
 
@@ -211,25 +293,32 @@ def main():
     parser.add_argument('--phrase-ms', type=int, default=250)
     parser.add_argument('--slow-phrase-ms', type=int, default=8000)
     parser.add_argument('--no-response-timeout-ms', type=int, default=2500)
+    parser.add_argument('--round-max-ms', type=int, default=None,
+                        help='shorten the bounded observation round (once speech was detected)')
+    parser.add_argument('--profile', default='full', choices=sorted(PROFILES),
+                        help='which controlled providers are available')
     parser.add_argument('--free-mode', action='store_true',
-                        help='inject a scripted streaming ASR provider and agent')
+                        help='alias for --profile full, kept for existing callers')
     parser.add_argument('--free-max-turns', type=int, default=2)
     args = parser.parse_args()
 
     manager = build_app(args)
-    # Give every session created through the API the short control bound so the
-    # timeout path can be exercised in a browser test.
+    # Give every session created through the API the short control bounds so the
+    # timeout and unconfirmable-end paths can be exercised in a browser test.
     original_create = manager.create_session
 
     def create_session(*call_args, **call_kwargs):
-        # The UI does not send this field, so an explicit None must not win.
+        # The UI does not send these fields, so an explicit None must not win.
         if not call_kwargs.get('no_response_timeout_ms'):
             call_kwargs['no_response_timeout_ms'] = args.no_response_timeout_ms
+        if args.round_max_ms and not call_kwargs.get('round_observation_max_ms'):
+            call_kwargs['round_observation_max_ms'] = args.round_max_ms
         return original_create(*call_args, **call_kwargs)
 
     manager.create_session = create_session
 
-    print(json.dumps({'ready': True, 'port': args.port, 'output': args.output}), flush=True)
+    print(json.dumps({'ready': True, 'port': args.port, 'output': args.output,
+                      'profile': args.profile}), flush=True)
 
     import uvicorn
     uvicorn.run(api.app, host=args.host, port=args.port, log_level='warning')

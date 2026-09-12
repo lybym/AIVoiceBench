@@ -17,7 +17,10 @@
 | GET | /api/runs、/api/runs/{run_id} | 历史/详情：analysis_id、stages、transcript、speaker_segments、diarization_scope、attribution、阶段数据与 report_md |
 | GET | /api/runs/{run_id}/audio | 标准化音频回放 |
 | POST | /api/runs/{run_id}/resume | JSON {"retry_asr": true} 显式重试 ASR；已完成 ASR/report 不重复调用 |
-| GET / POST | /api/models | 脱敏配置读取/版本化更新；保存不调用服务，密钥不回传 |
+| GET / POST | /api/models | 脱敏配置读取/版本化更新；保存不调用服务，密钥不回传；保存后语音测试预检与下一轮运行使用新配置 |
+| GET | /api/voice-test/capabilities/{mode} | 按模式返回所需项/缺少项/浏览器需自查项；`connectivity: not_probed`（不发起付费探测），不含凭据、地址或签名 URL |
+| POST | /api/voice-test/sessions/{id}/start | 启动一轮；能力预检不通过时返回 409 并指名缺少项，**不发起任何 LLM/TTS/ASR 调用**（控制 socket 的 `start` 同样返回 `blocked`） |
+| POST | /api/voice-test/sessions/{id}/device-audio | 显式降级路径的整轮录音上传；先解码转换为 canonical 16 kHz mono PCM16 WAV 再调用 File ASR；非法媒体 422、识别失败/空结果 502，均记录明确状态且不推进下一轮 |
 
 上传上限 1 GiB、最长 30 分钟为实现限制。云 ASR 需要路由、凭据及音频 PUT/GET/host 配置，不能只填 Key；ASR-native 聚类需绑定 diarization 路由且服务返回标签。普通 Web 无角色编辑入口，缺角色时 turns/timeline/metrics 弃权。
 

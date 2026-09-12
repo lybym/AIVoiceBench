@@ -32,7 +32,7 @@ main_baseline: 3877b3d60ca0a3e8bb8f0c80c7d8ba676b2a36d8
 - **实现建议**（第 9 节索引的架构/技术文档、schema、Issue）：如何实现。具体函数名、字段名、拆分方式、调用次数、Provider 复用方式都属于实现选择，可以由开发者在技术文档中演进，**不能自动成为 PRD 没有提出的产品门槛**。典型误用：把“必须调用两次服务”当成产品要求（复用一次 ASR 原生输出即可满足同一需求）；把某个具体字段名当成验收条件。
 - **实现状态**：截至某次审计或某个分支的事实，必须给出代码入口、测试和 commit/PR/tag 依据。
 
-本文中的代码状态最初以 **main `c612d36` / `v0.2.0-alpha.2`** 为审计基线（2026-09-11），随后按 **main `8d01ef2` / `v0.3.2`** 复核，并在 2026-09-12 刷新到 **main `3877b3d`**。未合并分支单独标注，不能写成 main 已实现；发布和软件验证也不能替代真实验收。历史条目与固定到旧提交的代码/测试引用按当时基线保留，便于复核。
+本文中的代码状态最初以 **main `c612d36` / `v0.2.0-alpha.2`** 为审计基线（2026-09-11），随后按 **main `8d01ef2` / `v0.3.2`** 复核，并在 2026-09-12 刷新到 **main `3877b3d`**，其后按 **main `dc0bcae`（`v0.4.0-alpha.2` 之后的集成基线）** 复核。未合并分支单独标注，不能写成 main 已实现；发布和软件验证也不能替代真实验收。历史条目与固定到旧提交的代码/测试引用按当时基线保留，便于复核。
 
 ### 代码位于哪里
 
@@ -155,9 +155,9 @@ Windows EXE/安装包、集群、复杂云端 Control Plane 不属于当前交�
 | PRD-F018 | 版本/设备/供应商 Compare | P2 | ⬜ planned | 无产品比较工作流 |
 | PRD-F019 | Frozen Golden Voice 资产 | P1（M2 核心） | ⬜ planned | 暂停草稿不算可交付能力 |
 | PRD-F020 | Active Voice Test Controller / Fixed Runner | P1（M2 核心） | 🟡 partial | Runner 基础已有，真实多轮控制未完成 |
-| PRD-F021 | Free / Exploratory Voice Test Agent | P1（M3 核心） | 🟡 partial | 正式链路 Mic → VAD + Streaming ASR → Observation → LLM Decision → TTS → Playback 已在软件与受控输入浏览器测试中打通（含降级标注与空回答处置）；真实服务、真实设备、预算与 Coverage 未完成 |
+| PRD-F021 | Free / Exploratory Voice Test Agent | P1（M3 核心） | 🟡 partial | 正式链路 Mic → VAD + Streaming ASR → Observation → LLM Decision → TTS → Playback 已在软件与受控输入浏览器测试中打通（含启动前能力预检强制、降级显式标注与失败处置、空回答处置）；真实服务、真实设备、预算与 Coverage 未完成 |
 | PRD-F022 | 专业 HIL / 同步校准 / Remote Station | P3 | ⏸ deferred | Station 代码保留，非当前 MVP 门槛 |
-| PRD-F023 | 基础本地播放与麦克风观察 | P1（M2 核心） | 🟡 partial | 播放、VAD、停止、最小执行记录与连续采集（AudioWorklet → 二进制音频通道 → Streaming ASR）已具备并有浏览器验证；真实本地音频链路、设备选择与 Barge-in 未验收 |
+| PRD-F023 | 基础本地播放与麦克风观察 | P1（M2 核心） | 🟡 partial | 播放、时域 RMS 判停（噪声底自适应 + 轮次上限）、停止、最小执行记录与连续采集（AudioWorklet → 二进制音频通道 → Streaming ASR）已具备并有浏览器验证；真实本地音频链路、设备选择与 Barge-in 未验收 |
 | PRD-F024 | 执行与外部录音分析 Run 关联 | P1（M2 手动 / M4 自动） | ⬜ planned | 双 Run 引用、录音时间映射及自动匹配待实现 |
 
 ### MVP 范围与排程的关系
@@ -452,12 +452,15 @@ Browser Mic → 持续采集 → PCM chunks → Backend → StreamingASRProvider
 - [x] Mic → VAD + Streaming ASR → Observation → LLM Decision → Action → TTS/Playback 循环保留 Trace（main PR #66，software_verified + container_verified + browser_verified）：模型/提示版本沿用既有 Agent 调用记录，观察引用与来源（`browser_vad` / provider / combined）、决策理由、实际音频与停止原因进入执行记录；真实设备未验收。
 - [x] **实时性要求**（main PR #66）：不得要求“收到完整 final 才认为设备开始回答”——VAD 先发现讲话、Streaming ASR 随后给文字；partial 只记录/展示/留痕，Agent 生成下一轮只使用 final，不因 partial 波动触发 LLM。
 - [x] 设备回答文本进入 conversation history、Agent context 与 execution trace，并标记为 **Control Evidence**；空 transcript 记为“未观察到回答”并按会话策略暂停或继续，**不会**被当作有效回答自动继续。
-- [x] 兼容/降级（main PR #66）：整轮录音 + File ASR 作为**显式标注的 fallback**（`capture_mode` / `resolved_capture_mode` / `capture_fallback_reason`），在 UI、play 消息与执行记录中都标注为降级；不存在静默切换。
+- [x] 兼容/降级（main PR #66，本版收紧）：整轮录音 + File ASR 作为**显式标注的 fallback**（`capture_mode` / `resolved_capture_mode` / `capture_fallback_reason`），在 UI、play 消息与执行记录中都标注为降级。**本版起不再存在任何自动降级**：`auto` 只解析为 Streaming ASR，缺少 Streaming ASR 时明确拒绝启动；`turn_file` 只有操作者显式选择时才使用。软件与受控浏览器验收覆盖。
+- [x] **启动前能力预检并由后端强制**（本版，software_verified + browser_verified）：`GET /api/voice-test/capabilities/{mode}` 返回按模式所需的 TTS / 对话模型 / Streaming ASR / File ASR（及其实际需要的音频发布条件）与浏览器需自行检查的能力；预检**默认不发起付费探测**，响应与日志不含凭据、服务地址或签名 URL。同一检查在 `POST .../start` 与控制 socket 的 `start` 上强制生效：缺少项时拒绝启动、指名缺少项、`provider_calls` 保持全 0（未发起任何 LLM/TTS/ASR 调用），不会先抓麦克风再等待。Fixed Mode 复用已有音频时不要求 ASR 或 LLM，只在需要新合成时要求 TTS。**“配置存在”不等于“服务已连通”**，真实鉴权/网络失败仍在真实调用时记录。
+- [x] **降级路径的真实转换、转写提取与失败状态**（本版，software_verified + browser_verified）：浏览器上传实际录到的容器，后端先校验签名与大小，再用 FFmpeg 解码为 canonical 16 kHz mono PCM16 WAV 并做 canonical QA，然后才调用 File ASR；文本取自归一化 segments。非法媒体、识别失败与空结果分别记录为 `invalid_audio` / `asr_failed`（HTTP 422/502），**不包装成“成功的空 transcript”、不推进下一轮**；转写只来自服务端捕获记录，浏览器自报的 transcript 不被信任。
+- [x] **判停判据与轮次控制上限**（本版，software_verified + browser_verified）：VAD 使用**时域**线性 PCM RMS（修正此前读频域并除以 255 的错误判据），阈值由本机噪声底抬高；残留非零噪声仍能判定回答结束并推进；一旦检测到疑似讲话，无回答超时不再适用，改由轮次上限显式退出（`reason: cannot_confirm_response_end`，关闭原因 `observation_end_unconfirmed`），**不记为回答完成**。这些等待是控制守卫，不构成产品性能 SLA。
 - [ ] Coverage 区分计划、已尝试、已观察及待正式测量；ASR 不确定、无 final、模型/工具失败、预算耗尽或用户停止均有明确处置，不能把控制观察或 Agent 自评当作正式通过。（失败类别与停止原因已作为一等状态；Coverage 与预算尚未实现）
 - [ ] 设备回复作为被测数据，不能改写 Harness 的目标、工具权限、预算和禁止行为。
 - [ ] M3 保存候选问题与完整轨迹供离线分析/复核；M5 基于 Measurement Evidence 和人工确认最小化用例，冻结音频/策略后交给固定 Runner 复测。探索输出不能直接成为 Golden ground truth。
 
-依据：既有路线图探索目标与用户补充；main PR #66 已实现最小实时链路并保留显式 File ASR fallback，但真实云、真实设备、预算与 Coverage 仍未验收。
+依据：既有路线图探索目标与用户补充；main PR #66 已实现最小实时链路并保留显式 File ASR fallback；本版把预检门禁、时域判停与降级失败处置收紧为**后端强制**行为，真实云、真实设备、预算与 Coverage 仍未验收。
 
 ### PRD-F022 — 专业 HIL / Station
 
@@ -614,6 +617,7 @@ M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程�
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
+| 1.3.1 | 2026-09-12 | **集成与候选制品一致性**：把此前只存在于本地分支（原修复提交 `6c34c74`）的语音测试修复重新表达并集成到 Streaming ASR 架构之上，并让每个模式在启动前真正被后端预检门禁约束。① 修正 VAD 判据为**时域线性 PCM RMS**（此前读频域 bin 并除以 255，非零噪声可使一轮永不结束），阈值由本机噪声底抬高，残留非零噪声仍能判定回答结束并推进；② 检测到疑似讲话后无回答超时不再适用，改由**轮次上限**显式退出（`cannot_confirm_response_end` / `observation_end_unconfirmed`），不记为回答完成；③ 新增 `GET /api/voice-test/capabilities/{mode}` 并在 `POST .../start` 与控制 socket 的 `start` **强制**同一预检：缺少项时指名拒绝、`provider_calls` 保持全 0，不先抓麦克风；默认不发起付费探测，响应/日志不含凭据、地址或签名 URL；④ **取消静默降级**：`auto` 只解析为 Streaming ASR，`turn_file` 需操作者显式选择；⑤ 降级上传先解码转换为 canonical 16 kHz mono PCM16 WAV 再调用 File ASR，文本取自归一化 segments，非法媒体/识别失败/空结果分别记录为 `invalid_audio` / `asr_failed` 且不推进下一轮；⑥ 停止后迟到的模型结果不再合成或播放；⑦ Fixed Mode 复用已有音频时不要求 ASR/LLM。同步 [Streaming ASR 边界](24-streaming-asr.md)、[Docker/API](20-docker-api.md) 与 [工作日志](06-work-log.md)。版本号因候选镜像身份与 alpha.2 区分而提升为 `0.4.0-alpha.3`；真实云、真实设备与预算/Coverage 仍未验收 | 项目所有者指出：发布的 `v0.4.0-alpha.2` 镜像与本地修复提交没有收敛，不能用镜像构建成功、版本号正确或旧 CI 通过替代“目标行为已进入发布包”的证明；并要求预检必须由后端真正执行，而不是只增加查询接口 |
 | 1.3.0 | 2026-09-11 | 确立 **ASR 路线分叉**：Recording Analysis 用 **FileASRProvider**（完整录音一次识别 → Measurement Evidence，保留签名 URL 音频发布）；Active Voice Test 用 **StreamingASRProvider**（open session → push chunk → partial/final → close/cancel → Control Evidence）。PRD-F005 明确限定为 File ASR 契约；PRD-F016 改为按生命周期区分的 File/Streaming 两个家族并给出统一事件模型与来源标注；PRD-F021 明确正式链路为 Mic → VAD + Streaming ASR → Observation → LLM Decision → TTS → Playback，「整轮录音 + File ASR」降为显式标注的 fallback（partial 不触发 LLM、不得要求 final 才判定开始回答、空 transcript 不得当回答）；PRD-F023 明确浏览器连续采集（AudioWorklet，目标 16 kHz/mono/PCM16）经后端转发给 Streaming ASR，浏览器不持有长期凭据；PRD-F020 明确 Fixed Mode 轮次推进只依赖 VAD、ASR 不可用 ≠ Fixed Test 不可用。同步更新第 2 节产品定义、第 3 节状态与第 8 节 M2/M3 排程，并刷新 PRD 基线与版本号。**本行确立目标架构；同一次变更实现了 Streaming ASR 骨架**（提供商边界、火山适配器、浏览器连续采集、二进制音频通道、自由模式最小闭环、降级标注、执行记录扩展），全部标记为 software_verified / browser_verified；**Streaming ASR 真实云调用、真实云与实体设备验收、预算与 Coverage 保持 pending，未升级任何真实验收状态** | 项目所有者要求修正 Free Voice Test 的 ASR 技术路线：不再以“先录完整 WAV → 上传 → File ASR”为正式主路径，改为经后端的实时 Streaming ASR，同时保留 Recording Analysis 的 File ASR 路线与双证据链隔离 |
 | 1.2.3 | 2026-09-11 | ① 实现状态描述校准：按 main `8d01ef2` / `v0.3.2` 修正仍标注为“本分支/未合并”的已集成实现状态、ImportRun 与 Judge/Findings 的真实边界、TTS 接入状态，以及报告产物与运行配置说明；② 固定对话控制可靠性加固（PRD-F020/F023）：停止本地即时生效且可重复、迟到/重复/已停止事件不重复推进、无回答超时与回答结束分开并记录未观察到回答、每轮最小控制记录（区分服务端播放指令与浏览器播放报告）、音频/连接/会话异常以明确原因退出，并修复已完成的合成状态被迟到的进度轮询覆盖。产品范围、功能优先级、指标定义与第 7 节真实验收门槛均不变、未降级；不改变主动语音排程 | 项目所有者要求把过期文档对齐当前 main，并修复固定对话链路中停止不生效、超时被当作回答、无执行记录与异常悬挂 |
 | 1.2.2 | 2026-09-11 | 记录 Issue #62 的固定语音生成可见进度：会话快照、实际短句状态轮询、重复提交保护与失败恢复；不升级主动测试或真实设备验收状态 | 项目所有者反馈生成语音缺少进度提示 |

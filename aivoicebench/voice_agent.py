@@ -55,11 +55,13 @@ def generate_next_phrase(session, history, device_text, output_root, manager, tu
     Returns (text, audio_path) or None if the agent decided to stop.
     Raises on provider failure or invalid output.
     """
-    from .model_settings import ModelSettings
-    from .llm import LLMInvocation, _utc_now
-
-    settings = ModelSettings(output_root / '.model-settings')
-    doc, providers = settings.capture()
+    # The session owns the provider set the capability precheck admitted this run
+    # against. Do not re-read settings mid-run: a configuration change must not
+    # swap the model under an active conversation.
+    providers = getattr(session, 'config_providers', None)
+    if providers is None:
+        from .model_settings import ModelSettings
+        _, providers = ModelSettings(output_root / '.model-settings').capture()
 
     if not providers or not providers.judge:
         raise ProviderFailure('No LLM provider configured for the voice test agent')
@@ -84,6 +86,7 @@ def generate_next_phrase(session, history, device_text, output_root, manager, tu
     # Use complete_raw to bypass JudgeResult validation — the agent uses its own
     # output schema ({action, text, reason}), not the Judge's ({decision, score, ...}).
     if hasattr(provider, 'complete_raw'):
+        manager.note_provider_call(session, 'llm')
         raw_text, invocation = provider.complete_raw(AGENT_SYSTEM_PROMPT, user_prompt)
     else:
         # UnavailableLLMProvider or mock — no raw mode available
@@ -95,16 +98,26 @@ def generate_next_phrase(session, history, device_text, output_root, manager, tu
     except (ValueError, TypeError) as error:
         raise ProviderFailure(f'Voice agent output is not valid JSON: {error}') from None
 
-    action = parsed.get('action', 'speak')
+    action = parsed.get('action')
     text = parsed.get('text', '')
 
     if action == 'stop':
         return None
 
+    if action != 'speak':
+        # An unknown action must not be silently treated as "speak".
+        raise ProviderFailure('Voice agent returned an unsupported action')
+
     if not text or not text.strip():
         return None
 
     text = text.strip()
+
+    # A Stop may arrive while the non-cancellable provider request is in flight.
+    # Its late result remains provider-side evidence only: never synthesize or
+    # play it for a stopped run.
+    if not getattr(session, 'is_running', True):
+        raise ProviderFailure('Voice test stopped while waiting for the model')
 
     # Generate TTS for the agent's phrase
     audio_result = manager.synthesize_text(session.session_id, text, turn_index)

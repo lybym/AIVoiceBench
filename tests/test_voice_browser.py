@@ -517,13 +517,19 @@ class BrowserControlTestCase(unittest.TestCase):
         self.wait_for_play_count(2)
         session_id = self.state()['session_id']
         first_turn_id = self.state()['turn_id']
+        first_seq = self.state()['seq']
 
         self.page.click('#vt-stop-fixed')
         self.wait_for_status('已停止')
         self.page.wait_for_timeout(400)
 
         self.page.click('#vt-start-fixed')
-        self.wait_for_play_count(1)
+        # A start first runs the capability precheck and the microphone request,
+        # so wait for the *new* run (its own sequence number) rather than for a
+        # counter that still belongs to the previous run.
+        self.page.wait_for_function(
+            'n => { const s = window.VT.controlState();'
+            ' return !!s && s.seq > n && s.stats.playReceived >= 1; }', arg=first_seq)
         second = self.state()
         self.assertEqual(second['stats']['playReceived'], 1)  # counters belong to the new run
         self.assertNotEqual(second['turn_id'], first_turn_id)
