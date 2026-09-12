@@ -133,7 +133,8 @@ jobs:
           # page can be driven; the image's default command is unchanged.
           docker exec -d acceptance python /app/tests/browser_server.py \
             --host 0.0.0.0 --port 8099 --output /data/output/acceptance \
-            --first-phrase-ms 2500 --phrase-ms 250 --no-response-timeout-ms 2500
+            --first-phrase-ms 2500 --phrase-ms 250 --no-response-timeout-ms 2500 \
+            --free-mode
           for _ in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8099/health > /dev/null; then break; fi
             sleep 1
