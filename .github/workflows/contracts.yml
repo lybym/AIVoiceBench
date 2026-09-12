@@ -45,3 +45,9 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       - name: Browser acceptance (controlled TTS + synthetic microphone)
         run: python -m unittest tests.test_voice_browser -v
+      # The integration acceptance varies *which* capability each mode has, so it
+      # starts its own controlled server per capability profile. It is the case
+      # set that proves a missing capability really refuses the run rather than
+      # being reported by the UI only.
+      - name: Integration acceptance (per-capability profiles, real page)
+        run: python -m unittest tests.test_voice_integration_acceptance -v

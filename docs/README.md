@@ -1,6 +1,6 @@
 # 文档导航
 
-2026-09-12 已按 main `3877b3d` 核对，并准备 `v0.4.0-alpha.2` 预览发布；`v0.3.2` 仍是正式稳定版。完整 M1、真实云 Streaming ASR 与实体设备验收均待完成。先看 [v0.4.0-alpha.2 发布说明](releases/0.4.0-alpha.2.md)、[总体架构](01-system-architecture.md)、[Roadmap](04-development-roadmap.md)、[录音主链配置](23-recording-backbone.md) 和 PRD 的实现状态。
+2026-09-12 已按 main `dc0bcae` 核对，并准备 `v0.4.0-alpha.3` 候选预览版（集成与候选制品一致性修复）；`v0.3.2` 仍是正式稳定版。完整 M1、真实云 Streaming ASR 与实体设备验收均待完成。先看 [v0.4.0-alpha.3 发布说明](releases/0.4.0-alpha.3.md)、[Streaming ASR 边界](24-streaming-asr.md)、[总体架构](01-system-architecture.md)、[Roadmap](04-development-roadmap.md) 和 PRD 的实现状态。
 
 - **[产品需求 PRD](PRD.md)**：审阅/修改功能、优先级、验收和代码实现标识。
 - [产品文档中心](product/README.md)：旧来源归集映射、冲突处置、集中历史快照。

@@ -70,6 +70,38 @@ Browser VAD 与 Streaming ASR **并行存在**，职责不同：
 **轮次开始不得依赖 final transcript**：VAD 先发现讲话，ASR 随后给文字。Fixed Mode 的推进
 只依赖 VAD；Streaming ASR 是增强 Observation。Partial 只记录/展示/留痕，不触发 LLM。
 
+### 4.1 判据是时域 RMS，阈值由噪声底抬高
+
+VAD 使用 `AnalyserNode.getFloatTimeDomainData` 计算**线性 PCM RMS**（−1..1）。此前的实现
+读取频域 bin 并除以 255：那不是振幅，绝对阈值因此没有意义——非零环境噪声可以让一轮永远
+无法结束，安静房间也可能看起来像讲话。
+
+- 每轮开始有 1200 ms 校准窗口，收集安静样本（RMS < 0.05），取 80 分位作为噪声底，
+  下限为绝对底 `0.004`；起点阈值 = `max(0.012, 底 × 3)`，结束阈值 = `max(0.0072, 底 × 1.8)`。
+- **校准不暂停检测**：设备可能立刻回答，静默窗口会丢掉讲话开始。
+- 安静样本不足 8 个时**不虚构**噪声底，保留绝对底，并在 `vad_diagnostics` 中标注
+  `baseline_basis: absolute_floor`。这些阈值是**控制判据，不是声学测量**。
+- 一旦检测到疑似讲话，无回答超时不再适用；改为**轮次上限**（默认 90 s，可由会话
+  `round_observation_max_ms` 收紧）。达到上限时上报
+  `observation_timeout`（`reason: cannot_confirm_response_end`），关闭原因为
+  `observation_end_unconfirmed`，**不记为回答完成、不伪造回答结束**。
+- 停止、迟到事件与取消清理行为不变：本地停止即时生效，迟到 `ended` 不恢复监听或推进。
+
+### 4.2 观察方式在启动前由后端强制判定
+
+- `GET /api/voice-test/capabilities/{mode}` 返回该模式所需项、缺少项与浏览器需自行检查的
+  能力；**默认不发起付费探测**（`connectivity: not_probed`），响应与日志不含凭据、服务地址
+  或签名 URL。
+- 同一检查在 `POST /api/voice-test/sessions/{id}/start` 与控制 socket 的 `start` 消息上
+  **强制生效**：缺少项时拒绝启动、指名缺少项、不发起任何 LLM/TTS/ASR 调用。
+- 自由模式的 `capture_mode=auto` **只解析为 Streaming ASR**；缺少 Streaming ASR 时明确拒绝，
+  不静默切换。`turn_file`（整轮录音 + File ASR）只有操作者显式选择时使用，并在 UI、play
+  消息与执行记录中标注为降级。Streaming ASR **不需要** File ASR 的 Signed URL 音频发布。
+- 降级上传帧：浏览器上传实际录到的容器，后端先校验签名/大小，再用 FFmpeg 解码为
+  canonical 16 kHz mono PCM16 WAV 并做 canonical QA，然后才调用 File ASR；文本取自归一化
+  `segments`。非法媒体、识别失败、空结果分别记录为 `invalid_audio` / `asr_failed`，不包装成
+  “成功的空 transcript”，也不推进下一轮。转写只能来自服务端捕获记录。
+
 ## 5. 火山引擎契约（依据官方文档核对）
 
 以下为截至 2026-09-11 从火山引擎文档中心在线页面核对的结论（页面 ID 见下）。

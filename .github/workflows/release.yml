@@ -124,22 +124,42 @@ jobs:
           set -euo pipefail
           TAG="${{ github.event.inputs.tag }}"
           docker volume create acceptance-data
-          docker run -d --name acceptance -p 127.0.0.1:8099:8099 \
+          docker run -d --name acceptance -p 127.0.0.1:8099-8104:8099-8104 \
             -v acceptance-data:/data/output "${{ env.IMAGE_NAME }}:${TAG}"
           docker cp tests acceptance:/app/tests
           docker exec acceptance python -m pip install --quiet httpx
           docker exec acceptance python /app/tests/container_acceptance.py
-          # Serve the image's own UI with a test-only controlled TTS so the real
-          # page can be driven; the image's default command is unchanged.
+          # Serve the image's own UI with test-only controlled providers so the
+          # real page can be driven; the image's default command is unchanged.
+          # One server per capability profile: the integration acceptance varies
+          # *which* capability is missing, so it cannot share a single server.
           docker exec -d acceptance python /app/tests/browser_server.py \
             --host 0.0.0.0 --port 8099 --output /data/output/acceptance \
             --first-phrase-ms 2500 --phrase-ms 250 --no-response-timeout-ms 2500 \
             --free-mode
-          for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8099/health > /dev/null; then break; fi
-            sleep 1
+          docker exec -d acceptance python /app/tests/browser_server.py \
+            --host 0.0.0.0 --port 8100 --output /data/output/acc-full \
+            --first-phrase-ms 1200 --phrase-ms 400 --free-max-turns 3 --round-max-ms 6000 \
+            --profile full
+          docker exec -d acceptance python /app/tests/browser_server.py \
+            --host 0.0.0.0 --port 8101 --output /data/output/acc-streaming-only \
+            --first-phrase-ms 1200 --phrase-ms 400 --free-max-turns 3 --profile streaming-only
+          docker exec -d acceptance python /app/tests/browser_server.py \
+            --host 0.0.0.0 --port 8102 --output /data/output/acc-no-asr \
+            --first-phrase-ms 1200 --phrase-ms 400 --free-max-turns 3 --profile no-asr
+          docker exec -d acceptance python /app/tests/browser_server.py \
+            --host 0.0.0.0 --port 8103 --output /data/output/acc-turn-file \
+            --first-phrase-ms 1200 --phrase-ms 400 --free-max-turns 3 --profile turn-file
+          docker exec -d acceptance python /app/tests/browser_server.py \
+            --host 0.0.0.0 --port 8104 --output /data/output/acc-turn-file-fail \
+            --first-phrase-ms 1200 --phrase-ms 400 --free-max-turns 3 --profile turn-file-fail
+          for port in 8099 8100 8101 8102 8103 8104; do
+            for _ in $(seq 1 60); do
+              if curl -fsS "http://127.0.0.1:${port}/health" > /dev/null; then break; fi
+              sleep 1
+            done
+            curl -fsS "http://127.0.0.1:${port}/health"
           done
-          curl -fsS http://127.0.0.1:8099/health
 
       - name: Browser acceptance against the candidate image
         env:
@@ -151,6 +171,19 @@ jobs:
           python -m pip install --quiet playwright
           python -m playwright install --with-deps chromium
           python -m unittest tests.test_voice_browser -v
+
+      - name: Integration acceptance against the candidate image
+        env:
+          VT_REQUIRE_BROWSER: '1'
+          # Each profile server runs inside the candidate image; the tests drive
+          # the image's own page, routes and control layer.
+          VT_ACCEPTANCE_PROFILE_BASES: >-
+            {"full":"http://127.0.0.1:8100","streaming-only":"http://127.0.0.1:8101",
+             "no-asr":"http://127.0.0.1:8102","turn-file":"http://127.0.0.1:8103",
+             "turn-file-fail":"http://127.0.0.1:8104"}
+        run: |
+          set -euo pipefail
+          python -m unittest tests.test_voice_integration_acceptance -v
 
       - name: Stop the acceptance container
         if: always()
