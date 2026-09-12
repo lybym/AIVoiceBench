@@ -633,6 +633,23 @@
   在候选镜像内按能力档启动受控服务并按 `VT_ACCEPTANCE_PROFILE_BASES` 运行集成验收的步骤。
   同步 PRD（F021/F023 与本轮变更行）、[Streaming ASR 边界](24-streaming-asr.md)、
   [Docker/API](20-docker-api.md) 与文档导航。
+- **候选制品验证（同一候选提交，镜像内运行）：** 候选功能提交
+  `f924ac24d11d5cc6c35fd6960c4c40aad3224d40`（本 PR 唯一功能提交，分支
+  `fix/free-voice-integration`，PR #70，未合并未发布）。从该提交构建
+  `aivoicebench:v0.4.0-alpha.3`，`org.opencontainers.image.revision` 标签等于该 SHA，
+  镜像 ID `sha256:433e2ac0a827691a6a38d2cd1c113691bdd3298beaf702e8f693406401da597d`；
+  镜像内代码检查（能力预检、时域 RMS 且旧频域判据已移除、轮次上限、降级签名/FFmpeg 转换/
+  segments 取词、原子写记录等 24 项标记）全部为真。镜像内运行：16 项容器验收、9 项浏览器
+  回归、8 项定向验收 A～E 全部通过；导出为
+  `aivoicebench-v0.4.0-alpha.3-candidate-f924ac2.tar.gz`
+  （SHA256 `cf48d1872117de30646df09306dd8972a36bd87e88204d31b7b67e45d378b642`）后删除本地
+  标签并 `docker load` 重新装载，镜像 ID 不变；用**独立容器** `avb-candidate-8003-reload`
+  与**独立数据卷** `avb-candidate-reload-data` 在 127.0.0.1:8003 重跑关键验收全部通过，
+  能力预检/缺项拒绝的原始响应与首轮逐字段一致。验收容器未挂载宿主机源码（仅 `docker cp`
+  测试驱动）。8000/8001/8002 实例与数据、六个已生成固定话术音频、百炼与火山配置、已停止
+  会话历史均未改动；未重新合成语音、未打印或提交密钥。
 - **限制：** 无真实云凭据，未做任何真实 Streaming ASR / File ASR 调用；无实体设备、真实扬声器
   与真实麦克风；浏览器验收使用合成麦克风与脚本化供应商。真实云三轮、真实标签契约、预算与
-  Coverage 仍待完成，未升级任何真实验收状态。
+  Coverage 仍待完成，未升级任何真实验收状态。真实 ASR 测试仍缺的最小条件：云 Streaming ASR
+  与 File ASR 的可用凭据（含新控制台鉴权头与资源 ID），以及一台可被扬声器驱动、麦克风回采的
+  实体 AI 设备。
