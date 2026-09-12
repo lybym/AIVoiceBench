@@ -231,6 +231,8 @@ class FreeModeStreamingTests(unittest.TestCase):
             self.assertEqual(result['type'], 'capture_result')
             self.assertEqual(result['final_text'], '这是设备的回答')
             self.assertFalse(result['empty_transcript'])
+            self.assertEqual(self.provider.sessions[0].state, 'closed',
+                             'a completed capture must close its provider session')
             # Partial text is pushed to the page while the turn is still running.
             self.assertTrue([m for m in result['seen'] if m['type'] == 'partial_transcript'],
                             result['seen'])
@@ -277,6 +279,7 @@ class FreeModeStreamingTests(unittest.TestCase):
         self.assertIn('final_transcript', kinds)
         text_events = [e for e in record['events'] if e['kind'] == 'final_transcript']
         self.assertEqual(text_events[0]['detail']['evidence_scope'], 'control_evidence')
+        self.assertIn('asr_session_closed', kinds)
 
     def test_streaming_capture_is_summarised_in_the_record(self):
         session_id = self.create_free_session()
@@ -390,6 +393,50 @@ class FreeModeStreamingTests(unittest.TestCase):
         self.assertEqual(ordering['gap'], 1)
         self.assertEqual(ordering['duplicate'], 1)
         self.assertEqual(ordering['late'], 1)
+        self.assertEqual(len(self.provider.sessions[0].received), 3,
+                         'duplicate and late PCM must not be replayed into ASR')
+
+    def test_audio_disconnect_cancels_provider_and_releases_capture(self):
+        session_id = self.create_free_session()
+        with self.start_control(session_id) as control:
+            control.send_json({'type': 'start'})
+            control.receive_json()
+            play = control.receive_json()
+            with self.audio.websocket_connect(
+                    f'/api/voice-test/sessions/{session_id}/audio') as ws:
+                ws.send_json({'type': 'capture_started', 'turn_id': play['turn_id'],
+                              'sample_rate': 16000, 'channels': 1, 'bits': 16})
+                self.assertEqual(ws.receive_json()['type'], 'capture_ready')
+                ws.send_bytes((0).to_bytes(4, 'big') + b'\x01\x02' * 1600)
+                # Leaving the context simulates the browser/audio socket going away
+                # without a capture_stopped message.
+
+        self.assertEqual(self.provider.sessions[0].state, 'cancelled')
+        session = self.manager.get_session(session_id)
+        self.assertIsNone(session.capture)
+        self.assertEqual(session.last_capture_result['status'], 'cancelled')
+        self.assertEqual(session.last_capture_result['failure'], 'stream_disconnected')
+
+    def test_second_audio_socket_cannot_replace_an_active_capture(self):
+        session_id = self.create_free_session()
+        with self.start_control(session_id) as control:
+            control.send_json({'type': 'start'})
+            control.receive_json()
+            play = control.receive_json()
+            endpoint = f'/api/voice-test/sessions/{session_id}/audio'
+            hello = {'type': 'capture_started', 'turn_id': play['turn_id'],
+                     'sample_rate': 16000, 'channels': 1, 'bits': 16}
+            with self.audio.websocket_connect(endpoint) as first:
+                first.send_json(hello)
+                self.assertEqual(first.receive_json()['type'], 'capture_ready')
+                with self.audio.websocket_connect(endpoint) as second:
+                    second.send_json(hello)
+                    refused = second.receive_json()
+                    self.assertEqual(refused['type'], 'capture_error')
+                    self.assertIn('already active', refused['note'])
+                self.assertEqual(len(self.provider.sessions), 1)
+
+        self.assertEqual(self.provider.sessions[0].state, 'cancelled')
 
     def test_capture_result_without_a_capture_is_ignored(self):
         session_id = self.create_free_session()

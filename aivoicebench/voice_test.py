@@ -626,6 +626,8 @@ class VoiceTestManager:
     def begin_capture(self, session, *, turn_id, stream_id, sample_rate, channels, bits,
                       mode=CAPTURE_MODE_STREAMING, asr=None, fallback_reason=None):
         """Attach one streaming capture to the current free-mode turn."""
+        if session.capture is not None and session.capture.status == 'active':
+            raise ValueError('A capture is already active for this session')
         capture = VoiceTestCapture(turn_id=turn_id, stream_id=stream_id,
                                    sample_rate=sample_rate, channels=channels, bits=bits,
                                    mode=mode, asr=asr, fallback_reason=fallback_reason)
@@ -637,9 +639,9 @@ class VoiceTestManager:
             'fallback_reason': fallback_reason})
         return capture
 
-    def note_streaming_events(self, session, events):
+    def note_streaming_events(self, session, events, *, capture=None):
         """Fold unified streaming events into the control trace (never raw PCM)."""
-        capture = session.capture
+        capture = capture or session.capture
         if capture is None:
             return []
         applied = []
@@ -672,9 +674,9 @@ class VoiceTestManager:
             applied.append(event)
         return applied
 
-    def finish_capture(self, session, *, status='finished', failure=None):
+    def finish_capture(self, session, *, capture=None, status='finished', failure=None):
         """Close the capture and record what the control layer learned."""
-        capture = session.capture
+        capture = capture or session.capture
         if capture is None:
             return None
         capture.status = status
@@ -695,7 +697,8 @@ class VoiceTestManager:
                                   'audio_bytes': capture.audio_bytes,
                                   'frame_ordering': summary['frame_ordering'],
                                   'evidence_scope': STREAMING_EVIDENCE_SCOPE})
-        session.capture = None
+        if session.capture is capture:
+            session.capture = None
         return capture
 
     def open_turn(self, session, *, text, audio_path=None, audio_url=None,
@@ -812,6 +815,9 @@ class VoiceTestManager:
         session.stop_reason = None
         session.turns = []
         session.awaiting_turn_id = None
+        session.capture = None
+        session.last_capture_result = None
+        session.streaming_asr_error = None
         session.started_at = utc_now()
         session.finished_at = None
         self.record_event(session, 'session_started', detail={

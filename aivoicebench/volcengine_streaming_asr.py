@@ -388,11 +388,25 @@ class VolcengineStreamingSession:
                         'end_window_size': self.config['end_window_size'],
                         'force_to_speech_time': self.config['force_to_speech_time']},
         }
-        await connection.send(build_full_client_request(payload, compression=self.compression))
-        self._reader = asyncio.create_task(self._read_loop())
-        if self.retain_audio:
-            self._wave = wave.open(str(self.audio_path), 'wb')
-            self._wave.setparams((CHANNELS, BITS // 8, SAMPLE_RATE, 0, 'NONE', 'not compressed'))
+        request_sent = False
+        try:
+            await connection.send(build_full_client_request(
+                payload, compression=self.compression))
+            request_sent = True
+            self._reader = asyncio.create_task(self._read_loop())
+            if self.retain_audio:
+                self._wave = wave.open(str(self.audio_path), 'wb')
+                self._wave.setparams(
+                    (CHANNELS, BITS // 8, SAMPLE_RATE, 0, 'NONE', 'not compressed'))
+        except Exception as error:  # noqa: BLE001 - close partial startup deterministically
+            category = 'audio_capture_failed' if request_sent else 'stream_open_failed'
+            self._failure = self._failure or category
+            self._record(StreamingASREvent(
+                kind=EVENT_ERROR, source=SOURCE_PROVIDER, error=category,
+                detail={'phase': 'initialise', 'error_type': type(error).__name__}))
+            await self.cancel(reason='stream_initialise_failed')
+            raise StreamingASRUnavailable(
+                f'Streaming ASR session could not be initialised ({category})') from None
         return self
 
     @staticmethod

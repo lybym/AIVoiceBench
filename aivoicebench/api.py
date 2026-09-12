@@ -659,27 +659,48 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
                                                     'channels': channels, 'bits': bits}})
             await websocket.close(code=4006, reason='unsupported audio format')
             return
-        if turn_id != session.awaiting_turn_id:
+        turn = _voice_test_manager.turn_by_id(session, turn_id)
+        if not _voice_test_manager.is_current_turn(session, turn):
             await websocket.send_json({'type': 'capture_error', 'error': 'stream_open_failed',
                                        'note': 'no turn is awaiting an observation'})
             await websocket.close(code=4007, reason='stale turn')
+            return
+        if session.resolved_capture_mode != 'streaming':
+            await websocket.send_json({'type': 'capture_error', 'error': 'stream_open_failed',
+                                       'note': 'this run is not using streaming capture'})
+            await websocket.close(code=4008, reason='streaming capture not selected')
+            return
+        if session.capture is not None and session.capture.status == 'active':
+            await websocket.send_json({'type': 'capture_error', 'error': 'stream_open_failed',
+                                       'note': 'a capture is already active for this run'})
+            await websocket.close(code=4009, reason='capture already active')
             return
         factory = _streaming_asr_factory()
         if factory is None:
             await websocket.send_json({'type': 'capture_error',
                                        'error': 'stream_open_failed',
                                        'note': 'streaming ASR is not configured'})
-            await websocket.close(code=4008, reason='streaming ASR unavailable')
+            await websocket.close(code=4010, reason='streaming ASR unavailable')
             return
         try:
             asr = await factory(session.directory).start_session(
                 session_id=session_id, turn_id=turn_id, run_index=session.run_index,
                 directory=session.directory / 'streaming')
-        except Exception as error:  # noqa: BLE001 - one explicit category to the browser
+        except Exception:  # noqa: BLE001 - one explicit category to the browser
             await websocket.send_json({'type': 'capture_error',
                                        'error': 'stream_open_failed',
-                                       'note': str(error)[:200]})
-            await websocket.close(code=4009, reason='ASR session failed')
+                                       'note': 'the streaming ASR session could not be opened'})
+            await websocket.close(code=4011, reason='ASR session failed')
+            return
+        # Starting a provider session awaits network I/O. Re-check ownership
+        # afterwards so a stop or a competing socket cannot steal this turn.
+        turn = _voice_test_manager.turn_by_id(session, turn_id)
+        if (not _voice_test_manager.is_current_turn(session, turn)
+                or (session.capture is not None and session.capture.status == 'active')):
+            await asr.cancel(reason='stale_or_competing_capture')
+            await websocket.send_json({'type': 'capture_error', 'error': 'stream_open_failed',
+                                       'note': 'the turn changed while ASR was opening'})
+            await websocket.close(code=4012, reason='capture ownership changed')
             return
         capture = _voice_test_manager.begin_capture(
             session, turn_id=turn_id, stream_id=asr.stream_id, sample_rate=sample_rate,
@@ -690,27 +711,40 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
         while True:
             message = await websocket.receive()
             if message.get('type') == 'websocket.disconnect':
-                _voice_test_manager.finish_capture(session, status='cancelled',
-                                                   failure='stream_disconnected')
+                await _abort_capture(session, capture, failure='stream_disconnected')
+                return
+            turn = _voice_test_manager.turn_by_id(session, turn_id)
+            if (not _voice_test_manager.is_current_turn(session, turn)
+                    or session.capture is not capture):
+                await _abort_capture(session, capture, failure='stream_disconnected')
+                try:
+                    await websocket.send_json({'type': 'capture_error',
+                                               'error': 'stream_disconnected',
+                                               'note': 'the run or turn is no longer active'})
+                except Exception:
+                    pass
                 return
             if message.get('bytes') is not None:
                 payload = message['bytes']
                 if len(payload) < 4:
-                    _voice_test_manager.finish_capture(session, status='failed',
-                                                       failure='invalid_audio')
+                    await _abort_capture(session, capture, failure='invalid_audio')
                     await websocket.send_json({'type': 'capture_error',
                                                'error': 'invalid_audio'})
                     break
                 sequence = int.from_bytes(payload[:4], 'big')
                 pcm = payload[4:]
-                _apply_frame_ordering(capture, sequence)
+                if not _apply_frame_ordering(capture, sequence):
+                    # WebSocket itself is ordered. A duplicate/late sequence is
+                    # therefore stale client data and must not be replayed into
+                    # the recogniser, though the trace still accounts for it.
+                    continue
                 try:
                     await capture.asr.push_audio(pcm)
                 except Exception:  # noqa: BLE001 - the session already recorded why
                     pass
                 capture.audio_bytes += len(pcm)
                 applied = _voice_test_manager.note_streaming_events(
-                    session, capture.asr.poll_events())
+                    session, capture.asr.poll_events(), capture=capture)
                 await _forward_streaming_events(websocket, applied)
                 if capture.failure in ('invalid_audio', 'audio_capture_failed'):
                     break
@@ -733,13 +767,12 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
                                            'empty_transcript': not capture.final_text.strip()})
                 return
     except WebSocketDisconnect:
-        _voice_test_manager.finish_capture(session, status='cancelled',
-                                           failure='stream_disconnected')
-    except Exception as error:  # noqa: BLE001 - never leave the run hanging
-        _voice_test_manager.finish_capture(session, status='failed', failure='provider_error')
+        await _abort_capture(session, capture, failure='stream_disconnected')
+    except Exception:  # noqa: BLE001 - never leave the run hanging
+        await _abort_capture(session, capture, failure='provider_error')
         try:
             await websocket.send_json({'type': 'capture_error', 'error': 'provider_error',
-                                       'note': str(error)[:200]})
+                                       'note': 'the streaming capture ended unexpectedly'})
         except Exception:
             pass
 
@@ -765,19 +798,23 @@ async def _forward_streaming_events(websocket, events):
 
 
 def _apply_frame_ordering(capture, sequence):
-    """Count out-of-order, duplicate and missing audio frames."""
+    """Count frame ordering and return whether this frame may reach ASR."""
     if sequence == capture.expected_sequence:
         capture.expected_sequence += 1
-        return
+        capture.last_sequence_seen = sequence
+        return True
     if sequence < capture.expected_sequence:
         if capture.last_sequence_seen == sequence:
             capture.duplicate_frames += 1
         else:
             capture.late_frames += 1
+        capture.last_sequence_seen = sequence
+        return False
     else:
         capture.gap_frames += sequence - capture.expected_sequence
         capture.expected_sequence = sequence + 1
     capture.last_sequence_seen = sequence
+    return True
 
 
 async def _finalise_capture(session, capture, *, reason=None):
@@ -790,20 +827,51 @@ async def _finalise_capture(session, capture, *, reason=None):
         deadline = time.monotonic() + (session.no_response_timeout_ms / 1000)
         while not asr.saw_last_package and time.monotonic() < deadline:
             events = await asr.wait_events(0.25)
-            _voice_test_manager.note_streaming_events(session, events)
-        _voice_test_manager.note_streaming_events(session, asr.poll_events())
+            _voice_test_manager.note_streaming_events(session, events, capture=capture)
+        _voice_test_manager.note_streaming_events(session, asr.poll_events(), capture=capture)
         if not asr.saw_last_package:
             failure = capture.failure or 'stream_timeout'
     except StreamingASRUnavailable:
         failure = capture.failure or 'stream_open_failed'
     except Exception:  # noqa: BLE001
         failure = capture.failure or 'provider_error'
+    finally:
+        try:
+            await asr.close(reason=reason or 'client_finished')
+        except Exception:  # noqa: BLE001 - cleanup failure remains a failed capture
+            failure = failure or 'stream_disconnected'
+        _voice_test_manager.note_streaming_events(
+            session, asr.poll_events(), capture=capture)
+        failure = failure or capture.failure or getattr(asr, 'failure', None)
     if failure:
         status = 'failed'
-    finished = _voice_test_manager.finish_capture(session, status=status, failure=failure)
+    finished = _voice_test_manager.finish_capture(
+        session, capture=capture, status=status, failure=failure)
     if finished is not None:
         session.last_capture_result = finished.to_dict()
     return status, failure
+
+
+async def _abort_capture(session, capture, *, failure):
+    """Cancel one owned provider session and finalize its trace exactly once."""
+    if capture is None or capture.status != 'active':
+        return None
+    asr = capture.asr
+    if asr is not None:
+        try:
+            await asr.cancel(reason=failure)
+        except Exception:  # noqa: BLE001 - retain the original terminal reason
+            pass
+        try:
+            _voice_test_manager.note_streaming_events(
+                session, asr.poll_events(), capture=capture)
+        except Exception:  # noqa: BLE001 - cleanup must still release the capture
+            pass
+    finished = _voice_test_manager.finish_capture(
+        session, capture=capture, status='cancelled', failure=failure)
+    if finished is not None:
+        session.last_capture_result = finished.to_dict()
+    return finished
 
 
 async def _send_ignored(websocket, msg_type, turn_id, reason):

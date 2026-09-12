@@ -25,6 +25,7 @@ from aivoicebench.streaming_asr import (ERROR_CATEGORIES, EVENT_ERROR, EVENT_FIN
                                         EVENT_SESSION_STARTED, EVENT_SPEECH_ENDED,
                                         SOURCE_BROWSER_VAD, SOURCE_COMBINED,
                                         SOURCE_PROVIDER, StreamingASREvent,
+                                        StreamingASRUnavailable,
                                         UnavailableStreamingASRProvider,
                                         combine_sources)
 from aivoicebench.volcengine_streaming_asr import (CHUNK_BYTES, CODE_EMPTY_AUDIO,
@@ -65,7 +66,7 @@ def error_frame(code, message='provider detail'):
 class FakeServer:
     """Minimal documented server side; records what the client sent."""
 
-    def __init__(self, responses=(), *, fail_on_connect=False):
+    def __init__(self, responses=(), *, fail_on_connect=False, fail_on_send=False):
         self.frames = []
         self.closed = False
         # Each entry is either bytes (a raw frame) or a callable taking the
@@ -73,6 +74,7 @@ class FakeServer:
         self._script = list(responses)
         self._outbox = asyncio.Queue()
         self.fail_on_connect = fail_on_connect
+        self.fail_on_send = fail_on_send
 
     async def connect(self, url, headers):
         self.url = url
@@ -82,6 +84,8 @@ class FakeServer:
         return _FakeConnection(self)
 
     async def on_client(self, data):
+        if self.fail_on_send:
+            raise OSError('initial request send failed')
         frame = parse_frame(data)
         self.frames.append(frame)
         for entry in list(self._script):
@@ -306,6 +310,25 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(payload['request']['model_name'], 'bigmodel')
         self.assertTrue(payload['request']['show_utterances'])
         self.assertEqual(session.profile['provider'], 'volcengine')
+
+    def test_initial_request_failure_closes_connection_and_finishes_audit(self):
+        server = FakeServer(fail_on_send=True)
+
+        async def scenario():
+            provider = VolcengineStreamingASRProvider(
+                self.root, 'test-key', transport=server)
+            with self.assertRaises(StreamingASRUnavailable):
+                await provider.start_session(
+                    session_id='VT-test', turn_id='T0', run_index=1,
+                    directory=self.root)
+
+        asyncio.run(scenario())
+        self.assertTrue(server.closed)
+        calls = list((self.root / 'provider-calls').glob('*/result.json'))
+        self.assertEqual(len(calls), 1, 'partial startup must finish its invocation audit')
+        result = json.loads(calls[0].read_text(encoding='utf-8'))
+        self.assertEqual(result['status'], 'failed')
+        self.assertNotIn('test-key', json.dumps(result))
 
     def test_audio_is_aggregated_into_packets_and_sent_in_order(self):
         server = FakeServer()
