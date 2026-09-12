@@ -568,3 +568,8 @@
 - **本地验证：** `tests.test_release_packaging` **17 tests, OK**；全量
   `python -m unittest discover -s tests -v` **516 tests, OK（skipped=1）**。跳过项仅为本机
   未安装 Playwright；发布分支推送后的 CI 与候选镜像 Release workflow 仍需分别通过。
+- **首次 Release 候选失败与处置：** run `34665065114` 已通过镜像构建、容器冒烟、附件
+  重新装载和固定对话验收，但候选镜像内的两个 Free Mode 浏览器用例超时。根因是 Release
+  workflow 启动测试服务时遗漏 `--free-mode`，导致外部服务没有注入脚本化 Streaming ASR
+  与 Agent；常规 browser CI 由测试模块自行启动服务，因而此前未暴露。修复 workflow 并新增
+  发布契约断言后必须重新合并、从新 main 提交重跑完整 Release；失败 run 未创建 Release。

@@ -79,6 +79,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         # The tarball must be proven loadable, not merely produced.
         self.assertIn('prove it reloads and runs', text)
 
+    def test_candidate_browser_server_enables_free_mode(self):
+        """The external candidate-image server must support every browser test mode."""
+        text = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8')
+        server_start = text.index('python /app/tests/browser_server.py')
+        browser_step = text.index('Browser acceptance against the candidate image')
+        self.assertIn('--free-mode', text[server_start:browser_step])
+
 
 class ReleaseNotesTests(unittest.TestCase):
     def setUp(self):
