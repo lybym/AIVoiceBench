@@ -553,3 +553,18 @@
   `python -m unittest discover -s tests -v` **516 tests, OK（skipped=1）**。本机跳过项
   仍为未安装 Playwright 的浏览器模块；本次修复后的浏览器、容器与跨平台结果以推送后
   GitHub CI 为准。真实火山云调用与真实设备仍未尝试，不因此升级验收状态。
+
+## 2026-09-12 — 合并 PR #66 并准备 v0.4.0-alpha.2
+
+- **合并依据：** PR #66 在提交 `0020216` 上通过两套 Linux contracts、两套 Windows
+  contracts、两套 browser acceptance 与 container 检查，随后以 merge commit
+  `3877b3d` 合入 main。开放的 PR #54 是独立的可选语义角色归属工作，未混入本次发布。
+- **文档收口：** 将项目总体架构放入 `docs/01-system-architecture.md`，新增完整 Reference
+  Pipeline Roadmap 到 `docs/04-development-roadmap.md`；按合并后的真实状态更新 PRD 与文档
+  导航，明确 A～E 阶段只达到软件/受控浏览器层，真实云、真实设备和正式测量门禁未完成。
+- **发布准备：** 应用版本、Docker label、Compose 与 Windows 启动脚本统一更新为
+  `0.4.0-alpha.2`；新增同版本发布说明，并保持启动脚本 UTF-8 BOM + CRLF。Release 继续以
+  Pre-release 发布，不接管稳定版 Latest。
+- **本地验证：** `tests.test_release_packaging` **17 tests, OK**；全量
+  `python -m unittest discover -s tests -v` **516 tests, OK（skipped=1）**。跳过项仅为本机
+  未安装 Playwright；发布分支推送后的 CI 与候选镜像 Release workflow 仍需分别通过。
