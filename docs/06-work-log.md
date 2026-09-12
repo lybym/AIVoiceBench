@@ -461,3 +461,95 @@
   本单元未改动该范围）、`main_baseline` 等 PRD 头部基线字段刷新（见 #57 工作单元）。
 - **附带修正：** `docs/PRD.md` 头部 `prd_version` 原为 `1.2.1` 而变更表最新行为
   `1.2.2`（相差一个版本）；本次新增 `1.2.3` 行后头部同步为 `1.2.3`，消除该不一致。
+
+## 2026-09-11 — Free Voice Test 的 ASR 路线改为 Streaming ASR（PRD-F016 / F021 / F023）
+
+- **问题与范围：** 发布基线的自由模式把"录完整一轮 WAV → 上传 → 文件识别"当作设备
+  回答的获取方式，且浏览器侧的录制/上传实际未接线。这条路线的生命周期与 Active
+  Voice Test 的实时控制需求不匹配，也不能把 File ASR 的 Signed URL 发布变成主动
+  测试的前置条件。本工作单元把自由模式正式改为
+  **Browser Mic → Backend → Streaming ASR → Observation → LLM Agent → TTS/Playback**，
+  同时完整保留 Recording Analysis 的 File ASR / Measurement Evidence 路线。
+- **产品决策（PRD 1.3.0，先改文档后改代码）：** 新增"ASR 路线分叉"；F005 限定为
+  File ASR 契约；F016 拆成 FileASRProvider / StreamingASRProvider 两个生命周期不同的
+  家族并定义统一事件模型与来源标注；F021 明确正式链路与"整轮录音 + File ASR"仅为
+  显式标注的 fallback；F023 要求浏览器连续采集经后端转发；F020 明确 Fixed Mode 只依赖
+  VAD（ASR 不可用 ≠ Fixed Test 不可用）。产品范围、优先级、指标定义与第 7 节真实验收
+  门槛均未改变。
+- **边界：** `asr.py` 的 `ASRProvider` 语义不变（File ASR）；新增
+  `aivoicebench/streaming_asr.py`（供应商无关的会话生命周期、统一事件、来源标注、
+  一等错误分类）与 `aivoicebench/volcengine_streaming_asr.py`（火山大模型流式识别
+  适配器）。**凭据只在后端**：浏览器只上传音频，不持有 AppID / Access Token / API Key。
+  未发现官方短时客户端凭据机制，故不设计浏览器直连方案。
+- **厂商契约（依据官方在线文档核对，2026-09-11）：** 端点
+  `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel`；新版控制台鉴权
+  `X-Api-Key` + `X-Api-Resource-Id` + `X-Api-Request-Id` + `X-Api-Sequence: -1`
+  （旧版 AppID/AccessToken 双凭据需第二个密钥槽位，未实现、不猜测）；4 字节 header
+  的二进制信封与大端整数；`0b0010` 为最后一包标志；`audio` 只发
+  `format=pcm/rate=16000/bits=16/channel=1`（`codec` 依赖文档默认 `raw`）；
+  `request` 只发 `model_name/enable_itn/enable_punc/enable_ddc/show_utterances/
+  end_window_size/force_to_speech_time`；结果同时兼容 `payload_msg.result` 与顶层
+  `result` 两种文档嵌套；协议**没有 `is_final`**，结束信号是二进制标志 +
+  `is_last_package`，分句确定由 `utterances[].definite` 表示；错误码
+  `45000001/45000002/45000081/45000151/55000031` 映射到统一失败类别；
+  `end_window_size` 采用新页面的 `[300,5000]`。核对页面与未确认项记入
+  [Streaming ASR 边界](24-streaming-asr.md)。
+- **实现（后端）：** 独立二进制音频通道
+  `/api/voice-test/sessions/{id}/audio`（`[4 字节序号][PCM16LE]`），与 JSON 控制通道
+  分离；音频帧按 200 ms（6400 字节）聚合后送厂商；乱序/迟到/重复/缺口分别计数；
+  捕获结束时有界等待最后一包（`ASR_FINAL_TIMEOUT_MS`）；统一事件进入会话控制轨迹
+  （只记文本与依据，不写 PCM）；**控制循环读取服务端已经落地的捕获结果，不采信浏览器
+  回传文本**；空 transcript 记为"未观察到回答"并按 `on_no_response` 暂停或继续，
+  **不会**让 Agent 基于空字符串自动续轮。
+- **实现（浏览器）：** 新增 `static/pcm_capture_worklet.js`（AudioWorklet，混单声道 +
+  线性插值重采样到 16 kHz + PCM16 帧），页面在播放结束后打开音频通道、按序号发送帧
+  （带背压保护与丢帧计数），停止时发 `capture_stopped` 并等待服务端结果；partial 与
+  final 文本在页面分别显示；`turn_file` 降级路径用 MediaRecorder + 既有
+  `/device-audio`，并在 UI、play 消息与执行记录中**明确标注为降级、不是实时 Streaming ASR**。
+- **模型配置：** 新增 `streaming_asr` 用途与 `volcengine_streaming_asr` 协议，与录音
+  分析的 `asr` 用途分离；旧配置文档缺少该用途时按"未配置"填入并通过
+  `routes_defaulted` 显式告知，不改变既有用途语义。
+- **执行记录：** 记录版本 **1.1.0**，新增 `capture_mode` / `resolved_capture_mode` /
+  `capture_fallback_reason` / `streaming_asr_error` 与每轮捕获摘要（stream id、音频
+  格式、字节数、partial 列表、final 文本与依据、端点依据、失败类别、帧序统计）；
+  一律标注 `control_evidence`，不含音频负载。
+- **附带修正（由新测试发现）：** 自由模式下设备回答原先被追加在**下一句提问之后**，
+  对话顺序读起来是"问 → 问 → 答"。现改为先记录设备回答再创建新的平台轮次，并让
+  `synthesize_text()` 接受显式轮次下标，保证语音资产与所属轮次仍然对应。
+- **验证（软件，受控输入）：** 全量 `python -m unittest discover -s tests`：
+  **513 tests, OK（skipped=1）**，较改动前 475 增加 38 项（协议 29 + 后端集成 9）。
+  协议测试覆盖双向编解码、畸形帧、分包与顺序、partial/final/definite 映射、重复
+  definite、空 final、全部文档错误码、握手失败分类、非法音频在出网前被拒、取消幂等、
+  会话隔离、无 Secret 审计，以及**真实本地 WebSocket 服务端**的握手头与帧序验证。
+  后端集成测试覆盖浏览器音频 → provider → 观测 → Agent → 下一轮 TTS，以及降级标注、
+  turn_file 回退、空 transcript、格式不符、过期轮次、帧序统计与无可解析捕获结果。
+- **验证（浏览器，受控输入）：** `tests/test_voice_browser.py`：**9 tests, 0 failures**
+  （新增 2 项）。新增用例驱动真实页面、真实 AudioWorklet 采集、真实二进制音频通道与
+  真实执行记录，断言音频确实过线（`audio_bytes > 0`）、转写到达页面并驱动下一轮；
+  停止用例断言捕获被释放且不再自行推进。
+- **验证边界（不夸大）：** 未做任何真实火山流式调用（无凭据、未计费），未使用真实
+  录音或实体设备；厂商行为、判停参数与真实云延迟均未实测。浏览器测试使用受控合成
+  麦克风与脚本化识别提供方，**不构成 real_cloud / real_device 验收**。第 7/8 节门槛
+  未变、未降级。
+- **待完成：** Streaming ASR 真实云调用与参数实测、实体设备多轮与条件打断、F023
+  边播放边监听（Barge-in）、句中精确停顿与 Frozen Golden、partial 的语义早触发与
+  条件 Barge-in、自由模式的真实多轮验收；`docs/24-streaming-asr.md` 已列出文档层面
+  仍未确认的项（流式最大会话时长、WebSocket 关闭码表、RTF 硬要求等）。
+
+## 2026-09-12 — Streaming ASR 发布前独立审阅与生命周期加固
+
+- **审阅结论：** PR #66 的主链、供应商协议边界与受控浏览器验收已具备合并条件，
+  但独立审阅发现三个发布阻断问题：正常完成未关闭供应商 WebSocket/音频文件/调用审计，
+  浏览器断连未取消供应商会话，并发音频 WebSocket 可覆盖同一轮的活动捕获。三项均在
+  合并前修复，并增加回归覆盖。
+- **生命周期与并发：** 正常结束统一关闭 ASR 会话并折叠关闭事件；断连、非法音频与
+  异常路径统一取消会话、完成审计并释放捕获；供应商初始请求发送失败也会关闭半初始化
+  连接。捕获结果始终绑定创建它的对象，启动供应商会话的网络等待结束后会重新校验轮次
+  所有权，第二个音频连接不能替换活动捕获。
+- **帧序与信息安全：** 重复或迟到的 PCM 帧只计数、不再重放给识别器；缺口仍显式
+  计数。浏览器只收到稳定错误类别与通用说明，不回显供应商异常文本；新增初始请求失败
+  的无 Secret 审计断言。
+- **验证：** Streaming ASR/自由模式定向回归 **41 tests, OK**；全量
+  `python -m unittest discover -s tests -v` **516 tests, OK（skipped=1）**。本机跳过项
+  仍为未安装 Playwright 的浏览器模块；本次修复后的浏览器、容器与跨平台结果以推送后
+  GitHub CI 为准。真实火山云调用与真实设备仍未尝试，不因此升级验收状态。

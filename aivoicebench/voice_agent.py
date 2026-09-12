@@ -46,8 +46,11 @@ Return ONLY a JSON object:
 """
 
 
-def generate_next_phrase(session, history, device_text, output_root, manager):
+def generate_next_phrase(session, history, device_text, output_root, manager, turn_index=None):
     """Generate the next test phrase for free mode.
+
+    ``history`` is the conversation so far; ``device_text`` is the observation of
+    the device's latest reply (Control Evidence, not a measurement).
 
     Returns (text, audio_path) or None if the agent decided to stop.
     Raises on provider failure or invalid output.
@@ -69,6 +72,10 @@ def generate_next_phrase(session, history, device_text, output_root, manager):
         'turns_so_far': len(session.turns),
         'history': history,
         'latest_device_response': device_text,
+        # The device's words are a control observation (live or fallback ASR),
+        # never a measured result.
+        'observation_scope': 'control_evidence',
+        'observation_source': getattr(session, 'resolved_capture_mode', None),
     }
 
     provider = providers.judge
@@ -100,5 +107,5 @@ def generate_next_phrase(session, history, device_text, output_root, manager):
     text = text.strip()
 
     # Generate TTS for the agent's phrase
-    audio_result = manager.synthesize_text(session.session_id, text)
+    audio_result = manager.synthesize_text(session.session_id, text, turn_index)
     return text, audio_result['path']

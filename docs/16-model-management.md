@@ -2,7 +2,11 @@
 
 > 2026-09-11 基线：对齐 main `8d01ef2` / `v0.3.2`（本文件最初的审计基线 `c612d36` / alpha.2 属历史记录）。当前主链与验证限制见 [Recording Backbone](23-recording-backbone.md)；真实验收仍待完成。
 
-The browser model manager separates provider profiles from capability routes (TTS, ASR, diarization and result Judge). Profiles declare protocol, endpoint, model ID, parameters and credential reference; default routes select a profile per purpose. Changes apply at the next Run. Unsupported speech adapters are explicitly not_integrated; saving configuration does not invoke a provider or certify connectivity. M1 also wires the configured Volcengine ASR route. ASR-native diarization reuses the selected ASR response when its route selects an enabled volcengine_asr profile; bind both routes to the same profile. TTS remains unavailable. Judge configuration can be captured, but ImportRun does not execute it. ASR/clusters do not imply role attribution. Vosk remains intact.
+The browser model manager separates provider profiles from capability routes. Five purposes are configured independently: **`asr`** (File ASR for Recording Analysis), **`streaming_asr`** (session-based recognition for Active Voice Test), `tts`, `diarization` and result `judge`. Profiles declare protocol, endpoint, model ID, parameters and credential reference; default routes select a profile per purpose. Changes apply at the next Run. Unsupported speech adapters are explicitly not_integrated; saving configuration does not invoke a provider or certify connectivity.
+
+File ASR and Streaming ASR are deliberately separate purposes rather than one vague `default_asr`: the first recognises a finished recording and produces Measurement Evidence, the second runs a live session and produces Control Evidence (PRD-F016, [Streaming ASR 边界](24-streaming-asr.md)). A configuration written before `streaming_asr` existed loads with that purpose unconfigured and reports `routes_defaulted`; existing purposes are never re-pointed silently.
+
+M1 wires the configured Volcengine ASR route for File ASR. ASR-native diarization reuses the selected ASR response when its route selects an enabled volcengine_asr profile; bind both routes to the same profile. The `streaming_asr` route selects the Volcengine big-model streaming protocol and drives the free-mode capture path; it does not require signed-URL audio publication. Judge configuration can be captured, but ImportRun does not execute it. ASR/clusters do not imply role attribution. Vosk remains intact.
 
 ## Reference and adaptation
 

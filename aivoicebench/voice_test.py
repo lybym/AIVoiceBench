@@ -47,8 +47,25 @@ from pathlib import Path
 from typing import Optional
 
 from .providers import ProviderFailure
+from .streaming_asr import (EVENT_ERROR, EVENT_FINAL, EVENT_PARTIAL,
+                            EVENT_SESSION_CLOSED, EVENT_SESSION_STARTED, EVENT_SPEECH_ENDED,
+                            SOURCE_BROWSER_VAD, SOURCE_PROVIDER)
 
-CONTROL_RECORD_VERSION = '1.0.0'
+CONTROL_RECORD_VERSION = '1.1.0'
+
+# How the device's answer becomes text during a free-mode turn (PRD-F021).
+CAPTURE_MODE_STREAMING = 'streaming'
+CAPTURE_MODE_TURN_FILE = 'turn_file'
+CAPTURE_MODE_AUTO = 'auto'
+CAPTURE_MODES = (CAPTURE_MODE_STREAMING, CAPTURE_MODE_TURN_FILE, CAPTURE_MODE_AUTO)
+
+# Bounded wait for the provider's last package after the browser stops sending
+# audio. A control guard, not a product latency target.
+ASR_FINAL_TIMEOUT_MS = 15000
+# Partials are kept for the trace, bounded so a long turn cannot grow forever.
+MAX_STREAMING_PARTIAL_EVENTS = 200
+
+STREAMING_EVIDENCE_SCOPE = 'control_evidence'
 
 # Turn lifecycle phases. These describe platform control state, not acoustics.
 PHASE_PENDING = 'pending'
@@ -86,18 +103,90 @@ CONTROL_POLICY = {
 NO_RESPONSE_TIMEOUT_MIN_MS = 1000
 NO_RESPONSE_TIMEOUT_MAX_MS = 600000
 
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
 RECORD_NOTES = [
     'Control trace only: playback and observation events are reported by the '
     'browser and are not measurements of the physical sound field.',
     'VAD observations are suspected responses (browser_vad_rms); speaker '
     'identity and formal response latency are not measured here.',
+    'Streaming ASR transcripts are control observations as well: provider '
+    'timestamps are not acoustic ground truth and never become Measurement '
+    'Evidence by themselves.',
     'control_policy waits bound how long control waits before giving up; they '
     'are not product performance targets or SLAs.',
 ]
 
 
-def utc_now():
-    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+@dataclass
+class VoiceTestCapture:
+    """One streaming-ASR capture attached to a free-mode turn.
+
+    Audio bytes are never stored here: they live in the session directory as a
+    WAV artifact. This object keeps the control facts the execution record needs.
+    """
+
+    turn_id: str
+    stream_id: str
+    sample_rate: int
+    channels: int
+    bits: int
+    mode: str = CAPTURE_MODE_STREAMING
+    started_at: str = field(default_factory=utc_now)
+    finished_at: Optional[str] = None
+    status: str = 'active'  # active, finished, failed, cancelled
+    asr: object = None
+    partials: list = field(default_factory=list)
+    final_text: str = ''
+    final_basis: Optional[str] = None
+    final_source: Optional[str] = None
+    speech_started: bool = False
+    endpoint_basis: Optional[str] = None
+    failure: Optional[str] = None
+    events_seen: int = 0
+    audio_bytes: int = 0
+    expected_sequence: int = 0
+    last_sequence_seen: Optional[int] = None
+    late_frames: int = 0
+    duplicate_frames: int = 0
+    gap_frames: int = 0
+    fallback_reason: Optional[str] = None
+
+    @property
+    def is_streaming(self):
+        return self.mode == CAPTURE_MODE_STREAMING
+
+    def to_dict(self):
+        return {
+            'turn_id': self.turn_id,
+            'stream_id': self.stream_id,
+            'mode': self.mode,
+            'is_streaming': self.is_streaming,
+            'evidence_scope': STREAMING_EVIDENCE_SCOPE,
+            'started_at': self.started_at,
+            'finished_at': self.finished_at,
+            'status': self.status,
+            'audio': {'format': 'pcm_s16le', 'sample_rate': self.sample_rate,
+                      'bits': self.bits, 'channels': self.channels},
+            'audio_bytes': self.audio_bytes,
+            'partial_count': len(self.partials),
+            'partials': list(self.partials),
+            'final_text': self.final_text,
+            'final_basis': self.final_basis,
+            'final_source': self.final_source,
+            'speech_started': self.speech_started,
+            'endpoint_basis': self.endpoint_basis,
+            'failure': self.failure,
+            'events_seen': self.events_seen,
+            'frame_ordering': {'expected_sequence': self.expected_sequence,
+                               'late': self.late_frames,
+                               'duplicate': self.duplicate_frames,
+                               'gap': self.gap_frames},
+            'fallback_reason': self.fallback_reason,
+        }
 
 
 @dataclass
@@ -183,6 +272,18 @@ class VoiceTestSession:
     no_response_timeout_ms: int = CONTROL_POLICY['no_response_timeout_ms']
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    # Free-mode device observation (PRD-F021). `capture_mode` is the operator's
+    # request; `resolved_capture_mode` is what this run actually uses, so a
+    # fallback can never be reported as streaming.
+    capture_mode: str = CAPTURE_MODE_AUTO
+    resolved_capture_mode: Optional[str] = None
+    capture_fallback_reason: Optional[str] = None
+    streaming_asr_error: Optional[str] = None
+    capture: Optional['VoiceTestCapture'] = None
+    # Authoritative copy of the last finished capture, written by the audio
+    # socket and read by the control loop. The browser's echo is never trusted.
+    last_capture_result: Optional[dict] = None
+    capped_notes: list = field(default_factory=list)
     # Each start begins a new run. Turn ids are unique for the whole session so
     # a late event from an earlier run can never be mistaken for the current
     # one. Finished runs are archived instead of being overwritten.
@@ -218,6 +319,9 @@ class VoiceTestSession:
             'max_turns': self.max_turns,
             'on_no_response': self.on_no_response,
             'no_response_timeout_ms': self.no_response_timeout_ms,
+            'capture_mode': self.capture_mode,
+            'resolved_capture_mode': self.resolved_capture_mode,
+            'capture_fallback_reason': self.capture_fallback_reason,
             'run_index': self.run_index,
             'turns': [t.to_dict() for t in self.turns],
             'stop_reason': self.stop_reason,
@@ -259,9 +363,11 @@ class VoiceTestManager:
     def create_session(self, mode, *, phrases=None, device=None, goal=None,
                        constraints=None, max_turns=10, llm_model=None,
                        on_no_response=ON_NO_RESPONSE_PAUSE,
-                       no_response_timeout_ms=None):
+                       no_response_timeout_ms=None, capture_mode=CAPTURE_MODE_AUTO):
         if on_no_response not in (ON_NO_RESPONSE_PAUSE, ON_NO_RESPONSE_CONTINUE):
             raise ValueError("on_no_response must be 'pause' or 'continue'")
+        if capture_mode not in CAPTURE_MODES:
+            raise ValueError(f"capture_mode must be one of {CAPTURE_MODES}")
         if no_response_timeout_ms is None:
             no_response_timeout_ms = CONTROL_POLICY['no_response_timeout_ms']
         try:
@@ -285,6 +391,7 @@ class VoiceTestManager:
             llm_model=llm_model,
             on_no_response=on_no_response,
             no_response_timeout_ms=no_response_timeout_ms,
+            capture_mode=capture_mode,
             directory=self.output_root / 'voice-test' / session_id,
         )
         session.directory.mkdir(parents=True, exist_ok=True)
@@ -293,6 +400,7 @@ class VoiceTestManager:
             'mode': mode, 'phrase_count': len(session.phrases),
             'device': device, 'on_no_response': session.on_no_response,
             'no_response_timeout_ms': session.no_response_timeout_ms,
+            'capture_mode': session.capture_mode,
         })
         return session
 
@@ -351,10 +459,12 @@ class VoiceTestManager:
         session.status = 'ready'
         return results
 
-    def synthesize_text(self, session_id, text):
+    def synthesize_text(self, session_id, text, turn_index=None):
         """Generate TTS audio for arbitrary text (free mode).
 
-        Returns the relative audio path.
+        ``turn_index`` lets the caller reserve the index of the platform turn
+        this asset belongs to, so the asset name and the turn stay aligned even
+        when the device's reply is recorded first. Returns the relative path.
         """
         session = self.sessions.get(session_id)
         if not session:
@@ -363,7 +473,8 @@ class VoiceTestManager:
         tts = providers.tts(session.directory) if providers and providers.tts else None
         if tts is None:
             raise ProviderFailure('No TTS provider configured')
-        turn_index = len(session.turns)
+        if turn_index is None:
+            turn_index = len(session.turns)
         audio_path = session.directory / f'free-turn-{turn_index:04d}.wav'
         result = tts.synthesize(text, audio_path)
         rel_path = str(audio_path.relative_to(self.output_root))
@@ -408,7 +519,12 @@ class VoiceTestManager:
             'control_policy': dict(CONTROL_POLICY,
                                    on_no_response=session.on_no_response,
                                    no_response_timeout_ms=session.no_response_timeout_ms),
-            'notes': list(RECORD_NOTES),
+            'capture_mode': session.capture_mode,
+            'resolved_capture_mode': session.resolved_capture_mode,
+            'capture_fallback_reason': session.capture_fallback_reason,
+            'streaming_asr_error': session.streaming_asr_error,
+            'streaming_capture': session.capture.to_dict() if session.capture else None,
+            'notes': list(RECORD_NOTES) + list(session.capped_notes),
             'runs': session.runs + [self._current_run(session)],
             'events': session.events,
         }
@@ -504,6 +620,86 @@ class VoiceTestManager:
                                       'speaker not confirmed',
                           })
         return turn
+
+    # -------------------------------------------------- streaming ASR capture
+
+    def begin_capture(self, session, *, turn_id, stream_id, sample_rate, channels, bits,
+                      mode=CAPTURE_MODE_STREAMING, asr=None, fallback_reason=None):
+        """Attach one streaming capture to the current free-mode turn."""
+        if session.capture is not None and session.capture.status == 'active':
+            raise ValueError('A capture is already active for this session')
+        capture = VoiceTestCapture(turn_id=turn_id, stream_id=stream_id,
+                                   sample_rate=sample_rate, channels=channels, bits=bits,
+                                   mode=mode, asr=asr, fallback_reason=fallback_reason)
+        session.capture = capture
+        self.record_event(session, 'capture_started', turn_id=turn_id, detail={
+            'mode': mode, 'stream_id': stream_id,
+            'evidence_scope': STREAMING_EVIDENCE_SCOPE,
+            'audio': capture.to_dict()['audio'],
+            'fallback_reason': fallback_reason})
+        return capture
+
+    def note_streaming_events(self, session, events, *, capture=None):
+        """Fold unified streaming events into the control trace (never raw PCM)."""
+        capture = capture or session.capture
+        if capture is None:
+            return []
+        applied = []
+        for event in events:
+            capture.events_seen += 1
+            if event.kind == EVENT_PARTIAL:
+                if len(capture.partials) < MAX_STREAMING_PARTIAL_EVENTS:
+                    capture.partials.append({'text': event.text, 'sequence': event.sequence,
+                                             'received_at': event.received_at,
+                                             'provider_at': event.provider_at})
+                elif 'streaming partials truncated' not in session.capped_notes:
+                    session.capped_notes.append('streaming partials truncated')
+            elif event.kind == EVENT_FINAL:
+                capture.final_text = event.text or ''
+                capture.final_basis = event.basis
+                capture.final_source = event.source
+            elif event.kind == EVENT_SPEECH_ENDED:
+                capture.endpoint_basis = event.basis
+            elif event.kind == EVENT_ERROR:
+                capture.failure = event.error
+                session.streaming_asr_error = event.error
+            self.record_event(session, event.kind, turn_id=capture.turn_id,
+                              source='provider', detail={
+                                  'evidence_scope': STREAMING_EVIDENCE_SCOPE,
+                                  'text': event.text, 'basis': event.basis,
+                                  'error': event.error, 'sequence': event.sequence,
+                                  'provider_at': event.provider_at,
+                                  'received_at': event.received_at,
+                                  'detail': event.detail})
+            applied.append(event)
+        return applied
+
+    def finish_capture(self, session, *, capture=None, status='finished', failure=None):
+        """Close the capture and record what the control layer learned."""
+        capture = capture or session.capture
+        if capture is None:
+            return None
+        capture.status = status
+        capture.finished_at = utc_now()
+        if failure:
+            capture.failure = failure
+        summary = capture.to_dict()
+        if capture.asr is not None:
+            try:
+                summary['provider_summary'] = capture.asr.summary()
+            except Exception:  # noqa: BLE001 - a summary must never break a run
+                summary['provider_summary'] = None
+        self.record_event(session, 'capture_finished', turn_id=capture.turn_id,
+                          detail={'status': status, 'failure': capture.failure,
+                                  'final_text': capture.final_text,
+                                  'final_basis': capture.final_basis,
+                                  'partial_count': len(capture.partials),
+                                  'audio_bytes': capture.audio_bytes,
+                                  'frame_ordering': summary['frame_ordering'],
+                                  'evidence_scope': STREAMING_EVIDENCE_SCOPE})
+        if session.capture is capture:
+            session.capture = None
+        return capture
 
     def open_turn(self, session, *, text, audio_path=None, audio_url=None,
                   role='platform', audio_sha256=None):
@@ -619,6 +815,9 @@ class VoiceTestManager:
         session.stop_reason = None
         session.turns = []
         session.awaiting_turn_id = None
+        session.capture = None
+        session.last_capture_result = None
+        session.streaming_asr_error = None
         session.started_at = utc_now()
         session.finished_at = None
         self.record_event(session, 'session_started', detail={

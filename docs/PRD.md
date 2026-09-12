@@ -1,10 +1,10 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.2.3
+prd_version: 1.3.0
 status: consolidated_for_owner_review
 updated: 2026-09-11
-implementation_baseline: v0.3.2@8d01ef2463f520cd8220265a8998d69af4d8e33d
-main_baseline: 8d01ef2463f520cd8220265a8998d69af4d8e33d
+implementation_baseline: v0.4.0-alpha.1@fd07ce6af8acdab708eafd76cfcfa7adbb5ccafb
+main_baseline: fd07ce6af8acdab708eafd76cfcfa7adbb5ccafb
 ---
 
 # AIVoiceBench 产品需求文档（PRD）
@@ -62,13 +62,13 @@ flowchart TD
   G --> T
   T --> S[本地扬声器播放]
   S --> D[实体 AI 设备]
-  D --> O[Mic / VAD / ASR 实时观察]
+  D --> O[Mic / VAD / Streaming ASR 实时观察]
   O --> C[Controller 下一轮 / 条件触发]
   C --> F
   C --> G
   D -. 另一台设备全程录音 .-> E[External Recording]
   E --> R
-  R --> I[Import / Audio QA / 声学与语义分析]
+  R --> I[Import / Audio QA / File ASR / 声学与语义分析]
   I --> J[Events / Metrics / LLM Judge]
   J --> Q[Findings / Evidence / Human Verification / Report]
   Q --> K[确认并最小化 / 冻结回归 Case]
@@ -89,6 +89,25 @@ flowchart TD
 | Measurement Evidence | 另一台设备全程录音，导入后经高质量离线声学/语义分析及必要人工复核 | 正式响应时延、抢话、Barge-in、上下文和回答质量结论均回溯外部录音，沿用 Evidence First 与不确定性要求 |
 
 播放命令时间不等于真实声学 onset，实时 ASR 不能替代外部录音的正式转写。执行完成不代表设备通过测试；未导入外部录音时显示正式测量待补充，不将 Control Evidence 自动升级为 Measurement Evidence。执行与分析通过身份引用和带不确定性的录音时间映射关联，不直接相减不同设备的时钟（PRD-F024）。
+
+### ASR 路线分叉：File ASR 与 Streaming ASR
+
+两条一级主流程使用**生命周期完全不同**的 ASR 能力。不能再用一个"只接受文件"的 Provider 模糊表达两者，也不能让 Free Voice Test 以"先录完整 WAV → 上传 → 文件识别"作为正式主路径。
+
+| | Recording Analysis | Active Voice Test |
+| --- | --- | --- |
+| 输入 | 已完成的完整录音 | 浏览器麦克风的持续音频流 |
+| Provider 家族 | **FileASRProvider** | **StreamingASRProvider** |
+| 当前实现 | `VolcengineASRProvider`（录音文件识别；按服务要求经 Signed URL 音频发布） | 目标为 `VolcengineStreamingASRProvider`（火山引擎大模型流式语音识别） |
+| 输出 | 完整 Transcript（utterances / timestamps / 说话人标签） | partial / final transcript + speech / endpoint 观察 |
+| 生命周期 | 一次提交、一次识别、可离线重跑 | open session → push audio chunk → partial → final → close / cancel |
+| 证据类别 | **Measurement Evidence** | **Control Evidence** |
+
+- 两条链共享模型配置思想（provider / model / resource / 后端托管凭据 / 版本化调用审计）与"凭据不进浏览器、不进 Git、不进快照"的原则，**但不要求共用同一种 Provider 接口**。
+- Signed URL / 对象存储音频发布属于 Recording Analysis 的 File ASR 路线；**不得成为 Active Voice Test 的必需条件**。
+- 长期凭据只由 Backend 持有。浏览器只上传音频流，**不持有 AppID / Access Token / API Key / Secret / 长期 Credential**。若供应商提供短时客户端凭据机制，须先核对官方文档与安全边界后另行设计。
+- Streaming ASR 的 timestamp / confidence 是控制观察，**不自动升级为 Measurement Evidence**，也不得当作正式声学时间真值。
+- 详细边界与技术契约见 [Streaming ASR 边界](24-streaming-asr.md)。
 
 产品闭环：**指定测试策略 → 平台主动与设备对话 → 外部设备记录真实声学表现 → 自动分析 → 发现与复核问题 → 沉淀固定回归 Case → 下一版本重新自动测试。**
 
@@ -120,7 +139,7 @@ Windows EXE/安装包、集群、复杂云端 Control Plane 不属于当前交�
 | PRD-F002 | 原始与派生 Evidence/provenance | P0 | ✅ implemented | main + release；此状态限定导入资产 |
 | PRD-F003 | 标准化与 Audio QA | P0 | ✅ implemented | main + release；准确率不由 QA 保证 |
 | PRD-F004 | 全链路可恢复编排 | P0 | 🟡 partial | ImportRun 已贯通 acoustic→聚类/归属→fusion→turns→timeline→metrics；Judge/Findings 仅状态占位 |
-| PRD-F005 | 时间戳 ASR 与云服务 | P0 | 🟡 partial | 云 ASR/原生响应/时间戳与调用审计已接通；真实云及录音质量待验收 |
+| PRD-F005 | 时间戳 ASR 与云服务（Recording Analysis / File ASR） | P0 | 🟡 partial | 云 File ASR/原生响应/时间戳与调用审计已接通；真实云及录音质量待验收 |
 | PRD-F006 | 混音说话人/声源归属 | P0 | 🟡 partial | ASR-native 聚类与声源归属处理器已接入；无角色证据保持 unknown；语义角色 PR #54 未合并 |
 | PRD-F007 | Turn / Response 关联 | P0 | 🟡 partial | 有角色证据时可生成 turns/responses；自动语义关联仍未闭环 |
 | PRD-F008 | 自动事件与规范 Timeline | P0 | 🟡 partial | 已接入统一账本及身份引用；显式角色路径有契约测试，真实自动事件待验收 |
@@ -131,19 +150,21 @@ Windows EXE/安装包、集群、复杂云端 Control Plane 不属于当前交�
 | PRD-F013 | Markdown + JSON 报告 | P1（MVP 必需） | 🟡 partial | 导入状态报告按 AnalysisRevision 保存；完整结论报告尚未接入主导入流程 |
 | PRD-F014 | Web 测试与分析工作台 | P0/P1 | 🟡 partial | main + release；转写、聚类、阶段状态、ASR 重试与回放已有；波形、完整 Timeline、人工审核仍缺 |
 | PRD-F015 | 统一模型配置管理 | P1 | ✅ implemented | main + release；配置/路由/快照已有，ASR 与 ASR-native 聚类可绑定；Judge 配置不等于导入流程已执行 |
-| PRD-F016 | 语音生成/分析适配器实际调用 | P0 ASR（M1）/ P1 TTS（M2） | 🟡 partial | main + release；云 ASR/TTS 适配器与调用审计已实现，ASR-native 聚类复用同一次原生响应；真实服务标签契约待确认，真实录音与真实设备验收仍待完成 |
+| PRD-F016 | 语音服务实际调用（File ASR / Streaming ASR / TTS） | P0 File ASR（M1）/ P1 Streaming ASR + TTS（M2/M3） | 🟡 partial | File ASR/聚类/TTS 已实现并有调用审计；**Streaming ASR 骨架（提供商边界、火山适配器、事件模型、审计）已实现并有软件/浏览器验证，真实云调用未进行**；真实标签契约、真实录音 / 真实云 streaming / 真实设备验收均待完成 |
 | PRD-F017 | 同一录音分析修订与重现 | P1 | 🟡 partial | main + release；同 Run 显式 ASR 重试会生成新 AnalysisRevision；通用重分析/人工修订重算尚缺 |
 | PRD-F018 | 版本/设备/供应商 Compare | P2 | ⬜ planned | 无产品比较工作流 |
 | PRD-F019 | Frozen Golden Voice 资产 | P1（M2 核心） | ⬜ planned | 暂停草稿不算可交付能力 |
 | PRD-F020 | Active Voice Test Controller / Fixed Runner | P1（M2 核心） | 🟡 partial | Runner 基础已有，真实多轮控制未完成 |
-| PRD-F021 | Free / Exploratory Voice Test Agent | P1（M3 核心） | ⬜ planned | 无完整探索→确认→回归链路 |
+| PRD-F021 | Free / Exploratory Voice Test Agent | P1（M3 核心） | 🟡 partial | 正式链路 Mic → VAD + Streaming ASR → Observation → LLM Decision → TTS → Playback 已在软件与受控输入浏览器测试中打通（含降级标注与空回答处置）；真实服务、真实设备、预算与 Coverage 未完成 |
 | PRD-F022 | 专业 HIL / 同步校准 / Remote Station | P3 | ⏸ deferred | Station 代码保留，非当前 MVP 门槛 |
-| PRD-F023 | 基础本地播放与麦克风观察 | P1（M2 核心） | ⬜ planned | 从 F022 拆出；真实本地音频链路待交付 |
+| PRD-F023 | 基础本地播放与麦克风观察 | P1（M2 核心） | 🟡 partial | 播放、VAD、停止、最小执行记录与连续采集（AudioWorklet → 二进制音频通道 → Streaming ASR）已具备并有浏览器验证；真实本地音频链路、设备选择与 Barge-in 未验收 |
 | PRD-F024 | 执行与外部录音分析 Run 关联 | P1（M2 手动 / M4 自动） | ⬜ planned | 双 Run 引用、录音时间映射及自动匹配待实现 |
 
 ### MVP 范围与排程的关系
 
-P0/P1 表示开发先后，不表示可选与必选。当前 MVP 专指 M1 录音分析，包含 PRD-F001～F015、PRD-F016 的云 ASR/diarization 与调用审计部分、PRD-F017；各项以第 4 节限定范围和第 7 节验收为准。PRD-F016 的 TTS 部分及 PRD-F018～F024 不阻塞 M1；其中 F016 TTS/F019/F020/F023 与 F024 手动关联为 M2 必需，F021 为 M3 必需，F024 自动关联为 M4 必需。优先级与里程碑共同表达排程：主动测试是 P1 核心能力，但不插队 M1；专业 F022 继续 P3。PRD-F015 的配置管理已实现，不代表 PRD-F016 的语音调用已实现。
+P0/P1 表示开发先后，不表示可选与必选。当前 MVP 专指 M1 录音分析，包含 PRD-F001～F015、PRD-F016 的云 **File ASR**/diarization 与调用审计部分、PRD-F017；各项以第 4 节限定范围和第 7 节验收为准。PRD-F016 的 TTS 与 **Streaming ASR** 部分及 PRD-F018～F024 不阻塞 M1；其中 F016 TTS/F019/F020/F023 与 F024 手动关联为 M2 必需，**F016 Streaming ASR 与 F021 为 M3 必需**，F024 自动关联为 M4 必需。优先级与里程碑共同表达排程：主动测试是 P1 核心能力，但不插队 M1；专业 F022 继续 P3。PRD-F015 的配置管理已实现，不代表 PRD-F016 的语音调用已实现。
+
+Recording Analysis 与 Active Voice Test 的 ASR 路线不同：前者用 File ASR（Measurement Evidence），后者用 Streaming ASR（Control Evidence）；见第 2 节“ASR 路线分叉”。
 
 同一功能的“代码已实现”“已合入 main”“已发布”“真实录音验收通过”分别记录；本次仅按代码/测试/发布证据刷新实现状态，不升级真实验收状态。
 
@@ -197,11 +218,13 @@ P0/P1 表示开发先后，不表示可选与必选。当前 MVP 专指 M1 录�
 
 依据：[import_pipeline.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/import_pipeline.py)、[pipeline.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/pipeline.py)；Issues #21、#27。
 
-### PRD-F005 — ASR
+### PRD-F005 — ASR（Recording Analysis / File ASR）
 
 **代码：🟡 partial；验证：software_verified；位置：main + alpha.2。**
 
 使用可替换 Provider 输出原始响应和带时间戳 Transcript，标记 ASR estimated timing；保留中文、混合语言及识别缺口。Vosk 为可选离线方案，优先允许成熟云服务，不要求本地模型成为最终默认。
+
+**本项是 Recording Analysis 的 File ASR 契约**（完整录音、一次识别、可离线重跑，产出 Measurement Evidence）。Active Voice Test 的实时识别属 **Streaming ASR**，生命周期不同（PRD-F016 / F021 / F023），**不共用同一个只接受文件的 Provider 接口**，也不以 Signed URL 音频发布为前置。
 
 - [x] ASRProvider、Vosk、Transcript 与原生输出验证已有。
 - [ ] Web 真实录音自动调用中文云 ASR，并把文本/时间证据接入后续语义和事件分析。
@@ -346,15 +369,23 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 依据：[model_settings.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/model_settings.py)、[models.js](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/static/models.js)、[test_model_settings.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_model_settings.py)；Issue #44。
 
-### PRD-F016 — 语音服务实际调用与主动测试 TTS
+### PRD-F016 — 语音服务实际调用（File ASR / Streaming ASR / TTS）
 
-**代码：🟡 partial（云 ASR 与 ASR-native 聚类已合入；TTS 已按 API-Key V3 SSE 接入）；验证：software_verified、real_recording_pending。**
+**代码：🟡 partial（云 File ASR、ASR-native 聚类与 TTS 已合入；Streaming ASR 仅有骨架，未接真实服务）；验证：software_verified、real_recording_pending、real_cloud_streaming_pending。**
 
-提供统一 ASRProvider、TTSProvider、AudioProcessingProvider、DiarizationProvider 接入点；核对火山等当前官方 API 后实现真实调用。每次调用记录 provider、model、endpoint/API version、config、prompt_version（适用时）、timestamp、输入/输出 refs、latency、status，不记录 Secret。配置管理不代表调用能力已交付。音频标准化和 Vosk 已有能力分别见 PRD-F003/F005，不在此重复标为未实现。
+提供**按生命周期区分**的接入点，并核对火山等当前官方 API 后实现真实调用。ASR 必须显式分成两个家族，不能合并为一个只接受文件的接口：
+
+- **FileASRProvider**（Recording Analysis / Measurement Evidence）：完整录音 → 一次识别 → 高质量离线 Transcript。现有 `ASRProvider`（Vosk、`VolcengineASRProvider`）属此家族；Signed URL 音频发布按该服务要求保留在本链。
+- **StreamingASRProvider**（Active Voice Test / Control Evidence）：`start_session → push_audio → events → finish_input → close / cancel`。统一事件至少包含 `asr_session_started`、`speech_started`、`partial_transcript`、`final_transcript`、`speech_ended`、`asr_error`、`asr_session_closed`，并标注来源（`browser_vad` / provider / `combined`）、provider 时间戳（若有）、本地接收时间、confidence（若有）与依据（basis）。
+- TTSProvider、DiarizationProvider、AudioProcessingProvider 与既有长音频能力保持原职责。
+
+每次调用记录 provider、model、endpoint/API version、config、prompt_version（适用时）、timestamp、输入/输出 refs、latency、status 与失败类别，**不记录 Secret**。Streaming 会话额外记录 stream/session 标识、音频格式（采样率/位深/声道）、chunk 统计、事件来源与结束原因。配置管理不代表调用能力已交付。
 
 - [ ] 云 ASR/diarization 原生输出、重试/失败状态、调用审计与 Web 分析集成。
+- [x] Streaming ASR 最小骨架（本分支，software_verified + browser_verified）：统一事件模型与来源标注、音频 chunk 顺序与迟到/重复/缺口统计、取消/超时/错误作为一等状态、凭据仅在后端、调用审计不落 Secret；端点/资源/鉴权/音频格式/判停参数按官方文档核对，未核对字段不发送。真实服务调用未进行。
+- [ ] Streaming ASR 真实服务调用：以**当前官方文档**核对 endpoint / resource ID / 鉴权头 / 音频格式 / 判停参数后方可实现与声明；契约核对已完成（见 [Streaming ASR 边界](24-streaming-asr.md)），**真实云调用与判停实测仍未进行**，保持 real_cloud_pending。
 
-已合入进展（software_verified）：云 ASR 原生输出、调用审计、Web/CLI 集成与 ASR-native `DiarizationProvider` 已具备；聚类复用同一次云 ASR 原生响应产出聚类，不新增独立服务端点或第二次识别，结果进入 ImportRun 账本与 Web/CLI。**仍未验证**：供应商是否需在请求中显式开启说话人分离（官方参数表无法离线核实），以及任何真实录音/凭据下的原生标签可用性；因此该整体验收项保持未勾选。见 [云适配器](../aivoicebench/volcengine_asr.py)、[聚类处理器](../aivoicebench/diarization.py)、[主链测试](../tests/test_recording_backbone.py)。
+已合入进展（software_verified）：云 File ASR 原生输出、调用审计、Web/CLI 集成与 ASR-native `DiarizationProvider` 已具备；聚类复用同一次云 ASR 原生响应产出聚类，不新增独立服务端点或第二次识别，结果进入 ImportRun 账本与 Web/CLI。**仍未验证**：供应商是否需在请求中显式开启说话人分离（官方参数表无法离线核实），以及任何真实录音/凭据下的原生标签可用性；因此该整体验收项保持未勾选。见 [云适配器](../aivoicebench/volcengine_asr.py)、[聚类处理器](../aivoicebench/diarization.py)、[主链测试](../tests/test_recording_backbone.py)。
 - [x] 已合入（software_verified；`v0.3.1` 发布基线）：`volcengine_tts` 使用 API-Key V3 单向 SSE，显式配置当前 resource ID 与 voice ID；SSE 帧只在拼接为有效 WAV 后才生成播放资产。请求/响应协议、无旧鉴权头、失败脱敏审计和配置传递由单元测试覆盖（Issue #60）。
 - [ ] TTS 真实调用服务于主动测试（P1/M2）：固定 Runner 执行前生成并冻结音频，运行时重用资产；M3 自由 Agent 可逐轮生成，保存每轮实际播放音频及引用。效果与成本按服务实际支持能力选择。
 - [x] 已合入（software_verified；`v0.3.1` 发布基线）：TTS 失败或音频无效时不生成播放资产，并写入不含 Secret 和原始服务错误的失败审计。预算耗尽、冻结资产版本化和 Execution Run/Turn 正式证据关联仍未实现。
@@ -398,6 +429,7 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 - [ ] Barge-in 用例先请求长故事，检测设备持续发声后等待 Case 指定时长（如 2 秒）再播放“停，换个问题”；记录实际触发及旧/新回答候选，不能用预拼接时间代替实时触发。未观察到响应时按策略 timeout/停止，不伪造打断成功。
 - [ ] 相同 Case 与相同观察序列重放时控制决策一致；真实设备测试核对播放/触发轨迹。设备回答结束的控制判断与正式 Barge-in/时延/语义判定分开。
 - [ ] 监听中断、低置信度、自身播放误识别或设备断开时按冻结策略等待/停止并记录原因，不无限等待或无记录追加重试；用户可随时停止。
+- [ ] **Fixed Mode 的轮次推进由 VAD 控制，不要求 ASR 可用**：ASR 不可用 ≠ Fixed Test 不可用。Streaming ASR 接入后只作为增强 Observation（设备回答文本、复杂条件、Barge-in、False Endpoint、语义触发）；需要语义观察才能执行的 Case 必须显式声明该前提，不能默认把基础 VAD Runner 变成 ASR 依赖。
 
 本分支进展（software_verified，未合并）：固定对话控制可靠性加固已实现并可软件/浏览器测试复现——停止为本地即时生效（不等待后端确认，取消当前播放，迟到 `ended` 不会恢复监听或推进），轮次以 `turn_id` 校验，重复/迟到/已停止会话的事件只被记 `ignored` 而不重复推进；无回答超时作为独立事件 `observation_timeout` 上报并按会话策略（`pause`/`continue`）暂停或继续，记录为“未观察到回答”而非回答结束；每轮写入最小控制记录（`execution-record.json`，含服务端播放指令与浏览器播放报告、观察及其依据、关闭原因），区分“服务端发出播放”与“浏览器报告播放”，VAD 仅记录疑似回答；音频不可用/播放被拒/播放卡住/连接断开/会话失效均以明确原因退出且可重新开始。控制等待有明确上限但**不构成产品性能 SLA**。上述均为受控输入下的软件与浏览器验证，**真实扬声器、麦克风与实体 AI 设备验收仍未完成**；F023 的边播放边监听（Barge-in）与自由模式的完整多轮验收不在本次范围。
 
@@ -405,16 +437,27 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 ### PRD-F021 — Free / Exploratory Voice Test Agent
 
-**代码：⬜ planned；优先级：P1（M3 核心）。** 面向测试目标的 Voice Test Harness / Test Agent。用户定义 Goal、Test Strategy、Coverage、Budget、Stop Condition 和禁止行为；LLM Planner 根据实时 Observation 决定下一步话术或动作，经 Harness 校验后调用 TTS/播放/观察工具。与 Fixed Runner 分离，复用 F020/F023 执行基础；不同于事后 F010 Judge。
+**代码：🟡 partial（最小实时链路骨架已建立，真实服务与实体设备验收未完成）；优先级：P1（M3 核心）。** 面向测试目标的 Voice Test Harness / Test Agent。用户定义 Goal、Test Strategy、Coverage、Budget、Stop Condition 和禁止行为；LLM Planner 根据实时 Observation 决定下一步话术或动作，经 Harness 校验后调用 TTS/播放/观察工具。与 Fixed Runner 分离，复用 F020/F023 执行基础；不同于事后 F010 Judge。
 
-- [ ] 保存版本化目标、策略、允许 Tool、轮次/时长/调用成本预算和停止条件；动作经过结构校验及预算检查，越界动作拒绝执行。预算可配置，15 轮是示例而非默认 SLA。
+**正式目标链路（Streaming ASR，不是“先录完整 WAV → 上传 → File ASR”）：**
+
+```text
+Browser Mic → 持续采集 → PCM chunks → Backend → StreamingASRProvider
+→ partial / final transcript + speech / endpoint 观察 → Observation
+→ LLM Test Agent Decision → TTS → Playback → 下一轮
+```
+
+- [ ] 保存版本化目标、策略、允许 Tool、轮次/时长/调用成本预算和停止条件；动作经过结构校验及预算检查，越界动作执行前拒绝。预算可配置，15 轮是示例而非默认 SLA。
 - [ ] 支持“建立临时事实 → 间隔若干轮 → 重问 → 切换话题 → 恢复原话题”等策略，遵守“不告知正在测试、不直接提示正确答案”等用户约束。
-- [ ] Mic → VAD → 实时 ASR → Observation → LLM Decision → Action → TTS/Playback 循环保留 Trace：模型/提示版本、观察引用、决策理由、工具调用、实际音频、覆盖进展、消耗与停止原因。
-- [ ] Coverage 区分计划、已尝试、已观察及待正式测量；ASR 不确定、模型/工具失败、预算耗尽或用户停止均有明确处置，不能把控制观察或 Agent 自评当作正式通过。
+- [x] Mic → VAD + Streaming ASR → Observation → LLM Decision → Action → TTS/Playback 循环保留 Trace（本分支，software_verified + browser_verified）：模型/提示版本沿用既有 Agent 调用记录，观察引用与来源（`browser_vad` / provider / combined）、决策理由、实际音频与停止原因进入执行记录；真实设备未验收。
+- [x] **实时性要求**（本分支）：不得要求“收到完整 final 才认为设备开始回答”——VAD 先发现讲话、Streaming ASR 随后给文字；partial 只记录/展示/留痕，Agent 生成下一轮只使用 final，不因 partial 波动触发 LLM。
+- [x] 设备回答文本进入 conversation history、Agent context 与 execution trace，并标记为 **Control Evidence**；空 transcript 记为“未观察到回答”并按会话策略暂停或继续，**不会**被当作有效回答自动继续。
+- [x] 兼容/降级（本分支）：整轮录音 + File ASR 作为**显式标注的 fallback**（`capture_mode` / `resolved_capture_mode` / `capture_fallback_reason`），在 UI、play 消息与执行记录中都标注为降级；不存在静默切换。
+- [ ] Coverage 区分计划、已尝试、已观察及待正式测量；ASR 不确定、无 final、模型/工具失败、预算耗尽或用户停止均有明确处置，不能把控制观察或 Agent 自评当作正式通过。（失败类别与停止原因已作为一等状态；Coverage 与预算尚未实现）
 - [ ] 设备回复作为被测数据，不能改写 Harness 的目标、工具权限、预算和禁止行为。
 - [ ] M3 保存候选问题与完整轨迹供离线分析/复核；M5 基于 Measurement Evidence 和人工确认最小化用例，冻结音频/策略后交给固定 Runner 复测。探索输出不能直接成为 Golden ground truth。
 
-依据：既有路线图探索目标与本次用户补充；发布基线无完整实现。
+依据：既有路线图探索目标与用户补充；发布基线的自由模式只有整轮录音 + File ASR 的过渡实现（且浏览器采集未接线），不构成实时链路。
 
 ### PRD-F022 — 专业 HIL / Station
 
@@ -424,14 +467,24 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 ### PRD-F023 — 基础本地播放与麦克风观察
 
-**代码：⬜ planned（可交付基础音频链路）；优先级：P1（M2 核心）。** 普通 Windows 电脑扬声器播放测试语音，麦克风/VAD 提供响应观察；M3 接入实时 ASR 供 Agent 理解回答。复用 Station 接口，不依赖专业 HIL/SPL 校准或 Remote Station 才可用。
+**代码：🟡 partial（播放、VAD、停止与最小执行记录已具备；连续采集与 Streaming ASR 传输为本次新增骨架，真实音频链路未验收）；优先级：P1（M2 核心）。** 普通 Windows 电脑扬声器播放测试语音，浏览器麦克风持续采集用于实时观察。复用 Station 接口，不依赖专业 HIL/SPL 校准或 Remote Station 才可用。
+
+```text
+Browser Mic → continuous capture（AudioWorklet，目标 16 kHz / mono / PCM16）
+→ VAD → streaming audio transport → Streaming ASR
+```
 
 - [ ] Web 可选择输入/输出设备、检查可用性、启动/停止；权限拒绝、无设备和音频中断明确显示，失败不生成成功播放记录。
+- [ ] 连续音频采集用于 Streaming ASR：采样率/位深/声道必须显式记录；**无法获得目标格式时明确失败，不静默送入错误格式音频**；覆盖 chunk 顺序、迟到包、背压、标签页挂起与网络中断。
+- [x] 麦克风音频经后端转发给 ASR（本分支，software_verified + browser_verified）：浏览器只连接本机后端，不持有长期云凭据、也不直接向云服务发送音频。
 - [ ] 支持边播放边监听以执行 Barge-in；记录自身播放泄漏、噪声与设备响应归属的不确定性，无法可靠区分时按策略弃权/停止。
 - [ ] 保存实际播放资产、设备/采样配置、观测时间基准及丢帧/中断信息；平台麦克风输入不自动成为正式测量录音。
 - [ ] 真实扬声器、麦克风、实体 AI 设备验证多轮等待和条件打断，由另一台设备全程录音核对；合成测试不替代真实本地链路验收。
 
-依据：本次用户要求从 F022 拆出；既有 Station 软件基础不构成本项已交付证据。
+本分支进展（software_verified + browser_verified，未合并）：浏览器连续采集以 AudioWorklet 实现（混单声道、线性插值重采样到 16 kHz、PCM16 分帧），若浏览器不接受 16 kHz 的 AudioContext 则由 worklet 重采样，并在页面显示实际采集率与"已重采样"；音频经独立二进制通道
+`/api/voice-test/sessions/{id}/audio` 发送，帧为 `[4 字节大端序号][PCM16LE]`，带背压保护，乱序/迟到/重复/缺口计数进入执行记录；麦克风权限、设备断开、通道失败、格式不符、标签页挂起（`stopLocal` 释放 worklet/上下文/录制器/通道）均有明确失败类别。**真实扬声器、真实麦克风与实体设备验收仍未完成**；边播放边监听（Barge-in）与设备选择 UI 仍未实现。
+
+依据：本次用户要求从 F022 拆出；既有 Station 软件基础不构成本项已交付证据。Streaming 传输与事件契约见 [Streaming ASR 边界](24-streaming-asr.md)。
 
 ### PRD-F024 — Execution Run 与外部录音 Analysis Run 关联
 
@@ -540,8 +593,8 @@ M1.1～M1.5 仅为产品 M1 内部工程拆分；正式产品里程碑仍按第 
 | 里程碑 | 范围 / PRD refs | 阶段完成门槛 |
 | --- | --- | --- |
 | M1 录音导入分析主链 | F001～F015、F016 ASR/diarization、F017 | 完成第 7 节真实录音验收；继续收尾，不因主动测试调整插入硬件前置依赖 |
-| M2 Fixed Voice Test Runner | F016 TTS、F019、F020、F023、F014 主动测试入口、F024 手动关联 | 冻结 Case/音频；真实扬声器/麦克风/AI 设备完成多轮等待、句中停顿和条件 Barge-in；外部录音手动关联并进入 M1 分析，控制/测量分开；停止与故障轨迹完整 |
-| M3 Free Voice Test Agent | F021、F016/F023 实时语音、F014 Agent 配置 | 真实设备上按目标执行自适应对话，覆盖/预算/约束/停止可验证，Observation/Action/音频 Trace 完整；外部录音独立分析，不以 Agent 自评通过 |
+| M2 Fixed Voice Test Runner | F016 TTS、F019、F020、F023（播放 + VAD）、F014 主动测试入口、F024 手动关联 | 冻结 Case/音频；真实扬声器/麦克风/AI 设备完成多轮等待、句中停顿和条件 Barge-in；外部录音手动关联并进入 M1 分析，控制/测量分开；停止与故障轨迹完整。**M2 固定模式的轮次推进只依赖 VAD，不要求 Streaming ASR 可用。** |
+| M3 Free Voice Test Agent | F021、F016 Streaming ASR/F023 实时语音、F014 Agent 配置 | 真实设备上按目标执行自适应对话：**Mic → VAD + Streaming ASR → Observation → LLM Decision → TTS/Playback** 实时闭环，覆盖/预算/约束/停止可验证，Observation/Action/音频 Trace 完整；外部录音独立分析，不以 Agent 自评通过 |
 | M4 执行与分析自动关联 | F024 自动关联、F004/F017 修订溯源 | 自动匹配可复核，歧义可转人工；错配、缺段、时钟偏差有记录，正式结论可追溯执行且不混用时间轴 |
 | M5 Compare / Regression / 自动探索缺陷 | F018、F021 回归转换、F019/F020 重放、F011/F012 复核 | 经外部录音分析和人工确认的问题可最小化成固定 Case；下一版本自动重测，同一冻结刺激下输出可比结果/差异证据，不兼容条件拒绝直接比较 |
 
@@ -561,6 +614,7 @@ M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程�
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
+| 1.3.0 | 2026-09-11 | 确立 **ASR 路线分叉**：Recording Analysis 用 **FileASRProvider**（完整录音一次识别 → Measurement Evidence，保留签名 URL 音频发布）；Active Voice Test 用 **StreamingASRProvider**（open session → push chunk → partial/final → close/cancel → Control Evidence）。PRD-F005 明确限定为 File ASR 契约；PRD-F016 改为按生命周期区分的 File/Streaming 两个家族并给出统一事件模型与来源标注；PRD-F021 明确正式链路为 Mic → VAD + Streaming ASR → Observation → LLM Decision → TTS → Playback，「整轮录音 + File ASR」降为显式标注的 fallback（partial 不触发 LLM、不得要求 final 才判定开始回答、空 transcript 不得当回答）；PRD-F023 明确浏览器连续采集（AudioWorklet，目标 16 kHz/mono/PCM16）经后端转发给 Streaming ASR，浏览器不持有长期凭据；PRD-F020 明确 Fixed Mode 轮次推进只依赖 VAD、ASR 不可用 ≠ Fixed Test 不可用。同步更新第 2 节产品定义、第 3 节状态与第 8 节 M2/M3 排程，并刷新 PRD 基线与版本号。**本行确立目标架构；同一次变更实现了 Streaming ASR 骨架**（提供商边界、火山适配器、浏览器连续采集、二进制音频通道、自由模式最小闭环、降级标注、执行记录扩展），全部标记为 software_verified / browser_verified；**Streaming ASR 真实云调用、真实云与实体设备验收、预算与 Coverage 保持 pending，未升级任何真实验收状态** | 项目所有者要求修正 Free Voice Test 的 ASR 技术路线：不再以“先录完整 WAV → 上传 → File ASR”为正式主路径，改为经后端的实时 Streaming ASR，同时保留 Recording Analysis 的 File ASR 路线与双证据链隔离 |
 | 1.2.3 | 2026-09-11 | ① 实现状态描述校准：按 main `8d01ef2` / `v0.3.2` 修正仍标注为“本分支/未合并”的已集成实现状态、ImportRun 与 Judge/Findings 的真实边界、TTS 接入状态，以及报告产物与运行配置说明；② 固定对话控制可靠性加固（PRD-F020/F023）：停止本地即时生效且可重复、迟到/重复/已停止事件不重复推进、无回答超时与回答结束分开并记录未观察到回答、每轮最小控制记录（区分服务端播放指令与浏览器播放报告）、音频/连接/会话异常以明确原因退出，并修复已完成的合成状态被迟到的进度轮询覆盖。产品范围、功能优先级、指标定义与第 7 节真实验收门槛均不变、未降级；不改变主动语音排程 | 项目所有者要求把过期文档对齐当前 main，并修复固定对话链路中停止不生效、超时被当作回答、无执行记录与异常悬挂 |
 | 1.2.2 | 2026-09-11 | 记录 Issue #62 的固定语音生成可见进度：会话快照、实际短句状态轮询、重复提交保护与失败恢复；不升级主动测试或真实设备验收状态 | 项目所有者反馈生成语音缺少进度提示 |
 | 1.2.1 | 2026-09-11 | 记录 Issue #60 的 v0.3.1 TTS 协议修复：当前 API-Key V3 SSE、显式资源/音色、可验证 WAV 与脱敏调用审计；状态保持 partial，真实录音/设备验收未升级 | 项目所有者要求修复 v0.3.0 云 TTS 调用失败并重新发布测试 |

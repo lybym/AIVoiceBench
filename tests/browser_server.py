@@ -24,7 +24,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from aivoicebench import api  # noqa: E402
+from aivoicebench import voice_agent  # noqa: E402
 from aivoicebench.model_settings import RunProviders  # noqa: E402
+from aivoicebench.streaming_asr import (EVENT_FINAL, EVENT_PARTIAL, EVENT_SPEECH_ENDED,
+                                        SOURCE_PROVIDER, StreamingASREvent)  # noqa: E402
 from aivoicebench.voice_test import VoiceTestManager  # noqa: E402
 
 
@@ -78,6 +81,79 @@ class SyntheticTTS:
         }
 
 
+class ScriptedStreamingProvider:
+    """Deterministic streaming ASR stand-in for browser acceptance.
+
+    Not part of the product: it is injected here (and copied into the container
+    only for an acceptance run) so the free-mode capture path can be exercised
+    without cloud credentials. It reports what it received so the test can prove
+    audio really crossed the socket.
+    """
+
+    def __init__(self, *, final_text='设备回答：南京明天晴', partial='设备回答'):
+        self.final_text = final_text
+        self.partial = partial
+        self.sessions = []
+
+    async def start_session(self, *, session_id, turn_id, run_index, directory):
+        provider = self
+
+        class Session:
+            stream_id = 'STR-scripted'
+            profile = {'provider': 'scripted', 'model_id': 'scripted-streaming'}
+
+            def __init__(self):
+                self.audio_bytes = 0
+                self.frames = 0
+                self.saw_last_package = False
+                self.finished = False
+                self.failure = None
+                self.state = 'open'
+                self._events = []
+
+            async def push_audio(self, pcm):
+                self.audio_bytes += len(pcm)
+                self.frames += 1
+                if self.frames == 1:
+                    self._events.append(StreamingASREvent(
+                        kind=EVENT_PARTIAL, source=SOURCE_PROVIDER, text=provider.partial))
+
+            async def finish_input(self):
+                self.finished = True
+                if self.audio_bytes > 0:
+                    self._events.append(StreamingASREvent(
+                        kind=EVENT_FINAL, source=SOURCE_PROVIDER, text=provider.final_text,
+                        basis='provider_endpoint'))
+                    self._events.append(StreamingASREvent(
+                        kind=EVENT_SPEECH_ENDED, source=SOURCE_PROVIDER,
+                        basis='provider_endpoint'))
+                else:
+                    self.failure = 'asr_no_final'
+                self.saw_last_package = True
+
+            def poll_events(self):
+                events, self._events = self._events, []
+                return events
+
+            async def wait_events(self, timeout):
+                return self.poll_events()
+
+            async def close(self, reason='client_finished'):
+                self.state = 'closed'
+
+            async def cancel(self, reason='client_cancelled'):
+                self.state = 'cancelled'
+
+            def summary(self):
+                return {'stream_id': self.stream_id, 'audio_bytes': self.audio_bytes,
+                        'frames': self.frames, 'failure': self.failure,
+                        'evidence_scope': 'control_evidence'}
+
+        session = Session()
+        provider.sessions.append(session)
+        return session
+
+
 def build_app(args):
     output_root = Path(args.output).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
@@ -89,6 +165,23 @@ def build_app(args):
 
     api._voice_test_manager = manager
     api.OUTPUT_ROOT = output_root
+
+    streaming = ScriptedStreamingProvider()
+    if args.free_mode:
+        # Free mode needs an observation provider and a decision maker. Both are
+        # test doubles; the browser-side capture path is the real one under test.
+        api._streaming_asr_factory = lambda: (lambda root: streaming)
+
+        def fake_agent(session, history, device_text, output_root_arg, manager_arg,
+                       turn_index=None):
+            if len([t for t in session.turns if t.role == 'platform']) >= args.free_max_turns:
+                return None
+            index = len([t for t in session.turns if t.role == 'platform']) + 1
+            text = f'第{index}个问题'
+            audio = manager_arg.synthesize_text(session.session_id, text, turn_index)
+            return text, audio['path']
+
+        voice_agent.generate_next_phrase = fake_agent
 
     @api.app.post('/__test__/forget/{session_id}')
     def _forget_session(session_id: str):
@@ -118,6 +211,9 @@ def main():
     parser.add_argument('--phrase-ms', type=int, default=250)
     parser.add_argument('--slow-phrase-ms', type=int, default=8000)
     parser.add_argument('--no-response-timeout-ms', type=int, default=2500)
+    parser.add_argument('--free-mode', action='store_true',
+                        help='inject a scripted streaming ASR provider and agent')
+    parser.add_argument('--free-max-turns', type=int, default=2)
     args = parser.parse_args()
 
     manager = build_app(args)

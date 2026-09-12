@@ -158,6 +158,13 @@ const VT = (function () {
       playback: null,
       pendingPlayWait: false,
       listening: false,
+      // Free mode: how the device's answer becomes text. The server decides once
+      // per run and the mode is always shown; a fallback is never presented as
+      // streaming.
+      captureMode: null,
+      captureFallback: null,
+      capture: null,
+      captureResult: null,
       bounds: {
         playback_start_timeout_ms: PLAYBACK_START_TIMEOUT_MS,
         playback_max_duration_ms: PLAYBACK_MAX_DURATION_MS,
@@ -186,6 +193,9 @@ const VT = (function () {
       listening: activeRun.listening,
       has_audio: !!activeRun.audio,
       pending_play_wait: !!activeRun.pendingPlayWait,
+      capture_mode: activeRun.captureMode,
+      capture_fallback_reason: activeRun.captureFallback,
+      has_capture: !!activeRun.capture,
       stats: Object.assign({}, activeRun.stats),
     };
   }
@@ -235,6 +245,7 @@ const VT = (function () {
     // Ends the outstanding playback wait as well as the audio itself, so the
     // awaiting flow finishes instead of hanging.
     const hadAudio = cancelAudio(run, reason || 'user_stop');
+    teardownCapture(run);
     stopVAD();
     stopMic();
     if (hadAudio) {
@@ -390,6 +401,226 @@ const VT = (function () {
     audio.play().catch(() => notify('暂时无法试听该语音，请检查音频是否已生成。'));
   }
 
+  // ------------------------------------------- streaming capture (PRD-F023)
+
+  const CAPTURE_TARGET_RATE = 16000;
+  const CAPTURE_FRAME_SAMPLES = 3200; // 200 ms at 16 kHz
+  const CAPTURE_BACKPRESSURE_BYTES = 262144;
+  const CAPTURE_RESULT_TIMEOUT_MS = 15000;
+
+  function captureStatus(text) {
+    const el = $('vt-capture-status');
+    if (el) el.textContent = text;
+  }
+
+  function showDeviceText(text, kind) {
+    const el = $('vt-device-transcript');
+    if (!el) return;
+    const label = kind === 'final' ? '设备（确认）' : '设备（实时）';
+    el.textContent = text ? `${label}：${text}` : '';
+  }
+
+  function captureIsStreaming(run) {
+    return !!run && run.mode === 'free' && run.captureMode === 'streaming';
+  }
+
+  function sendAudioFrame(run, pcmBuffer) {
+    const capture = run.capture;
+    if (!capture || !capture.started || !isActive(run)) return;
+    const socket = capture.ws;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    // Backpressure: never grow an unbounded send queue.
+    if (socket.bufferedAmount > CAPTURE_BACKPRESSURE_BYTES) {
+      capture.droppedFrames += 1;
+      return;
+    }
+    const pcm = new Uint8Array(pcmBuffer);
+    const frame = new Uint8Array(4 + pcm.length);
+    const seq = capture.sequence;
+    frame[0] = (seq >>> 24) & 0xff;
+    frame[1] = (seq >>> 16) & 0xff;
+    frame[2] = (seq >>> 8) & 0xff;
+    frame[3] = seq & 0xff;
+    frame.set(pcm, 4);
+    socket.send(frame.buffer);
+    capture.sequence += 1;
+    capture.frames += 1;
+    capture.bytes += pcm.length;
+  }
+
+  function teardownCapture(run) {
+    const capture = run && run.capture;
+    if (!capture) return;
+    if (capture.node) {
+      try { capture.node.port.postMessage({ type: 'stop' }); } catch (_) { /* ignore */ }
+      try { capture.node.port.onmessage = null; } catch (_) { /* ignore */ }
+      try { capture.node.disconnect(); } catch (_) { /* ignore */ }
+    }
+    if (capture.context) {
+      try { capture.context.close(); } catch (_) { /* ignore */ }
+    }
+    if (capture.recorder && capture.recorder.state === 'recording') {
+      try { capture.recorder.stop(); } catch (_) { /* ignore */ }
+    }
+    const socket = capture.ws;
+    if (socket) {
+      capture.ws = null;
+      try { socket.onmessage = null; socket.onclose = null; socket.onerror = null; socket.close(); }
+      catch (_) { /* ignore */ }
+    }
+    run.capture = null;
+  }
+
+  async function startStreamingCapture(run) {
+    if (!captureIsStreaming(run)) { startTurnFileCapture(run); return; }
+    if (!micStream) { failRun(run, 'mic_disconnected'); return; }
+    const capture = {
+      mode: 'streaming', ws: null, context: null, node: null, sequence: 0, frames: 0,
+      bytes: 0, droppedFrames: 0, started: false, stopping: false, result: null,
+      closed: false, contextRate: null,
+    };
+    run.capture = capture;
+    capture.resultPromise = new Promise((resolve) => { capture.resolveResult = resolve; });
+    capture.resultTimer = setTimeout(() => {
+      if (capture.result) return;
+      captureStatus('未在控制时限内收到实时识别结果。');
+      capture.resolveResult(null);
+    }, CAPTURE_RESULT_TIMEOUT_MS);
+    try {
+      const Context = window.AudioContext || window.webkitAudioContext;
+      // Ask for the recogniser's rate; the worklet resamples if the browser
+      // insists on its own, and the actual context rate is shown to the user.
+      const context = new Context({ sampleRate: CAPTURE_TARGET_RATE });
+      capture.context = context;
+      capture.contextRate = context.sampleRate;
+      await context.audioWorklet.addModule('/static/pcm_capture_worklet.js');
+      const source = context.createMediaStreamSource(micStream);
+      const node = new AudioWorkletNode(context, 'pcm-capture', {
+        processorOptions: { targetRate: CAPTURE_TARGET_RATE, frameSamples: CAPTURE_FRAME_SAMPLES },
+      });
+      const silent = context.createGain();
+      silent.gain.value = 0; // keep the graph pulled without echoing to speakers
+      source.connect(node);
+      node.connect(silent);
+      silent.connect(context.destination);
+      capture.node = node;
+      node.port.onmessage = (event) => {
+        const data = event.data || {};
+        if (data.type === 'frame') sendAudioFrame(run, data.pcm);
+      };
+    } catch (error) {
+      captureStatus('连续音频采集不可用，未发送任何音频。');
+      failRun(run, 'audio_capture_failed');
+      return;
+    }
+    const url = `ws${location.protocol === 'https:' ? 's' : ''}://${location.host}`
+      + `/api/voice-test/sessions/${run.sessionId}/audio`;
+    const socket = new WebSocket(url);
+    socket.binaryType = 'arraybuffer';
+    capture.ws = socket;
+    socket.onopen = () => {
+      if (!isActive(run)) { teardownCapture(run); return; }
+      socket.send(JSON.stringify({
+        type: 'capture_started', turn_id: run.turnId,
+        sample_rate: CAPTURE_TARGET_RATE, channels: 1, bits: 16,
+      }));
+    };
+    socket.onmessage = (event) => {
+      let message;
+      try { message = JSON.parse(event.data); } catch (_) { return; }
+      if (!isActive(run)) return;
+      if (message.type === 'capture_ready') {
+        capture.started = true;
+        const rate = capture.contextRate === CAPTURE_TARGET_RATE
+          ? '' : `（浏览器采集 ${capture.contextRate} Hz，已重采样到 16 kHz）`;
+        captureStatus(`实时识别中：设备回答会边识别边显示${rate}`);
+      } else if (message.type === 'partial_transcript') {
+        showDeviceText(message.text, 'partial');
+        capture.partials = (capture.partials || 0) + 1;
+      } else if (message.type === 'final_transcript') {
+        showDeviceText(message.text, 'final');
+      } else if (message.type === 'capture_result') {
+        capture.result = message;
+        if (message.final_text) showDeviceText(message.final_text, 'final');
+        captureStatus(message.empty_transcript
+          ? `本轮未获得设备文本${message.failure ? `（${message.failure}）` : ''}。`
+          : '本轮实时识别完成。');
+        clearTimeout(capture.resultTimer);
+        capture.resolveResult(message);
+      } else if (message.type === 'capture_error') {
+        capture.error = message.error;
+        captureStatus(`实时识别不可用：${message.error}`);
+        clearTimeout(capture.resultTimer);
+        capture.resolveResult(null);
+      }
+    };
+    socket.onerror = () => {
+      if (!isActive(run)) return;
+      captureStatus('实时识别连接失败。');
+      clearTimeout(capture.resultTimer);
+      capture.resolveResult(null);
+    };
+    socket.onclose = () => {
+      if (capture.result || capture.closed) return;
+      clearTimeout(capture.resultTimer);
+      capture.resolveResult(capture.result);
+    };
+  }
+
+  function startTurnFileCapture(run) {
+    if (!micStream || typeof MediaRecorder === 'undefined') return;
+    const capture = { mode: 'turn_file', recorder: null, chunks: [], started: false };
+    run.capture = capture;
+    try {
+      const recorder = new MediaRecorder(micStream);
+      capture.recorder = recorder;
+      recorder.ondataavailable = (event) => { if (event.data.size > 0) capture.chunks.push(event.data); };
+      recorder.onstop = async () => {
+        const blob = new Blob(capture.chunks, { type: 'audio/webm' });
+        captureStatus('降级模式：整轮录音已停止，正在上传做文件识别。');
+        try {
+          const response = await fetch(
+            `/api/voice-test/sessions/${run.sessionId}/device-audio`,
+            { method: 'POST', body: blob });
+          const body = response.ok ? await response.json() : {};
+          if (!isActive(run)) return;
+          wsSend(run, { type: 'device_audio_ready', turn_id: run.turnId,
+                        transcript: body.transcript || '' });
+        } catch (_) {
+          if (isActive(run)) wsSend(run, { type: 'device_audio_ready', turn_id: run.turnId,
+                                           transcript: '' });
+        }
+      };
+      recorder.start();
+      capture.started = true;
+      captureStatus('降级模式：整轮录音 + 文件识别（不是实时 Streaming ASR）。');
+    } catch (_) {
+      captureStatus('录音不可用。');
+      failRun(run, 'audio_capture_failed');
+    }
+  }
+
+  async function stopCapture(run, reason) {
+    const capture = run && run.capture;
+    if (!capture || capture.stopping) return null;
+    capture.stopping = true;
+    if (capture.mode === 'turn_file') {
+      if (capture.recorder && capture.recorder.state === 'recording') capture.recorder.stop();
+      return null;
+    }
+    capture.closed = true;
+    if (capture.node) {
+      try { capture.node.port.postMessage({ type: 'stop' }); } catch (_) { /* ignore */ }
+    }
+    if (capture.ws && capture.ws.readyState === WebSocket.OPEN) {
+      capture.ws.send(JSON.stringify({ type: 'capture_stopped', reason: reason || 'speech_end' }));
+    } else {
+      clearTimeout(capture.resultTimer);
+      if (capture.resolveResult) capture.resolveResult(null);
+    }
+    return capture.resultPromise;
+  }
+
   // -------------------------------------------------------------------- VAD
 
   async function requestMic() {
@@ -458,6 +689,7 @@ const VT = (function () {
           wsSend(run, { type: 'observation_timeout', turn_id: run.turnId, wait_ms: timeoutMs });
           updateStatus('未观察到设备回答（已达到控制等待上限）。');
           stopVAD();
+          if (run.mode === 'free') finishFreeTurn(run, 'vad_timeout');
         }
       } else if (vadState === 'device_speaking') {
         if (rms < VAD_THRESHOLD) {
@@ -468,6 +700,9 @@ const VT = (function () {
             wsSend(run, { type: 'device_speech_end', turn_id: run.turnId });
             updateStatus('等待下一轮…');
             stopVAD();
+            // Free mode: the answer's text comes from the capture, so the turn
+            // advances only once the recogniser has been finalised.
+            if (run.mode === 'free') finishFreeTurn(run, 'speech_end');
           }
         } else {
           silenceStartMs = 0;
@@ -489,10 +724,31 @@ const VT = (function () {
 
   // ------------------------------------------------------------------ turns
 
+  /* Free mode: the answer's text decides when the turn is over, so the capture
+   * is finalised first and the control socket is told to read the result the
+   * backend already holds. */
+  async function finishFreeTurn(run, reason) {
+    if (!isActive(run) || run.pendingCaptureFinish) return;
+    run.pendingCaptureFinish = true;
+    const capture = run.capture;
+    const result = await stopCapture(run, reason);
+    if (!isActive(run)) return;
+    if (capture && capture.mode === 'turn_file') return; // recorder.onstop drives it
+    wsSend(run, { type: 'capture_result', turn_id: run.turnId,
+                  stream_id: (result && result.stream_id) || null,
+                  reason: reason });
+    run.pendingCaptureFinish = false;
+  }
+
   async function handlePlay(run, msg) {
     if (!isActive(run)) { run.stats.lateDropped += 1; return; }
     run.stats.playReceived += 1;
     run.turnId = msg.turn_id;
+    run.pendingCaptureFinish = false;
+    if (msg.capture && msg.capture.mode) {
+      run.captureMode = msg.capture.mode;
+      run.captureFallback = msg.capture.fallback_reason || null;
+    }
     if (msg.playback_start_timeout_ms) run.bounds.playback_start_timeout_ms = msg.playback_start_timeout_ms;
     if (msg.playback_max_duration_ms) run.bounds.playback_max_duration_ms = msg.playback_max_duration_ms;
     if (msg.no_response_timeout_ms) run.bounds.no_response_timeout_ms = msg.no_response_timeout_ms;
@@ -502,6 +758,9 @@ const VT = (function () {
     if (!isActive(run)) return; // stopped while playing: nothing further happens
     if (result.outcome === 'ended') {
       updateStatus('正在等待设备回答（仅观察疑似回答）。');
+      // Free mode needs the device's words, so capture and VAD run together:
+      // VAD decides "started/ended speaking", the recogniser supplies the text.
+      if (run.mode === 'free') startStreamingCapture(run);
       startVAD(run);
     } else if (result.outcome === 'failed') {
       failRun(run, result.detail);
@@ -682,6 +941,20 @@ const VT = (function () {
         appendFreeLog('平台', msg.text);
         if (msg.device_text) appendFreeLog('设备', msg.device_text);
         handlePlay(run, msg);
+      } else if (msg.type === 'capture_mode') {
+        // Say which observation path this run uses; never imply streaming when
+        // the run is on the labelled fallback.
+        run.captureMode = msg.mode;
+        run.captureFallback = msg.fallback_reason || null;
+        if (msg.mode === 'streaming') {
+          captureStatus('本轮使用实时 Streaming ASR 观察设备回答。');
+          appendFreeLog('系统', '观察方式：实时 Streaming ASR（Control Evidence）');
+        } else {
+          const why = msg.fallback_reason === 'streaming_asr_not_configured'
+            ? '未配置实时语音识别' : '按配置选择';
+          captureStatus(`本轮使用降级路径：整轮录音 + 文件识别（${why}），不是实时 Streaming ASR。`);
+          appendFreeLog('系统', `观察方式：降级（整轮录音 + 文件识别，${why}）`);
+        }
       } else if (msg.type === 'listening') {
         updateStatus('检测到疑似回答（浏览器 VAD 提示，未确认说话人）。');
       } else if (msg.type === 'ignored') {

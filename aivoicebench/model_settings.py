@@ -14,14 +14,23 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-CAPABILITIES = {'tts': '语音生成', 'asr': '语音识别', 'diarization': '说话人分析', 'judge': '结果分析'}
+CAPABILITIES = {'tts': '语音生成', 'asr': '录音分析语音识别', 'streaming_asr': '主动测试实时语音识别',
+                'diarization': '说话人分析', 'judge': '结果分析'}
+# File ASR and Streaming ASR are separate purposes on purpose: Recording Analysis
+# needs a whole-file recogniser, Active Voice Test needs a session-based one
+# (PRD-F016). A single vague "default_asr" would hide that difference.
+LEGACY_CAPABILITIES = ('tts', 'asr', 'diarization', 'judge')
 PROTOCOLS = {'openai_chat': {'judge'}, 'volcengine_tts': {'tts'},
-             'volcengine_asr': {'asr', 'diarization'}, 'custom_speech': {'tts', 'asr', 'diarization'}}
-PARAMETERS = {'temperature', 'max_tokens', 'timeout_seconds', 'voice', 'speed', 'volume', 'pitch', 'sample_rate', 'format', 'resource_id'}
+             'volcengine_asr': {'asr', 'diarization'},
+             'volcengine_streaming_asr': {'streaming_asr'},
+             'custom_speech': {'tts', 'asr', 'diarization'}}
+PARAMETERS = {'temperature', 'max_tokens', 'timeout_seconds', 'voice', 'speed', 'volume', 'pitch',
+              'sample_rate', 'format', 'resource_id', 'end_window_size', 'force_to_speech_time'}
 
 @dataclass(frozen=True)
 class RunProviders:
     asr: object = field(default=None, repr=False)  # factory(evidence_root), initialized inside stage
+    streaming_asr: object = field(default=None, repr=False)
     diarization: object = field(default=None, repr=False)
     judge: object = field(default=None, repr=False)
     tts: object = field(default=None, repr=False)
@@ -30,6 +39,7 @@ class RunProviders:
 def adapter_available(profile, role):
     return ((role == 'judge' and profile['protocol'] == 'openai_chat') or
             (role == 'asr' and profile['protocol'] == 'volcengine_asr') or
+            (role == 'streaming_asr' and profile['protocol'] == 'volcengine_streaming_asr') or
             (role == 'tts' and profile['protocol'] == 'volcengine_tts') or
             (role == 'diarization' and profile['protocol'] == 'volcengine_asr'))
 
@@ -79,12 +89,15 @@ def validate_profile(p):
         # V3 TTS uses signed integer percentage-like controls.  The service
         # itself remains authoritative for any model-specific restriction.
         numeric_limits.update({'speed':(-50,100),'volume':(-100,100),'pitch':(-100,100)})
+    elif p['protocol']=='volcengine_streaming_asr':
+        # Documented forced-endpointing bounds (PRD-F016 / docs/24-streaming-asr.md).
+        numeric_limits.update({'end_window_size':(300,5000),'force_to_speech_time':(0,10000)})
     else:
         numeric_limits['speed']=(0.25,4)
     for key,limits in numeric_limits.items():
         if key in params and (type(params[key]) not in (int,float) or not math.isfinite(params[key]) or not limits[0]<=params[key]<=limits[1]):
             raise SettingsError('模型数值参数超出范围')
-    for key in ('max_tokens','sample_rate'):
+    for key in ('max_tokens','sample_rate','end_window_size','force_to_speech_time'):
         if key in params and type(params[key]) is not int:
             raise SettingsError('输出长度和采样率必须是整数')
     for key in ('voice','format','resource_id'):
@@ -96,8 +109,27 @@ def validate_profile(p):
             raise SettingsError('火山 TTS 必须填写资源 ID 和音色 ID')
         if params.get('format','wav').lower()!='wav':
             raise SettingsError('主动语音测试的火山 TTS 格式必须为 wav')
+    if p['protocol']=='volcengine_streaming_asr':
+        if not params.get('resource_id','').strip():
+            raise SettingsError('火山流式语音识别必须填写资源 ID')
     p['parameters']=params
     return p
+
+
+def apply_route_defaults(document):
+    """Fill purposes added after this document was written.
+
+    A stored configuration written before Streaming ASR existed has no
+    ``streaming_asr`` route. Filling it with ``None`` preserves the meaning of
+    every existing route; the caller surfaces which keys were added so the change
+    is visible rather than silent.
+    """
+    routes = document.get('routes')
+    if not isinstance(routes, dict):
+        routes = {}
+    added = [role for role in CAPABILITIES if role not in routes]
+    document['routes'] = {role: routes.get(role) for role in CAPABILITIES}
+    return document, added
 
 
 class ModelSettings:
@@ -125,6 +157,8 @@ class ModelSettings:
             revision,raw=db.execute('SELECT revision,document FROM state WHERE id=1').fetchone()
             secrets=dict(db.execute('SELECT id,value FROM secrets'))
         doc=json.loads(raw)
+        doc,added=apply_route_defaults(doc)
+        self.routes_added=added
         resolved={}
         for p in doc['profiles']:
             resolved[p['id']]=os.environ.get(p['credential_env'],'') if p['credential_env'] else secrets.get(p['id'],'')
@@ -138,6 +172,10 @@ class ModelSettings:
             p['adapter_capabilities']=[c for c in p['capabilities'] if adapter_available(p,c)]
         doc['capabilities']=CAPABILITIES
         doc['applies']='next_run'
+        if getattr(self,'routes_added',None):
+            # Never migrate silently: report which purposes were defaulted.
+            doc['routes_defaulted']=list(self.routes_added)
+            doc['routes_defaulted_note']='新增用途按“未配置”填入，不改变既有用途的选择'
         return doc
 
     def update(self,payload):
@@ -150,7 +188,14 @@ class ModelSettings:
         by_id={p['id']:p for p in profiles}
         if len(by_id)!=len(profiles):raise SettingsError('配置 ID 重复')
         routes=payload.get('routes')
-        if not isinstance(routes,dict) or set(routes)!=set(CAPABILITIES):raise SettingsError('必须明确配置四类用途')
+        if not isinstance(routes,dict) or set(routes)-set(CAPABILITIES):
+            raise SettingsError('必须明确配置各类用途')
+        missing=[role for role in LEGACY_CAPABILITIES if role not in routes]
+        if missing:
+            raise SettingsError('必须明确配置四类用途')
+        # A purpose added later may be omitted; it is stored as unconfigured
+        # rather than defaulting to some existing profile.
+        routes={role: routes.get(role) for role in CAPABILITIES}
         for role,selected in routes.items():
             if selected is not None and (not isinstance(selected,str) or selected not in by_id or not by_id[selected]['enabled'] or role not in by_id[selected]['capabilities']):
                 raise SettingsError('默认模型不存在、未启用或不支持对应用途')
@@ -189,6 +234,7 @@ class ModelSettings:
             'not_integrated' if not adapter_available(by_id[route], role) else
             'configured' if keys[route] else 'credential_missing') for role,route in doc['routes'].items()}
         asr_factory=None
+        streaming_asr_factory=None
         diarization_factory=None
         tts_factory=None
         asr=by_id.get(doc['routes']['asr'])
@@ -214,6 +260,24 @@ class ModelSettings:
                         provider_name=diarization['provider'] or 'volcengine',
                         model=diarization['model'] or 'bigmodel',
                         resource_id=diarization['parameters'].get('resource_id','volc.bigasr.auc_turbo'))
+        # Streaming ASR for Active Voice Test. Separate from the file ASR route:
+        # different lifecycle, different evidence class (PRD-F016).
+        streaming=by_id.get(doc['routes'].get('streaming_asr'))
+        if streaming and streaming['enabled'] and adapter_available(streaming, 'streaming_asr'):
+            from .volcengine_streaming_asr import VolcengineStreamingASRProvider
+            _stream_profile=streaming
+            _stream_key=keys[streaming['id']]
+            def streaming_asr_factory(root):
+                params=_stream_profile['parameters']
+                return VolcengineStreamingASRProvider(
+                    root, _stream_key,
+                    endpoint=_stream_profile['base_url'] or
+                    'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
+                    resource_id=params.get('resource_id','volc.bigasr.sauc.duration'),
+                    model=_stream_profile['model'] or 'bigmodel',
+                    timeout=params.get('timeout_seconds',300),
+                    end_window_size=params.get('end_window_size',800),
+                    force_to_speech_time=params.get('force_to_speech_time',1000))
         # TTS V3 SSE for Active Voice Test.  Profile parameters intentionally
         # carry current account-specific resource/voice identifiers rather than
         # code defaults; credentials remain in the secret store/environment.
@@ -240,4 +304,5 @@ class ModelSettings:
                 'model':os.environ.get('AIVOICEBENCH_LLM_MODEL',''),
                 'note':'Existing environment configuration applies until settings are first saved'}
             provider=None
-        return doc,RunProviders(asr=asr_factory, tts=tts_factory, diarization=diarization_factory, judge=provider)
+        return doc,RunProviders(asr=asr_factory, tts=tts_factory, diarization=diarization_factory,
+                                streaming_asr=streaming_asr_factory, judge=provider)

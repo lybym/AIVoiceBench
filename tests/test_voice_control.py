@@ -167,7 +167,7 @@ class FixedRunControlTests(ControlLoopTestCase):
             self.suspect_response(ws, play['turn_id'], expect_play=True)
 
         record = self.record(session_id)
-        self.assertEqual(record['record_version'], '1.0.0')
+        self.assertEqual(record['record_version'], '1.1.0')
         self.assertTrue(record['notes'])
         self.assertEqual(record['session_id'], session_id)
 
@@ -374,7 +374,7 @@ class ExecutionRecordAvailabilityTests(ControlLoopTestCase):
         self.assertEqual(still_there.json()['session_id'], session_id)
         exported = self.record(session_id)
         # the trace survives even though the live session object does not
-        self.assertEqual(exported['record_version'], '1.0.0')
+        self.assertEqual(exported['record_version'], '1.1.0')
         self.assertTrue(exported['events'])
         self.assertTrue(self.current_run(exported)['turns'])
 
