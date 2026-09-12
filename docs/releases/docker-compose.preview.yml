@@ -1,4 +1,4 @@
-# AIVoiceBench v0.4.0-alpha.1 — 预览版 Compose 配置
+# AIVoiceBench v0.4.0-alpha.2 — 预览版 Compose 配置
 #
 # 用途：用发布镜像启动一个与既有版本完全隔离的预览实例。
 #   - 独立容器名：aivoicebench-preview
@@ -6,7 +6,7 @@
 #   - 默认仅绑定本机 127.0.0.1，不暴露到外网
 #
 # 使用前请先加载镜像（二选一）：
-#   docker load < aivoicebench-v0.4.0-alpha.1.tar.gz
+#   docker load < aivoicebench-v0.4.0-alpha.2.tar.gz
 #   或让 start-aivoicebench-preview.ps1 代为加载。
 #
 # 启动：
@@ -18,7 +18,7 @@
 
 services:
   aivoicebench-preview:
-    image: aivoicebench:v0.4.0-alpha.1
+    image: aivoicebench:v0.4.0-alpha.2
     container_name: aivoicebench-preview
     # 仅绑定本机回环地址；如需改端口，改这一行的左侧（例如 8001:8000）。
     ports:

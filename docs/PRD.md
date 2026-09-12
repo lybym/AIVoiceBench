@@ -2,9 +2,9 @@
 prd_id: AIVB-PRD
 prd_version: 1.3.0
 status: consolidated_for_owner_review
-updated: 2026-09-11
-implementation_baseline: v0.4.0-alpha.1@fd07ce6af8acdab708eafd76cfcfa7adbb5ccafb
-main_baseline: fd07ce6af8acdab708eafd76cfcfa7adbb5ccafb
+updated: 2026-09-12
+implementation_baseline: main@3877b3d60ca0a3e8bb8f0c80c7d8ba676b2a36d8
+main_baseline: 3877b3d60ca0a3e8bb8f0c80c7d8ba676b2a36d8
 ---
 
 # AIVoiceBench 产品需求文档（PRD）
@@ -32,12 +32,12 @@ main_baseline: fd07ce6af8acdab708eafd76cfcfa7adbb5ccafb
 - **实现建议**（第 9 节索引的架构/技术文档、schema、Issue）：如何实现。具体函数名、字段名、拆分方式、调用次数、Provider 复用方式都属于实现选择，可以由开发者在技术文档中演进，**不能自动成为 PRD 没有提出的产品门槛**。典型误用：把“必须调用两次服务”当成产品要求（复用一次 ASR 原生输出即可满足同一需求）；把某个具体字段名当成验收条件。
 - **实现状态**：截至某次审计或某个分支的事实，必须给出代码入口、测试和 commit/PR/tag 依据。
 
-本文中的代码状态最初以 **main `c612d36` / `v0.2.0-alpha.2`** 为审计基线（2026-09-11），随后已按 **main `8d01ef2` / `v0.3.2`** 复核并更新实现状态。未合并分支单独标注，不能写成 main 已实现；发布和软件验证也不能替代真实验收。历史条目与固定到旧提交的代码/测试引用按当时基线保留，便于复核。
+本文中的代码状态最初以 **main `c612d36` / `v0.2.0-alpha.2`** 为审计基线（2026-09-11），随后按 **main `8d01ef2` / `v0.3.2`** 复核，并在 2026-09-12 刷新到 **main `3877b3d`**。未合并分支单独标注，不能写成 main 已实现；发布和软件验证也不能替代真实验收。历史条目与固定到旧提交的代码/测试引用按当时基线保留，便于复核。
 
 ### 代码位于哪里
 
 - [main 审计源码](https://github.com/lybym/AIVoiceBench/tree/c612d36a61a5cbc90f629677b28d64228316f1d0) 与 `v0.2.0-alpha.2` 指向同一提交（**审计时点的历史基线**；main 其后已推进到 `8d01ef2` = `v0.3.2`）。PR #48/#49/#50/#53/#55/#56 已合并；#51/#52 虽显示 Closed，其实现提交已由集成历史带入 main，不能根据 PR 标签判断代码缺失。
-- [v0.3.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.3.2) 为当前正式发布（GitHub Latest）；[v0.2.0-alpha.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.2.0-alpha.2) 是历史 Pre-release，alpha.1 标签保留、未作为公开预览版发布；当前安装入口见 [v0.3.2 发布说明](releases/0.3.2.md)。
+- [v0.3.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.3.2) 仍为正式发布（GitHub Latest）；`v0.4.0-alpha.2` 是本次 Streaming ASR 的候选预览版，发布说明见 [0.4.0-alpha.2](releases/0.4.0-alpha.2.md)。Pre-release 不接管稳定版的 Latest 标识。
 - [CI 34511317063](https://github.com/lybym/AIVoiceBench/actions/runs/34511317063) 在 Windows/Linux 各运行 445 项测试，Linux 跳过 1 项，工作流成功；[发布工作流 34511317171](https://github.com/lybym/AIVoiceBench/actions/runs/34511317171) 成功，含镜像启动、合成三格式导入、重启恢复、附件重新加载验证。本次文档审计复核这些记录，未重新运行硬件或真实云测试。
 - [PR #54](https://github.com/lybym/AIVoiceBench/pull/54) 的可选语义角色归属尚未合并；main 的聚类标签不等于 tester/device 角色，正常无角色输入仍保持 unknown。
 - 真实云凭据调用、5～20 分钟真实设备录音与人工标注质量验收仍待完成。完整 M1 未通过；预览版不是产品完成声明。
@@ -98,7 +98,7 @@ flowchart TD
 | --- | --- | --- |
 | 输入 | 已完成的完整录音 | 浏览器麦克风的持续音频流 |
 | Provider 家族 | **FileASRProvider** | **StreamingASRProvider** |
-| 当前实现 | `VolcengineASRProvider`（录音文件识别；按服务要求经 Signed URL 音频发布） | 目标为 `VolcengineStreamingASRProvider`（火山引擎大模型流式语音识别） |
+| 当前实现 | `VolcengineASRProvider`（录音文件识别；按服务要求经 Signed URL 音频发布） | `VolcengineStreamingASRProvider` 已实现并通过受控验证；真实火山云调用待验收 |
 | 输出 | 完整 Transcript（utterances / timestamps / 说话人标签） | partial / final transcript + speech / endpoint 观察 |
 | 生命周期 | 一次提交、一次识别、可离线重跑 | open session → push audio chunk → partial → final → close / cancel |
 | 证据类别 | **Measurement Evidence** | **Control Evidence** |
@@ -353,7 +353,7 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 - [ ] 波形、完整转写/轮次/事件联动、Finding 区间跳转、人工审核入口及真实长录音体验。
 
 - [ ] M2/M3 主动测试入口可操作，清楚区分执行完成、测量待补充与正式结论；后续范围不计入现有 browser_verified。
-- [x] 本分支进展（software_verified，未发布）：固定用例生成会立即显示 aria-live 状态，轮询会话中实际已完成的短句数量和耗时，阻止重复提交；失败后恢复输入。该进度只反映 TTS 资产生成，不表示播放、设备回答或正式测量完成（Issue #62）。
+- [x] 已合入并随 `v0.4.0-alpha.1` 预览发布（software_verified + browser_verified）：固定用例生成会立即显示 aria-live 状态，轮询会话中实际已完成的短句数量和耗时，阻止重复提交；失败后恢复输入。该进度只反映 TTS 资产生成，不表示播放、设备回答或正式测量完成（Issue #62）。
 
 依据：[static/](https://github.com/lybym/AIVoiceBench/tree/v0.1.3/aivoicebench/static)、[api.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/api.py)；Issues #27、#42。
 
@@ -371,7 +371,7 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 
 ### PRD-F016 — 语音服务实际调用（File ASR / Streaming ASR / TTS）
 
-**代码：🟡 partial（云 File ASR、ASR-native 聚类与 TTS 已合入；Streaming ASR 仅有骨架，未接真实服务）；验证：software_verified、real_recording_pending、real_cloud_streaming_pending。**
+**代码：🟡 partial（云 File ASR、ASR-native 聚类、TTS 与 Streaming ASR 代码路径已合入；真实服务与实体设备未验收）；验证：software_verified、container_verified、browser_verified、real_recording_pending、real_cloud_streaming_pending。**
 
 提供**按生命周期区分**的接入点，并核对火山等当前官方 API 后实现真实调用。ASR 必须显式分成两个家族，不能合并为一个只接受文件的接口：
 
@@ -382,7 +382,7 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 每次调用记录 provider、model、endpoint/API version、config、prompt_version（适用时）、timestamp、输入/输出 refs、latency、status 与失败类别，**不记录 Secret**。Streaming 会话额外记录 stream/session 标识、音频格式（采样率/位深/声道）、chunk 统计、事件来源与结束原因。配置管理不代表调用能力已交付。
 
 - [ ] 云 ASR/diarization 原生输出、重试/失败状态、调用审计与 Web 分析集成。
-- [x] Streaming ASR 最小骨架（本分支，software_verified + browser_verified）：统一事件模型与来源标注、音频 chunk 顺序与迟到/重复/缺口统计、取消/超时/错误作为一等状态、凭据仅在后端、调用审计不落 Secret；端点/资源/鉴权/音频格式/判停参数按官方文档核对，未核对字段不发送。真实服务调用未进行。
+- [x] Streaming ASR 最小骨架（main PR #66，software_verified + container_verified + browser_verified）：统一事件模型与来源标注、音频 chunk 顺序与迟到/重复/缺口统计、取消/超时/错误作为一等状态、凭据仅在后端、调用审计不落 Secret；端点/资源/鉴权/音频格式/判停参数按官方文档核对，未核对字段不发送。真实服务调用未进行。
 - [ ] Streaming ASR 真实服务调用：以**当前官方文档**核对 endpoint / resource ID / 鉴权头 / 音频格式 / 判停参数后方可实现与声明；契约核对已完成（见 [Streaming ASR 边界](24-streaming-asr.md)），**真实云调用与判停实测仍未进行**，保持 real_cloud_pending。
 
 已合入进展（software_verified）：云 File ASR 原生输出、调用审计、Web/CLI 集成与 ASR-native `DiarizationProvider` 已具备；聚类复用同一次云 ASR 原生响应产出聚类，不新增独立服务端点或第二次识别，结果进入 ImportRun 账本与 Web/CLI。**仍未验证**：供应商是否需在请求中显式开启说话人分离（官方参数表无法离线核实），以及任何真实录音/凭据下的原生标签可用性；因此该整体验收项保持未勾选。见 [云适配器](../aivoicebench/volcengine_asr.py)、[聚类处理器](../aivoicebench/diarization.py)、[主链测试](../tests/test_recording_backbone.py)。
@@ -429,9 +429,9 @@ Finding 显示 Severity、Confidence、Reason、Evidence、Audio Timestamp、Sus
 - [ ] Barge-in 用例先请求长故事，检测设备持续发声后等待 Case 指定时长（如 2 秒）再播放“停，换个问题”；记录实际触发及旧/新回答候选，不能用预拼接时间代替实时触发。未观察到响应时按策略 timeout/停止，不伪造打断成功。
 - [ ] 相同 Case 与相同观察序列重放时控制决策一致；真实设备测试核对播放/触发轨迹。设备回答结束的控制判断与正式 Barge-in/时延/语义判定分开。
 - [ ] 监听中断、低置信度、自身播放误识别或设备断开时按冻结策略等待/停止并记录原因，不无限等待或无记录追加重试；用户可随时停止。
-- [ ] **Fixed Mode 的轮次推进由 VAD 控制，不要求 ASR 可用**：ASR 不可用 ≠ Fixed Test 不可用。Streaming ASR 接入后只作为增强 Observation（设备回答文本、复杂条件、Barge-in、False Endpoint、语义触发）；需要语义观察才能执行的 Case 必须显式声明该前提，不能默认把基础 VAD Runner 变成 ASR 依赖。
+- [x] **Fixed Mode 的轮次推进由 VAD 控制，不要求 ASR 可用**：ASR 不可用 ≠ Fixed Test 不可用。Streaming ASR 接入后只作为增强 Observation（设备回答文本、复杂条件、Barge-in、False Endpoint、语义触发）；需要语义观察才能执行的 Case 必须显式声明该前提，不能默认把基础 VAD Runner 变成 ASR 依赖。
 
-本分支进展（software_verified，未合并）：固定对话控制可靠性加固已实现并可软件/浏览器测试复现——停止为本地即时生效（不等待后端确认，取消当前播放，迟到 `ended` 不会恢复监听或推进），轮次以 `turn_id` 校验，重复/迟到/已停止会话的事件只被记 `ignored` 而不重复推进；无回答超时作为独立事件 `observation_timeout` 上报并按会话策略（`pause`/`continue`）暂停或继续，记录为“未观察到回答”而非回答结束；每轮写入最小控制记录（`execution-record.json`，含服务端播放指令与浏览器播放报告、观察及其依据、关闭原因），区分“服务端发出播放”与“浏览器报告播放”，VAD 仅记录疑似回答；音频不可用/播放被拒/播放卡住/连接断开/会话失效均以明确原因退出且可重新开始。控制等待有明确上限但**不构成产品性能 SLA**。上述均为受控输入下的软件与浏览器验证，**真实扬声器、麦克风与实体 AI 设备验收仍未完成**；F023 的边播放边监听（Barge-in）与自由模式的完整多轮验收不在本次范围。
+main 进展（PR #65，software_verified + container_verified + browser_verified）：固定对话控制可靠性加固已实现并可软件/浏览器测试复现——停止为本地即时生效（不等待后端确认，取消当前播放，迟到 `ended` 不会恢复监听或推进），轮次以 `turn_id` 校验，重复/迟到/已停止会话的事件只被记 `ignored` 而不重复推进；无回答超时作为独立事件 `observation_timeout` 上报并按会话策略（`pause`/`continue`）暂停或继续，记录为“未观察到回答”而非回答结束；每轮写入最小控制记录（`execution-record.json`，含服务端播放指令与浏览器播放报告、观察及其依据、关闭原因），区分“服务端发出播放”与“浏览器报告播放”，VAD 仅记录疑似回答；音频不可用/播放被拒/播放卡住/连接断开/会话失效均以明确原因退出且可重新开始。控制等待有明确上限但**不构成产品性能 SLA**。上述均为受控输入下的软件与浏览器验证，**真实扬声器、麦克风与实体 AI 设备验收仍未完成**；F023 的边播放边监听（Barge-in）与自由模式的完整多轮验收不在本次范围。
 
 依据：[runner.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/runner.py)、[test_runner.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_runner.py)；Issue #5。现有 Run 准备不等于真实多轮执行已交付。
 
@@ -449,15 +449,15 @@ Browser Mic → 持续采集 → PCM chunks → Backend → StreamingASRProvider
 
 - [ ] 保存版本化目标、策略、允许 Tool、轮次/时长/调用成本预算和停止条件；动作经过结构校验及预算检查，越界动作执行前拒绝。预算可配置，15 轮是示例而非默认 SLA。
 - [ ] 支持“建立临时事实 → 间隔若干轮 → 重问 → 切换话题 → 恢复原话题”等策略，遵守“不告知正在测试、不直接提示正确答案”等用户约束。
-- [x] Mic → VAD + Streaming ASR → Observation → LLM Decision → Action → TTS/Playback 循环保留 Trace（本分支，software_verified + browser_verified）：模型/提示版本沿用既有 Agent 调用记录，观察引用与来源（`browser_vad` / provider / combined）、决策理由、实际音频与停止原因进入执行记录；真实设备未验收。
-- [x] **实时性要求**（本分支）：不得要求“收到完整 final 才认为设备开始回答”——VAD 先发现讲话、Streaming ASR 随后给文字；partial 只记录/展示/留痕，Agent 生成下一轮只使用 final，不因 partial 波动触发 LLM。
+- [x] Mic → VAD + Streaming ASR → Observation → LLM Decision → Action → TTS/Playback 循环保留 Trace（main PR #66，software_verified + container_verified + browser_verified）：模型/提示版本沿用既有 Agent 调用记录，观察引用与来源（`browser_vad` / provider / combined）、决策理由、实际音频与停止原因进入执行记录；真实设备未验收。
+- [x] **实时性要求**（main PR #66）：不得要求“收到完整 final 才认为设备开始回答”——VAD 先发现讲话、Streaming ASR 随后给文字；partial 只记录/展示/留痕，Agent 生成下一轮只使用 final，不因 partial 波动触发 LLM。
 - [x] 设备回答文本进入 conversation history、Agent context 与 execution trace，并标记为 **Control Evidence**；空 transcript 记为“未观察到回答”并按会话策略暂停或继续，**不会**被当作有效回答自动继续。
-- [x] 兼容/降级（本分支）：整轮录音 + File ASR 作为**显式标注的 fallback**（`capture_mode` / `resolved_capture_mode` / `capture_fallback_reason`），在 UI、play 消息与执行记录中都标注为降级；不存在静默切换。
+- [x] 兼容/降级（main PR #66）：整轮录音 + File ASR 作为**显式标注的 fallback**（`capture_mode` / `resolved_capture_mode` / `capture_fallback_reason`），在 UI、play 消息与执行记录中都标注为降级；不存在静默切换。
 - [ ] Coverage 区分计划、已尝试、已观察及待正式测量；ASR 不确定、无 final、模型/工具失败、预算耗尽或用户停止均有明确处置，不能把控制观察或 Agent 自评当作正式通过。（失败类别与停止原因已作为一等状态；Coverage 与预算尚未实现）
 - [ ] 设备回复作为被测数据，不能改写 Harness 的目标、工具权限、预算和禁止行为。
 - [ ] M3 保存候选问题与完整轨迹供离线分析/复核；M5 基于 Measurement Evidence 和人工确认最小化用例，冻结音频/策略后交给固定 Runner 复测。探索输出不能直接成为 Golden ground truth。
 
-依据：既有路线图探索目标与用户补充；发布基线的自由模式只有整轮录音 + File ASR 的过渡实现（且浏览器采集未接线），不构成实时链路。
+依据：既有路线图探索目标与用户补充；main PR #66 已实现最小实时链路并保留显式 File ASR fallback，但真实云、真实设备、预算与 Coverage 仍未验收。
 
 ### PRD-F022 — 专业 HIL / Station
 
@@ -467,7 +467,7 @@ Browser Mic → 持续采集 → PCM chunks → Backend → StreamingASRProvider
 
 ### PRD-F023 — 基础本地播放与麦克风观察
 
-**代码：🟡 partial（播放、VAD、停止与最小执行记录已具备；连续采集与 Streaming ASR 传输为本次新增骨架，真实音频链路未验收）；优先级：P1（M2 核心）。** 普通 Windows 电脑扬声器播放测试语音，浏览器麦克风持续采集用于实时观察。复用 Station 接口，不依赖专业 HIL/SPL 校准或 Remote Station 才可用。
+**代码：🟡 partial（播放、VAD、停止、最小执行记录、连续采集与 Streaming ASR 传输已合入；真实音频链路未验收）；优先级：P1（M2 核心）。** 普通 Windows 电脑扬声器播放测试语音，浏览器麦克风持续采集用于实时观察。复用 Station 接口，不依赖专业 HIL/SPL 校准或 Remote Station 才可用。
 
 ```text
 Browser Mic → continuous capture（AudioWorklet，目标 16 kHz / mono / PCM16）
@@ -475,13 +475,13 @@ Browser Mic → continuous capture（AudioWorklet，目标 16 kHz / mono / PCM16
 ```
 
 - [ ] Web 可选择输入/输出设备、检查可用性、启动/停止；权限拒绝、无设备和音频中断明确显示，失败不生成成功播放记录。
-- [ ] 连续音频采集用于 Streaming ASR：采样率/位深/声道必须显式记录；**无法获得目标格式时明确失败，不静默送入错误格式音频**；覆盖 chunk 顺序、迟到包、背压、标签页挂起与网络中断。
-- [x] 麦克风音频经后端转发给 ASR（本分支，software_verified + browser_verified）：浏览器只连接本机后端，不持有长期云凭据、也不直接向云服务发送音频。
+- [x] 连续音频采集用于 Streaming ASR（main PR #66，software_verified + browser_verified）：采样率/位深/声道显式记录；无法获得目标格式时明确失败；chunk 顺序、迟到/重复、背压、停止释放与网络中断有留痕。真实标签页挂起矩阵仍待 G 阶段验收。
+- [x] 麦克风音频经后端转发给 ASR（main PR #66，software_verified + browser_verified）：浏览器只连接本机后端，不持有长期云凭据、也不直接向云服务发送音频。
 - [ ] 支持边播放边监听以执行 Barge-in；记录自身播放泄漏、噪声与设备响应归属的不确定性，无法可靠区分时按策略弃权/停止。
 - [ ] 保存实际播放资产、设备/采样配置、观测时间基准及丢帧/中断信息；平台麦克风输入不自动成为正式测量录音。
 - [ ] 真实扬声器、麦克风、实体 AI 设备验证多轮等待和条件打断，由另一台设备全程录音核对；合成测试不替代真实本地链路验收。
 
-本分支进展（software_verified + browser_verified，未合并）：浏览器连续采集以 AudioWorklet 实现（混单声道、线性插值重采样到 16 kHz、PCM16 分帧），若浏览器不接受 16 kHz 的 AudioContext 则由 worklet 重采样，并在页面显示实际采集率与"已重采样"；音频经独立二进制通道
+main 进展（PR #66，software_verified + container_verified + browser_verified）：浏览器连续采集以 AudioWorklet 实现（混单声道、线性插值重采样到 16 kHz、PCM16 分帧），若浏览器不接受 16 kHz 的 AudioContext 则由 worklet 重采样，并在页面显示实际采集率与"已重采样"；音频经独立二进制通道
 `/api/voice-test/sessions/{id}/audio` 发送，帧为 `[4 字节大端序号][PCM16LE]`，带背压保护，乱序/迟到/重复/缺口计数进入执行记录；麦克风权限、设备断开、通道失败、格式不符、标签页挂起（`stopLocal` 释放 worklet/上下文/录制器/通道）均有明确失败类别。**真实扬声器、真实麦克风与实体设备验收仍未完成**；边播放边监听（Barge-in）与设备选择 UI 仍未实现。
 
 依据：本次用户要求从 F022 拆出；既有 Station 软件基础不构成本项已交付证据。Streaming 传输与事件契约见 [Streaming ASR 边界](24-streaming-asr.md)。
@@ -667,7 +667,7 @@ M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程�
 | #6 | Audio Station / HIL | PRD-F022, F023 | 专业 F022 继续 P3 deferred；基础 F023 为 P1/M2 planned，分别排程 |
 | #9 | Frozen TTS Golden asset | PRD-F016, F019 | P1/M2 核心；planned：旧暂停草稿不算已交付 |
 
-F021（M3）与 F024（M2/M4）的实现 Issue 在对应阶段启动时建立有界工作单元；本次仅定义需求，不虚构已创建的任务或实现。
+F021 的最小 Streaming ASR 闭环已由 PR #66 实现；其真实云/实体设备、预算/Coverage 与 Barge-in 后续仍应拆为有界 Issue。F024（M2/M4）在对应阶段建立实现 Issue，不虚构已创建的任务。
 
 ### 已关闭 Issue（需求已归入 PRD）
 
