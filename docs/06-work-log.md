@@ -1004,3 +1004,58 @@
   （`no_device_transcript…`）而不是 `completed`；这是“无回答按会话策略处置”的既有语义，
   本轮只保证它明确收尾、不挂起。
 
+## 2026-09-13 — 严格输入契约 + 收敛为 `v0.4.0-alpha.5` 候选 Pre-release（PR #75，未合并）
+
+- **严格 `max_turns` 契约（Issue #74 补充）。** `VoiceTestManager.create_session()` 之前用
+  `int(max_turns)` 转换，导致 JSON `1.5` 静默变成 `1`、`true` 被当成 `1`、`"3"` 被接受。
+  现在**只接受原生 `int`**：显式拒绝 `bool`（`isinstance(True, int)` 为真）、拒绝全部 `float`
+  （含 `1.0`）、拒绝字符串/`null`/其他类型，并限定 `1..50`；非法输入仍走既有风格，
+  由 `ValueError` → `HTTPException(400)` 返回明确错误。页面传入正常整数时的行为不变。
+  新增回归：接受 `1`、`50`；拒绝 `0`、`-1`、`51`、`1000`、`1.0`、`1.5`、`true`、`false`、
+  `"3"`、`null`、`[]`、`{}`（既通过 HTTP，也直接对 manager）；`max_turns=1/3` 完整轮次
+  测试保持通过。Streaming ASR 的 **Control Evidence** 边界未改动。
+- **收敛为可发布的候选版本 `v0.4.0-alpha.5`。** 应用版本、Dockerfile `version` 标签、
+  预览 Compose、Windows 启动脚本统一为 `0.4.0-alpha.5`（启动脚本保持 UTF-8 BOM 与 CRLF）；
+  新增 `docs/releases/0.4.0-alpha.5.md`，明确写明**本版由尚未合并的候选分支构建、
+  tag 指向该分支的发布候选 commit 而不是 main**，PR #73 已合并到 main 作为背景。
+  Dockerfile 新增 `org.opencontainers.image.revision`（由 `GIT_REVISION` 构建参数注入），
+  发布工作流传入解析出的提交，发布镜像因此可追溯到它的发布候选 commit。
+  发布工作流同时移除了已废弃的 `--free-max-turns` 测试服务器开关
+  （轮次预算现在来自页面自身的「最大轮次」输入，集成验收会自行填写）。
+- **发布前验证（全部在本机实跑）。**
+  - 全量 `python -m unittest discover -s tests -p "test_*.py"` → **570 tests, OK**；
+    定向 `tests.test_voice_streaming` / `test_voice_control` / `test_voice_capability` /
+    `test_model_settings` → 62 tests, OK；`tests.test_release_packaging` → 18 tests, OK。
+  - 候选镜像 `aivoicebench:v0.4.0-alpha.5`（`org.opencontainers.image.revision=120ba1c`）：
+    `/health` 与 `/openapi.json` 均返回 `0.4.0-alpha.5`；镜像内
+    `python tests/container_acceptance.py` → **16/16 PASS**。
+  - `docker save` → 删除标签（镜像被删除）→ `docker load`：镜像 ID 不变，
+    重新加载的镜像启动独立容器后 `/health` 仍是 `0.4.0-alpha.5`，容器验收再次 **16/16 PASS**。
+  - 发布附件中的 `start-aivoicebench-preview.ps1`（Windows PowerShell 5.1 实跑）与
+    `docker-compose.preview.yml`（`up -d` → `/health` → `down -v`）各启动一次隔离预览实例并
+    通过 `/health`，验证后清理了这两个隔离实例及其数据卷。
+- **真实云端复验（在本版候选镜像上，`max_turns=3`，受控输入）。**
+  会话 **`VT-7ddb00538d20`**：恰好 **3 个问题 / 3 个回答**，每轮 `status=finished`、
+  `failure=null`、`final_basis=provider_endpoint`；第 3 个回答保存后由**轮次预算**结束
+  （`next_reason=max_turns`），**没有第 4 次 `play`、没有第 4 次 LLM/TTS 调用**
+  （`provider_calls={"tts":3,"llm":3,"asr":0}`）；`status=completed`、
+  `stop_reason=max_turns`、`awaiting_turn_id=null`；Turn 链 T0→D1→T2→D3→T4→D5 全部关闭；
+  每次 `asr_session_closed` 仍为 `termination_basis=provider_normal_close`、
+  `close_code=1000`、`saw_last_package=false`（未伪造 `is_last_package`）。
+  静音握手 `VT-9fbcad1e9682`（`STR-35d54ec5d3244c50`）→ `asr_no_final`、0.67 s。
+  同规格的第一次尝试 `VT-4df0a917e13e` 是真实模型自行结束（`agent_stop`，2 轮），
+  不是预算结束；重跑（目标改为“问完三个城市再结束”）后得到上述会话，**未修改代码或判据**。
+- **证据边界。** 本版是**未合并候选分支构建的 Pre-release**，不是 main 发布；真实云验证为
+  **受控输入**（真实 TTS 输出经真实二进制音频通道）且仍是 **Control Evidence**；
+  Provider 时间戳不作为 acoustic ground truth；失败不伪装成回答、partial 不触发下一轮、
+  不发明缺失文本；真实物理设备、浏览器麦克风声学测量与 Recording Analysis 正式验收
+  **未尝试/未完成**；未勾选、未降级任何真实验收项。
+- **制品与链接。** tag `v0.4.0-alpha.5` → 提交 `120ba1ca3551f57402aec5196b34fb437b61cbdd`；
+  镜像 `aivoicebench:v0.4.0-alpha.5`
+  （`sha256:92c9f80e939c92cc3e7b879acba7d0ef8539f57e291961a5139ce70fa8a6ad8a`）；
+  归档 `aivoicebench-v0.4.0-alpha.5.tar.gz`（331,066,991 字节）
+  SHA256 `3a15f7c1809c15f9d5819cf3632e0ff8ec8b307436cf8c4a26863763b97f4385`；
+  PR #75 保持 OPEN、未合并。本版发布的完整记录见
+  [发布说明](releases/0.4.0-alpha.5.md#发布记录本次实际制品与验证)。
+
+
