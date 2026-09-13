@@ -1,6 +1,6 @@
 # 文档导航
 
-2026-09-13 已按 main `beeacb5` 核对。产品现定义 Active Measurement 与 Recording Analysis 两条独立正式 Measurement Pipeline；Active Measurement Audio 基础、完整 M1、真实云 Streaming ASR、实体设备与 Measurement Equivalence 验证仍待完成。先看 [Active Measurement](25-active-measurement.md)、[总体架构](01-system-architecture.md)、[Roadmap](04-development-roadmap.md) 和 PRD 的实现状态。
+2026-09-13 已按 `v0.4.0` 正式版候选核对。该版本收敛 `v0.4.0-alpha.6` 的自由对话修复、可选语义角色提议与模块化 PRD；产品定义 Active Measurement 与 Recording Analysis 两条独立正式 Measurement Pipeline。完整 M1、真实物理设备声学测量、Recording Analysis 正式验收与 Measurement Equivalence 验证仍待完成。先看 [v0.4.0 发布说明](releases/0.4.0.md)、[Active Measurement](25-active-measurement.md)、[总体架构](01-system-architecture.md)、[Roadmap](04-development-roadmap.md) 和 PRD 的实现状态。
 
 - **[产品需求 PRD](PRD.md)**：唯一产品入口，维护边界、全局原则、需求目录和正式里程碑；详细功能/指标/验收/追踪/历史见 [PRD 分册导航](prd/README.md)。
 - [产品文档中心](product/README.md)：旧来源归集映射、冲突处置、集中历史快照。

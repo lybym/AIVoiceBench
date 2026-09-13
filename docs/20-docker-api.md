@@ -1,12 +1,12 @@
 # Docker / API — 当前使用说明
 
-2026-09-11 基线 main c612d36 / alpha.2。产品要求见 [PRD](PRD.md)，主链配置见 [Recording Backbone](23-recording-backbone.md)。
+2026-09-13 基线 `v0.4.0`。产品要求见 [PRD](PRD.md)，主链配置见 [Recording Backbone](23-recording-backbone.md)。
 
 ## 版本与启动
 
-[v0.3.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.3.2) 为当前正式发布（Latest）。[v0.2.0-alpha.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.2.0-alpha.2) 是历史预览版，alpha.1 未作为公开预览版发布。按 [v0.3.2 发布说明](releases/0.3.2.md) 下载镜像包、Compose、Windows 启动脚本及 SHA256SUMS，启动后访问 <http://127.0.0.1:8000>；端口占用可用脚本 -Port 8001。
+[v0.4.0](https://github.com/lybym/AIVoiceBench/releases/tag/v0.4.0) 是当前正式发布（Latest）；`v0.4.0-alpha.6` 及更早版本保留为历史候选。按 [v0.4.0 发布说明](releases/0.4.0.md) 下载镜像包、Compose、Windows 启动脚本及 SHA256SUMS，启动后访问 <http://127.0.0.1:8000>；端口占用可用脚本 `-Port 8001`。
 
-预览脚本使用独立容器/数据卷，不迁移旧 v0.1.x 数据。Docker 自带 FFmpeg/FFprobe，无需从 Windows 挂载可执行文件；不交付 EXE。
+启动脚本使用独立容器/数据卷，不迁移或删除既有数据。Docker 自带 FFmpeg/FFprobe，无需从 Windows 挂载可执行文件；不交付 EXE。
 
 ## 接口与边界
 

@@ -249,9 +249,16 @@ class BackboneTests(unittest.TestCase):
         invocation=next(iter((directory/'provider-calls').glob(scope['invocation_id'])))
         self.assertEqual(digest(invocation/'native-response.json'),scope['native_response_sha256'])
         # Stage state and invocation artifact refs are visible without reading files.
+        # Invocation artifacts are no longer only cloud calls: a semantic role call is
+        # audited the same way, so assert each ref resolves rather than where it lives.
         self.assertEqual(data['stages']['diarization']['status'],'complete')
         self.assertTrue(data['invocation_refs'])
-        self.assertTrue(all('provider-calls' in a['path'] for a in data['invocation_refs']))
+        registered={a['artifact_id']:a for a in manifest['artifacts']}
+        for ref in data['invocation_refs']:
+            self.assertIn(ref['artifact_id'],registered)
+            self.assertTrue((directory/ref['path']).is_file(),ref['path'])
+        self.assertTrue(any('provider-calls' in a['path'] for a in data['invocation_refs']),
+                        'the cloud ASR call must still be audited')
         # Role attribution is exposed but must not claim a role it has no evidence for.
         self.assertEqual(data['attribution']['status'],'partial')
         self.assertEqual([a['role'] for a in data['attribution']['attributions']],['unknown'])
