@@ -1208,3 +1208,11 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - Added `docs/prd/` modules: `recording-analysis.md` (F001–F019), `active-measurement.md` (F020–F026), `metric-requirements.md` (M001–M010), `acceptance-status.md` (N001–N007 and gates), `traceability.md` (Requirement/Issue/PR mapping) and `changelog.md`; `prd/README.md` defines ownership and prevents parallel PRDs. Technical documents, schemas, Issues and this work log remain non-authoritative for product scope.
 - No product requirement, metric formula, implementation state or real-world validation status was upgraded by the split. In particular, Active Measurement Audio, Stimulus Alignment, Canonical Live Timeline, formal Active MetricResult, Measurement Equivalence and advanced Barge-in remain planned / validation_pending.
 - Verification: `git diff --check` reports no whitespace errors (only the repository LF→CRLF checkout warning); all 43 PRD-F/PRD-M/PRD-N IDs resolve in `PRD.md` or `docs/prd/`; a local Markdown scan checked 48 current files with no broken local links, excluding historical `docs/product/archive/**`. No application code, schema, tests, frontend, release artifact or historical archive is changed.
+
+## 2026-09-13 — `v0.4.0` 正式版本地收敛
+
+- 按项目所有者授权，以 `v0.4.0-alpha.6` 候选为行为基线，合入自由对话最终轮次/迟到转写修复、可选语义角色归属以及双正式 Measurement Pipeline 与模块化 PRD 文档。
+- 版本、Docker label、Compose、PowerShell 启动脚本和发布说明统一为 `0.4.0`；正式交付仍是 Docker 后端 + Web UI，不提供 Windows EXE/安装包。
+- 发布说明保留真实边界：语义角色仅为 `needs_review` 机器提议；Streaming ASR 为 Control Evidence；真实录音 M1、实体设备声学测量、Active Measurement Audio 与 Measurement Equivalence 未宣称完成。
+- 本条只记录本地候选收敛。GitHub PR 合并状态、最终 main/tag 提交、CI、镜像 ID、归档 SHA-256 和 Release 附件须在远程操作恢复并实际完成后另行补记，不能预先填写。
+- 本地验证：发布打包、Web 版本、Streaming ASR、自由对话控制/能力与语义角色归属定向 **107 tests, OK**；全量 **585 tests, OK（11 skipped）**。浏览器专用模块因本地缺少驱动而跳过，仍由正式 Release 工作流在候选镜像中执行，未写成已通过。

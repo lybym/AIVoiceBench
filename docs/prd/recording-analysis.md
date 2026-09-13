@@ -9,7 +9,7 @@
 | F003 | 统一标准化与 Audio QA；格式、时长、空音频、解码失败等须明确诊断 | ✅ implemented；QA 不等于准确率保证 |
 | F004 | 可恢复分阶段编排，阶段输入输出、失败、重试与审计可追溯 | 🟡 partial；Judge/Findings 尚未接入主链 |
 | F005 | File ASR 的完整录音识别、原生响应审计、时间戳与可选签名 URL 发布 | 🟡 partial；真实服务与质量待验收 |
-| F006 | Speaker/source attribution：角色证据不足时保持 unknown，不按先后猜 tester/device | 🟡 partial |
+| F006 | Speaker/source attribution：角色证据不足时保持 unknown；可选语义处理器只提出待复核角色，不按先后猜 tester/device | 🟡 partial；软件验证已覆盖提议、弃权、冲突和 provenance，真实角色识别待验收 |
 | F007 | Turn/Response 关联必须有可解释角色和时序证据；歧义可弃权 | 🟡 partial |
 | F008 | 自动 EventTimeline 由 Canonical Event 组成，并可追溯音频/转写/归属 Evidence | 🟡 partial |
 | F009 | 唯一确定性 Metric Engine 产出 MetricResult；不并行计算同名公式 | 🟡 partial |
@@ -29,6 +29,7 @@
 - External Recording 是独立声学原件，不得被改写为 Active Measurement Evidence。
 - 声学、角色和语义证据各自标记来源、置信度和不确定性；缺失时输出 `unknown`、`needs_review` 或 `insufficient_evidence`。
 - File ASR 的 timestamp 与 transcript 是文字/语义证据，不自动成为声学真值。
+- 语义角色提议保留 provider/model/prompt/invocation/evidence refs，模型自报置信度不作为校准准确率；显式或人工证据优先，冲突不覆盖。
 - 真实录音、真实云服务、人工标注和实体设备验收必须与软件/容器/浏览器验证分开记录。
 
 详细技术边界见 [录音导入](../14-recording-import.md)、[Recording backbone](../23-recording-backbone.md)、[声学分段](../17-acoustic-segmentation.md)、[融合/Turn/Event](../18-fusion-turns-events.md) 与 [确定性引擎](../12-deterministic-engine.md)。

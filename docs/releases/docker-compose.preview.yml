@@ -1,12 +1,12 @@
-# AIVoiceBench v0.4.0-alpha.6 — 预览版 Compose 配置
+# AIVoiceBench v0.4.0 — Docker Compose 配置
 #
-# 用途：用发布镜像启动一个与既有版本完全隔离的预览实例。
+# 用途：用正式发布镜像启动一个与既有版本完全隔离的实例。
 #   - 独立容器名：aivoicebench-preview
 #   - 独立数据卷：aivoicebench-preview-data
 #   - 默认仅绑定本机 127.0.0.1，不暴露到外网
 #
 # 使用前请先加载镜像（二选一）：
-#   docker load < aivoicebench-v0.4.0-alpha.6.tar.gz
+#   docker load < aivoicebench-v0.4.0.tar.gz
 #   或让 start-aivoicebench-preview.ps1 代为加载。
 #
 # 启动：
@@ -18,7 +18,7 @@
 
 services:
   aivoicebench-preview:
-    image: aivoicebench:v0.4.0-alpha.6
+    image: aivoicebench:v0.4.0
     container_name: aivoicebench-preview
     # 仅绑定本机回环地址；如需改端口，改这一行的左侧（例如 8001:8000）。
     ports:
@@ -36,7 +36,7 @@ services:
       - AIVOICEBENCH_AUDIO_PUT_URL=${AIVOICEBENCH_AUDIO_PUT_URL:-}
       - AIVOICEBENCH_AUDIO_GET_URL=${AIVOICEBENCH_AUDIO_GET_URL:-}
       - AIVOICEBENCH_AUDIO_HOST=${AIVOICEBENCH_AUDIO_HOST:-}
-      # === 语义服务（可选；本预览版不包含语义角色归属）===
+      # === 语义服务（可选；用于语义角色提议，结果始终需要人工复核）===
       # 保持 none 时，需要语义证据的指标会明确显示为 insufficient_evidence（正确行为）。
       - AIVOICEBENCH_LLM_PROVIDER=${AIVOICEBENCH_LLM_PROVIDER:-none}
       # 在 .env 或 shell 环境中提供，不要写进本文件、不要提交到 Git：
@@ -45,7 +45,7 @@ services:
       - ARK_API_KEY=${ARK_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - AIVOICEBENCH_LLM_MODEL=${AIVOICEBENCH_LLM_MODEL:-}
-    # 预览版使用 unless-stopped 之外的显式策略，避免意外开机自启影响旧环境。
+    # 使用显式策略，避免意外开机自启影响旧环境。
     restart: "no"
 
 volumes:

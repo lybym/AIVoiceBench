@@ -23,9 +23,9 @@ Online Event Producer                 Offline Event Producer
 
 ## 当前实现边界
 
-本轮文档审计基于 main `0362b22`：
+本轮正式版收敛基于 `v0.4.0-alpha.6` 候选、语义角色归属与 main 的双正式测量 Pipeline 文档：
 
-- Recording Analysis 已具备录音导入、标准化、部分声学/ASR/归属/融合，以及有足够角色证据时的 Timeline 和 canonical metrics；Judge、Findings、人工修订、完整报告与真实录音验收仍未闭环。
+- Recording Analysis 已具备录音导入、标准化、部分声学/ASR/归属/融合、待复核的语义角色提议，以及有足够角色证据时的 Timeline 和 canonical metrics；Judge、Findings、人工修订、完整报告与真实录音验收仍未闭环。
 - Active Voice Test 已具备浏览器播放、Control RMS VAD、Streaming ASR、Fixed/Free 控制与 execution record 基础；跨整次 Active Run 的 durable Measurement Audio、Stimulus Alignment、Streaming Acoustic Measurement、Canonical Live Timeline 和正式 Active MetricResult 仍为 planned。
 - 软件验证、浏览器验证、容器验证、真实设备验证和 Measurement Equivalence 验证是不同状态。当前没有 `measurement_equivalence_verified` 声明。
 
@@ -43,7 +43,7 @@ Online Event Producer                 Offline Event Producer
 
 ## 交付形态
 
-当前交付为 Docker 后端与前端，通过 Windows 浏览器访问；不要求 Windows EXE/安装包。Docker 内包含媒体处理依赖，运行数据通过持久卷保存。稳定版与预览版的具体启动命令、附件和 SHA-256 以 [Docker/API 文档](docs/20-docker-api.md) 与对应 GitHub Release 为准。
+当前正式交付为 Docker 后端与前端，通过 Windows 浏览器访问；不要求 Windows EXE/安装包。Docker 内包含媒体处理依赖，运行数据通过持久卷保存。`v0.4.0` 的启动命令、附件和 SHA-256 以 [Docker/API 文档](docs/20-docker-api.md) 与 [发布说明](docs/releases/0.4.0.md) 为准。
 
 默认部署面向可信单用户 localhost。模型和语音服务凭据只由后端持有，不进入浏览器、Git、运行快照或报告；保存配置不等于服务连通或真实效果已经验证。
 
