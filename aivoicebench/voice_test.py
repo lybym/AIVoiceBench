@@ -595,10 +595,15 @@ class VoiceTestManager:
             raise ValueError("on_no_response must be 'pause' or 'continue'")
         if capture_mode not in CAPTURE_MODES:
             raise ValueError(f"capture_mode must be one of {CAPTURE_MODES}")
-        try:
-            max_turns = int(max_turns)
-        except (TypeError, ValueError):
-            raise ValueError('max_turns must be an integer') from None
+        # A turn budget is a count, so only a native integer is accepted. JSON
+        # ``1.0`` / ``1.5`` / ``"3"`` / ``true`` / ``null`` must never be coerced
+        # into a number of rounds: ``bool`` is a subclass of ``int`` in Python and
+        # ``int(1.5)`` would silently drop the fraction, so both are rejected
+        # explicitly rather than by conversion.
+        if isinstance(max_turns, bool) or not isinstance(max_turns, int):
+            raise ValueError(
+                f'max_turns must be an integer between {MAX_TURNS_MIN} and '
+                f'{MAX_TURNS_MAX} (booleans, floats, strings and null are rejected)')
         if not (MAX_TURNS_MIN <= max_turns <= MAX_TURNS_MAX):
             raise ValueError(
                 f'max_turns must be between {MAX_TURNS_MIN} and {MAX_TURNS_MAX}')

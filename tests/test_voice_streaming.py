@@ -992,17 +992,45 @@ class MaxTurnsRoundSemanticsTests(FreeModeHarness, unittest.TestCase):
         self.assertEqual(kinds.count('turn_closed'), 1)
         self.assertEqual(kinds.count('device_transcript'), 1)
 
-    def test_max_turns_must_be_a_positive_bounded_integer(self):
-        for value in (0, -1, 51, 1000, 'x', None):
+    def test_max_turns_accepts_only_the_documented_integer_range(self):
+        """1 and 50 are the bounds the page offers; both must be accepted as-is."""
+        for value in (1, 50):
+            response = self.control.post('/api/voice-test/sessions',
+                                         json={'mode': 'free', 'goal': '边界',
+                                               'max_turns': value})
+            self.assertEqual(response.status_code, 200, (value, response.text))
+            self.assertEqual(response.json()['max_turns'], value)
+            self.assertIsInstance(response.json()['max_turns'], int)
+
+    def test_max_turns_rejects_out_of_range_integers(self):
+        for value in (0, -1, 51, 1000):
             response = self.control.post('/api/voice-test/sessions',
                                          json={'mode': 'free', 'goal': '边界',
                                                'max_turns': value})
             self.assertEqual(response.status_code, 400, (value, response.text))
-        # The page's own bound is accepted.
-        accepted = self.control.post('/api/voice-test/sessions',
-                                     json={'mode': 'free', 'goal': '边界', 'max_turns': 50})
-        self.assertEqual(accepted.status_code, 200, accepted.text)
-        self.assertEqual(accepted.json()['max_turns'], 50)
+            self.assertIn('max_turns', response.json()['detail'])
+            self.assertIn('between 1 and 50', response.json()['detail'])
+
+    def test_max_turns_rejects_json_values_that_only_look_like_a_count(self):
+        """A turn budget is a count: 1.0, 1.5, true, false, "3" and null are not.
+
+        ``bool`` is an ``int`` subclass in Python and ``int(1.5)`` truncates, so a
+        conversion-based check would silently accept these as 1/0 rounds.
+        """
+        for value in (1.0, 1.5, True, False, '3', None, [], {}):
+            response = self.control.post('/api/voice-test/sessions',
+                                         json={'mode': 'free', 'goal': '边界',
+                                               'max_turns': value})
+            self.assertEqual(response.status_code, 400, (value, response.text))
+            detail = response.json()['detail']
+            self.assertIn('max_turns', detail, (value, detail))
+            self.assertIn('integer', detail, (value, detail))
+        # The manager enforces the same contract without going through HTTP.
+        for value in (1.0, True, '3', None):
+            with self.assertRaises(ValueError):
+                self.manager.create_session('free', goal='边界', max_turns=value)
+        session = self.manager.create_session('free', goal='边界', max_turns=1)
+        self.assertEqual(session.max_turns, 1)
 
 
 if __name__ == '__main__':

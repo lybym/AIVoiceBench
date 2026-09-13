@@ -5,7 +5,12 @@ FROM python:3.12-slim AS base
 
 LABEL maintainer="AIVoiceBench"
 LABEL description="AI Voice Terminal Evaluation — recording import, evidence ledger, timestamped transcript, deterministic metrics (preview build; scope and limits in docs/releases)"
-LABEL version="0.4.0-alpha.4"
+LABEL version="0.4.0-alpha.5"
+
+# The exact source commit this image was built from. Release builds pass it in
+# so a published image is traceable to its release candidate commit.
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision=$GIT_REVISION
 
 # Install only system packages needed for Python audio including FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
