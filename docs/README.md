@@ -1,6 +1,6 @@
 # 文档导航
 
-2026-09-13 已按 main 与 PR #75 候选分支核对，当前预发布版为 **`v0.4.0-alpha.5`（由尚未合并的候选分支 PR #75 构建，不是 main 发布）**；`v0.3.2` 仍是正式稳定版。完整 M1、真实物理设备与浏览器麦克风声学测量、Recording Analysis 正式验收均待完成。先看 [v0.4.0-alpha.5 发布说明](releases/0.4.0-alpha.5.md)、[v0.4.0-alpha.4 发布说明](releases/0.4.0-alpha.4.md)、[Streaming ASR 边界](24-streaming-asr.md)、[总体架构](01-system-architecture.md)、[Roadmap](04-development-roadmap.md) 和 PRD 的实现状态。
+2026-09-13 已按 main 与 PR #75 候选分支核对，当前预发布版为 **`v0.4.0-alpha.6`（由尚未合并的候选分支 PR #75 构建，不是 main 发布）**；`v0.3.2` 仍是正式稳定版。完整 M1、真实物理设备与浏览器麦克风声学测量、Recording Analysis 正式验收均待完成。先看 [v0.4.0-alpha.6 发布说明](releases/0.4.0-alpha.6.md)、[v0.4.0-alpha.5 发布说明](releases/0.4.0-alpha.5.md)、[Streaming ASR 边界](24-streaming-asr.md)、[总体架构](01-system-architecture.md)、[Roadmap](04-development-roadmap.md) 和 PRD 的实现状态。
 
 - **[产品需求 PRD](PRD.md)**：审阅/修改功能、优先级、验收和代码实现标识。
 - [产品文档中心](product/README.md)：旧来源归集映射、冲突处置、集中历史快照。
