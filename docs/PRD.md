@@ -1,10 +1,10 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.3.2
+prd_version: 1.3.3
 status: consolidated_for_owner_review
-updated: 2026-09-12
-implementation_baseline: main@c020d8ddfb6c7218b9be11ae916439d6276f944d
-main_baseline: c020d8ddfb6c7218b9be11ae916439d6276f944d
+updated: 2026-09-13
+implementation_baseline: main@64702655fc3f7b1ee1fb285ff77382784c1d0b85
+main_baseline: 64702655fc3f7b1ee1fb285ff77382784c1d0b85
 ---
 
 # AIVoiceBench 产品需求文档（PRD）
@@ -37,7 +37,7 @@ main_baseline: c020d8ddfb6c7218b9be11ae916439d6276f944d
 ### 代码位于哪里
 
 - [main 审计源码](https://github.com/lybym/AIVoiceBench/tree/c612d36a61a5cbc90f629677b28d64228316f1d0) 与 `v0.2.0-alpha.2` 指向同一提交（**审计时点的历史基线**；main 其后已推进到 `8d01ef2` = `v0.3.2`）。PR #48/#49/#50/#53/#55/#56 已合并；#51/#52 虽显示 Closed，其实现提交已由集成历史带入 main，不能根据 PR 标签判断代码缺失。
-- [v0.3.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.3.2) 仍为正式发布（GitHub Latest）；**当前预发布版为 [`v0.4.0-alpha.3`](releases/0.4.0-alpha.3.md)**（Streaming ASR / VAD / 自由对话接线修复预览，PR #70 合并提交 `c020d8dd`，Pre-release），`v0.4.0-alpha.2` 是此前的 Streaming ASR 骨架预览版（其标签、说明与附件保持原样），发布说明见 [0.4.0-alpha.2](releases/0.4.0-alpha.2.md)。Pre-release 不接管稳定版的 Latest 标识。
+- [v0.3.2](https://github.com/lybym/AIVoiceBench/releases/tag/v0.3.2) 仍为正式发布（GitHub Latest）；**当前预发布版为 [`v0.4.0-alpha.4`](releases/0.4.0-alpha.4.md)**（Streaming ASR / VAD / 自由对话接线修复预览，从收敛后的 main 重新构建、重新验收并发布，Pre-release），[`v0.4.0-alpha.3`](releases/0.4.0-alpha.3.md) 与更早的 [`v0.4.0-alpha.2`](releases/0.4.0-alpha.2.md) 保留原标签、说明与附件。Pre-release 不接管稳定版的 Latest 标识。
 - [CI 34511317063](https://github.com/lybym/AIVoiceBench/actions/runs/34511317063) 在 Windows/Linux 各运行 445 项测试，Linux 跳过 1 项，工作流成功；[发布工作流 34511317171](https://github.com/lybym/AIVoiceBench/actions/runs/34511317171) 成功，含镜像启动、合成三格式导入、重启恢复、附件重新加载验证。本次文档审计复核这些记录，未重新运行硬件或真实云测试。
 - [PR #54](https://github.com/lybym/AIVoiceBench/pull/54) 的可选语义角色归属尚未合并；main 的聚类标签不等于 tester/device 角色，正常无角色输入仍保持 unknown。
 - 真实云凭据调用、5～20 分钟真实设备录音与人工标注质量验收仍待完成。完整 M1 未通过；预览版不是产品完成声明。
@@ -617,6 +617,7 @@ M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程�
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
+| 1.3.3 | 2026-09-13 | **发布收敛（无产品需求变更）**：① 实现/main 基线更新为 **main `64702655fc3f7b1ee1fb285ff77382784c1d0b85`**（PR #71 合并提交）；② 当前预发布版更新为 **`v0.4.0-alpha.4`**，从收敛后的 main 重新构建、重新验收并发布；`v0.4.0-alpha.3` 与 `v0.4.0-alpha.2` 的标签、说明与附件保持不变；③ 第 7 节与第 8 节真实验收项**未勾选、未降级**，未新增 `real_recording_verified`、真实云 ASR 或实体设备验证声明；④ **PR #54（可选语义角色归属）仍未合并**，本版发布不包含该特性 | 项目所有者要求收敛本轮工作、更新文档、合并已授权的文档 PR、从收敛后的 main 重新出包并清理本地测试内容 |
 | 1.3.2 | 2026-09-12 | **事实校准（无产品需求变更）**：① 实现/main 基线更新为 **main `c020d8ddfb6c7218b9be11ae916439d6276f944d`**（PR #70 合并提交）；② 当前预发布版更新为 **`v0.4.0-alpha.3`**（Pre-release，标签指向该合并提交），`v0.4.0-alpha.2` 保留为更早的 Streaming ASR 骨架预览版；③ 1.3.1 行所述“候选”状态已由 **PR #70 合并**取代：预检强制、时域判停、降级失败处置由候选状态更新为**已合并 + software/container/browser verified 的有限范围**（受控输入，镜像内运行与导出后重新装载复验）；④ 第 7 节与第 8 节真实验收项**未勾选、未降级**，未新增 `real_recording_verified`、真实云 ASR 或实体设备验证声明；⑤ PR #54 仍未合并 | 项目所有者授权合并 #70 并发布 v0.4.0-alpha.3 后，要求把 PRD 的实现状态与基线校准到当前事实，且不改动产品需求与真实验收门槛 |
 | 1.3.1 | 2026-09-12 | **集成与候选制品一致性**：把此前只存在于本地分支（原修复提交 `6c34c74`）的语音测试修复重新表达并集成到 Streaming ASR 架构之上，并让每个模式在启动前真正被后端预检门禁约束。① 修正 VAD 判据为**时域线性 PCM RMS**（此前读频域 bin 并除以 255，非零噪声可使一轮永不结束），阈值由本机噪声底抬高，残留非零噪声仍能判定回答结束并推进；② 检测到疑似讲话后无回答超时不再适用，改由**轮次上限**显式退出（`cannot_confirm_response_end` / `observation_end_unconfirmed`），不记为回答完成；③ 新增 `GET /api/voice-test/capabilities/{mode}` 并在 `POST .../start` 与控制 socket 的 `start` **强制**同一预检：缺少项时指名拒绝、`provider_calls` 保持全 0，不先抓麦克风；默认不发起付费探测，响应/日志不含凭据、地址或签名 URL；④ **取消静默降级**：`auto` 只解析为 Streaming ASR，`turn_file` 需操作者显式选择；⑤ 降级上传先解码转换为 canonical 16 kHz mono PCM16 WAV 再调用 File ASR，文本取自归一化 segments，非法媒体/识别失败/空结果分别记录为 `invalid_audio` / `asr_failed` 且不推进下一轮；⑥ 停止后迟到的模型结果不再合成或播放；⑦ Fixed Mode 复用已有音频时不要求 ASR/LLM。同步 [Streaming ASR 边界](24-streaming-asr.md)、[Docker/API](20-docker-api.md) 与 [工作日志](06-work-log.md)。版本号因候选镜像身份与 alpha.2 区分而提升为 `0.4.0-alpha.3`；真实云、真实设备与预算/Coverage 仍未验收 | 项目所有者指出：发布的 `v0.4.0-alpha.2` 镜像与本地修复提交没有收敛，不能用镜像构建成功、版本号正确或旧 CI 通过替代“目标行为已进入发布包”的证明；并要求预检必须由后端真正执行，而不是只增加查询接口 |
 | 1.3.0 | 2026-09-11 | 确立 **ASR 路线分叉**：Recording Analysis 用 **FileASRProvider**（完整录音一次识别 → Measurement Evidence，保留签名 URL 音频发布）；Active Voice Test 用 **StreamingASRProvider**（open session → push chunk → partial/final → close/cancel → Control Evidence）。PRD-F005 明确限定为 File ASR 契约；PRD-F016 改为按生命周期区分的 File/Streaming 两个家族并给出统一事件模型与来源标注；PRD-F021 明确正式链路为 Mic → VAD + Streaming ASR → Observation → LLM Decision → TTS → Playback，「整轮录音 + File ASR」降为显式标注的 fallback（partial 不触发 LLM、不得要求 final 才判定开始回答、空 transcript 不得当回答）；PRD-F023 明确浏览器连续采集（AudioWorklet，目标 16 kHz/mono/PCM16）经后端转发给 Streaming ASR，浏览器不持有长期凭据；PRD-F020 明确 Fixed Mode 轮次推进只依赖 VAD、ASR 不可用 ≠ Fixed Test 不可用。同步更新第 2 节产品定义、第 3 节状态与第 8 节 M2/M3 排程，并刷新 PRD 基线与版本号。**本行确立目标架构；同一次变更实现了 Streaming ASR 骨架**（提供商边界、火山适配器、浏览器连续采集、二进制音频通道、自由模式最小闭环、降级标注、执行记录扩展），全部标记为 software_verified / browser_verified；**Streaming ASR 真实云调用、真实云与实体设备验收、预算与 Coverage 保持 pending，未升级任何真实验收状态** | 项目所有者要求修正 Free Voice Test 的 ASR 技术路线：不再以“先录完整 WAV → 上传 → File ASR”为正式主路径，改为经后端的实时 Streaming ASR，同时保留 Recording Analysis 的 File ASR 路线与双证据链隔离 |
