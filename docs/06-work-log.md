@@ -1229,3 +1229,10 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - 本条只记录本地候选收敛。GitHub PR 合并状态、最终 main/tag 提交、CI、镜像 ID、归档 SHA-256 和 Release 附件须在远程操作恢复并实际完成后另行补记，不能预先填写。
 - 本地验证：发布打包、Web 版本、Streaming ASR、自由对话控制/能力与语义角色归属定向 **107 tests, OK**；全量 **585 tests, OK（11 skipped）**。浏览器专用模块因本地缺少驱动而跳过，仍由正式 Release 工作流在候选镜像中执行，未写成已通过。
 - 本地候选镜像由提交 `8ad0cc07689f0f196eb223b6a9c8045973b9af0f` 构建：`aivoicebench:v0.4.0`，ID `sha256:9b0e3394854f5b18424cb2f50f2a8771ad5173f223b860b2f7cd7fb0f3d5ae6a`，label 的 version/revision 与该提交一致；镜像内 `container_acceptance.py` **16/16 PASS**。这是发布前本地候选证据，最终 Release 镜像仍必须由合并后的正式 tag 工作流重建并记录自身 revision。
+
+## 2026-09-13 — `v0.4.0` 正式发布完成
+
+- PR #54 已合并到其既有集成基线，merge commit `9edbd66c283e9430b6d555355dcb0b36d8595c44`；PR #75 在合入当前模块化 main 并重新通过 Windows/Linux/browser/container 检查后合并；发布 PR #81 全部检查通过后合并，main/tag 提交为 `9632844da6ddcef757fd7df20a6bb12e46853cdd`。发布追踪 Issue #80 随 #81 关闭。
+- [Release workflow 34761267354](https://github.com/lybym/AIVoiceBench/actions/runs/34761267354) 全部步骤成功：从精确 main 提交构建、smoke、镜像导出/重载、固定对话 16/16、候选镜像浏览器验收、集成验收、附件校验与 Release 创建。
+- [`v0.4.0`](https://github.com/lybym/AIVoiceBench/releases/tag/v0.4.0) 为非 Draft、非 Pre-release，并已接管 GitHub Latest。镜像归档 `aivoicebench-v0.4.0.tar.gz` 大小 326,478,654 字节，SHA-256 `2622fc6b2fc6717481569aedd925a1bb5ac0edaee07ed4f72d43e87a321f6d32`；Release 的 5 个附件均处于 uploaded 状态。
+- 发布事实不升级真实验收：真实 5–20 分钟录音、真实 File ASR 质量、人工角色复核、实体设备声学测量、Active Measurement Audio 与 Measurement Equivalence 仍保持 pending；未提交 Secret、真实用户录音或个人报告。

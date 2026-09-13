@@ -3,8 +3,8 @@ prd_id: AIVB-PRD
 prd_version: 1.5.1
 status: modularized_for_owner_review
 updated: 2026-09-13
-implementation_baseline: release/v0.4.0
-main_baseline: pending_v0.4.0_merge
+implementation_baseline: v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd
+main_baseline: 9632844da6ddcef757fd7df20a6bb12e46853cdd
 ---
 
 # AIVoiceBench 产品需求文档（PRD）
@@ -111,6 +111,6 @@ P0/P1 表示开发先后，不表示产品可选性。M1 是 Recording Analysis 
 
 ## 5. 当前审计与历史入口
 
-当前实现基线是 `release/v0.4.0`；正式发布后以 `v0.4.0` tag 的实际提交为准。该基线收敛 alpha.6 自由对话修复、语义角色提议与模块化 PRD；历史提交、预发布、Issue/PR 和工作日志仍作为审计证据。当前追踪和主要缺口见 [Requirement 追踪与审计结论](prd/traceability.md)，版本演进见 [PRD 变更历史](prd/changelog.md)。
+当前实现基线是 `v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd`，也是发布时的 main 提交。该基线收敛 alpha.6 自由对话修复、语义角色提议与模块化 PRD；历史提交、预发布、Issue/PR 和工作日志仍作为审计证据。当前追踪和主要缺口见 [Requirement 追踪与审计结论](prd/traceability.md)，版本演进见 [PRD 变更历史](prd/changelog.md)。
 
 技术专题文件不构成平行 PRD：例如 [Active Measurement 设计](25-active-measurement.md) 说明实现边界，[指标定义](03-metric-definition.md) 说明契约与公式，[Roadmap](04-development-roadmap.md) 说明实施顺序。
