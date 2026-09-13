@@ -169,7 +169,7 @@ Windows EXE/安装包、集群、复杂云端 Control Plane 不属于当前交�
 | PRD-F003 | 标准化与 Audio QA | P0 | ✅ implemented | main + release；准确率不由 QA 保证 |
 | PRD-F004 | 全链路可恢复编排 | P0 | 🟡 partial | ImportRun 已贯通 acoustic→聚类/归属→fusion→turns→timeline→metrics；Judge/Findings 仅状态占位 |
 | PRD-F005 | 时间戳 ASR 与云服务（Recording Analysis / File ASR） | P0 | 🟡 partial | 云 File ASR/原生响应/时间戳与调用审计已接通；真实云及录音质量待验收 |
-| PRD-F006 | 混音说话人/声源归属 | P0 | 🟡 partial | ASR-native 聚类与声源归属处理器已接入；无角色证据保持 unknown；语义角色 PR #54 未合并 |
+| PRD-F006 | 混音说话人/声源归属 | P0 | 🟡 partial | ASR-native 聚类、声源归属与可选语义角色提议已接入；机器提议一律待复核，真实角色识别仍未验收 |
 | PRD-F007 | Turn / Response 关联 | P0 | 🟡 partial | 有角色证据时可生成 turns/responses；自动语义关联仍未闭环 |
 | PRD-F008 | 自动事件与规范 Timeline | P0 | 🟡 partial | 已接入统一账本及身份引用；显式角色路径有契约测试，真实自动事件待验收 |
 | PRD-F009 | 确定性指标集成 | P0 | 🟡 partial | 已产出 MetricResult 3.0.0，方向/候选语义修复已入 main；自动语义及真实对照未完成 |
@@ -275,7 +275,13 @@ Recording Analysis 与 Active Voice Test 的 ASR 路线不同：前者用 File A
 - [ ] 可用 diarization/source Provider 与真实混音角色识别。
 - [ ] 人工角色修订作为新 Evidence/Annotation 参与有效结果。
 
-已合入进展：ASR-native 聚类复用同一次识别的原生响应，进入账本与 Web，但标签请求契约和真实可用性未验证。F006 仍为 partial；语义角色归属 PR #54 未合并。证据见 [diarization.py](../aivoicebench/diarization.py)、[ASR 聚类测试](../tests/test_asr_diarization.py)、[融合测试](../tests/test_fusion_speakers.py)。
+已合入进展（software_verified）：
+
+- **speaker clustering** 已接真实服务原生说话人标签（复用同一次 ASR 调用、不追加识别、不追加计费）；聚类与角色严格分离，无角色证据时角色保持 unknown。
+- **语义角色归属（Semantic Attribution）** 已作为独立的角色归属处理器接入 ImportRun → Attribution → Fusion：仅使用既有证据（本次 speaker scope、转写↔说话人关联、时间顺序、可引用片段、已有显式证据与冲突）提出 tester/device/unknown；模型自报置信度按"未经校准的模型自评"记录，不作为准确率，也不参与任何阈值；结果一律 needs_review，显式/人工证据优先且冲突双方都保留；不满足证据或调用/结构/引用失败时保持 unknown 并保留原因，无 Mock 成功回退。它不采用"第一个说话者/提问者=测试者、回答者=设备"等规则，也不把被置疑的转写内容当作指令。
+- 因此"真实混音**角色识别**"仍未完成验收：本分支只达到"聚类可用 + 角色机器提议（待复核）"的软件验证级别，**没有**人工确认、没有真实录音对照、没有真实模型调用。故上方两条验收项继续保持未勾选。接口约定（是否需显式开启说话人分离）仍为 `interface_contract_pending`，未发送任何未经核实的请求参数。
+
+验证与限制见 [06-work-log.md](06-work-log.md) 的 "Real diarization slice" 与 "Semantic attribution slice" 条目。证据见 [diarization.py](../aivoicebench/diarization.py)、[semantic_attribution.py](../aivoicebench/semantic_attribution.py)、[ASR 聚类测试](../tests/test_asr_diarization.py)、[语义归属测试](../tests/test_semantic_attribution.py)与[融合测试](../tests/test_fusion_speakers.py)。
 
 依据：[fusion.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/aivoicebench/fusion.py)、[test_evidence_guards.py](https://github.com/lybym/AIVoiceBench/blob/v0.1.3/tests/test_evidence_guards.py)；Issues #22、#24、#26。
 
@@ -637,7 +643,7 @@ M1.1～M1.5 仅为产品 M1 内部工程拆分；正式产品里程碑仍按第 
 | 子阶段 | main / alpha.2 已有范围 | 尚缺 |
 | --- | --- | --- |
 | M1.1 Recording Backbone | Web/CLI 统一 ImportRun；三格式导入、ASR/原生响应/调用审计、修订与显式重试；合成容器恢复已验证 | 真实云服务、真实录音与质量验收 |
-| M1.2 聚类与源归属 | ASR-native 聚类、独立 attribution/fusion；音频 Hash 隔离标签，跨聚类拆段与冲突弃权，原生时间/文本来源保留 | 真实标签契约/可用性；自动 tester/device 归属（PR #54 未合并） |
+| M1.2 聚类与源归属 | ASR-native 聚类、独立 attribution/fusion、可选语义角色提议；音频 Hash 隔离标签，跨聚类拆段与冲突弃权，原生时间/文本来源保留 | 真实标签契约/可用性；人工复核与真实 tester/device 角色验收 |
 | M1.3 Turn / Event / Metrics | 有角色证据时进入轮次/事件/MetricResult 3.0.0，显式归属 fixture 验证通过 | 自然混音自动关联、语义锚点、完整扩展指标和真实对照 |
 | M1.4 LLM Judge / Findings | 独立模块与旧 pipeline 保留；主导入流程发布未执行状态 | 接入 ImportRun、受约束工具循环、结论级证据闭环 |
 | M1.5 修订 / 重分析 / Web 验收 | 转写/聚类/回放/历史/阶段状态/ASR 重试、修订内状态报告 | 人工 Web 修订、通用重分析、波形/完整 Timeline、真实全流程验收 |
@@ -688,7 +694,7 @@ M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程�
 | 1.2.2 | 2026-09-11 | 记录 Issue #62 的固定语音生成可见进度：会话快照、实际短句状态轮询、重复提交保护与失败恢复；不升级主动测试或真实设备验收状态 | 项目所有者反馈生成语音缺少进度提示 |
 | 1.2.1 | 2026-09-11 | 记录 Issue #60 的 v0.3.1 TTS 协议修复：当前 API-Key V3 SSE、显式资源/音色、可验证 WAV 与脱敏调用审计；状态保持 partial，真实录音/设备验收未升级 | 项目所有者要求修复 v0.3.0 云 TTS 调用失败并重新发布测试 |
 | 1.2.0 | 2026-09-11 | 调整开发排程：主动语音测试不再以完整 M1 真实质量验收通过为开工前提，先交付固定用例多轮对话最小可用版本，再接自由对话；M1 录音分析剩余验收继续保留。本轮新增 TTS Provider、Voice Test 会话管理器、WebSocket 实时控制、浏览器音频播放与 VAD、自由对话 LLM Agent。对应 PRD-F014/F016/F019/F020/F021/F023 | 项目所有者运行 v0.2.0-alpha.2 后发现缺少主动对话能力，要求立即实现 |
-| 1.1.2 | 2026-09-11 | 记录 v0.2.0-alpha.1 预览发布：M1 当前能力的可下载预览版，范围冻结为录音导入/资产与 provenance/阶段账本/配置管理/云 ASR 调用路径/时间戳转写/回放/说话人标签展示/历史/报告/失败与持久化；明确云 ASR 完整前置条件（API Key + 三个签名 URL）与已知限制（接口约定待确认、无角色证据时保持 unknown）；第 7 节完整 M1 验收仍未通过、未降级 | 项目所有者要求收敛现有功能并交付可实际操作的预览版 |
+| 1.1.2 | 2026-09-11 | 记录 v0.2.0-alpha.1 预览发布及 M1.2 两个子切片进展：聚类输入证据修正与可选语义角色归属（独立处理器、显式证据优先、输出一律待复核）；F006 两条真实验收项保持未勾选、未降级 | 项目所有者要求收敛 M1 当前能力并完善角色判断输入证据与可选自动语义角色归属 |
 | 1.1.1 | 2026-09-11 | 消除第 7 节与第 8 节的里程碑编号冲突：第 7 节工程拆分改标为产品 M1 内部子阶段 M1.1～M1.5，正式排程仍以第 8 节 M1～M5 为准；新增第 1 节“需求 / 实现建议 / 实现状态”区分规则；按当前分支代码、测试与提交刷新 F006/F009/F016、M004/M008、Issue #3/#25 的状态描述并标注“本分支进展（未合并）” | 项目所有者要求先校准 PRD 基线、消除里程碑命名冲突、区分需求与实现建议与实现状态 |
 | 1.1.0 | 2026-09-10 | 确立主动测试/录音分析双主流程与双证据链；F019/F020/F021 升 P1 核心，F022 拆出 F023，新增 F024；明确 M1→M5 与阶段验收，保留 M1 收尾顺序和实现状态 | 项目所有者要求按主动测试定位修订，且只修改 PRD |
 | 1.0.2 | 2026-09-10 | 更新 main 基线至 3699587（PR #43/#45 已合并）；F014/F015 状态更新为 main + release；新增附录 A Issue→PRD 交叉引用 | 项目所有者要求检查未实现 Issue 并更新 PRD |

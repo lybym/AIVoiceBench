@@ -101,6 +101,32 @@
             "minimum": 0,
             "maximum": 1
           },
+          "role_attribution": {
+            "description": "How this segment's role was decided. Present so a model proposal and its uncalibrated confidence are never mistaken for explicit human evidence downstream. only_calibrated_evidence_publishes_role_attribution_confidence.",
+            "type": ["object", "null"],
+            "properties": {
+              "method": {
+                "enum": ["explicit_evidence", "semantic_attribution", "human_attribution", "none", null]
+              },
+              "basis": {
+                "enum": ["explicit_user_evidence", "human_review", "uncalibrated_model_self_report", "none", null]
+              },
+              "provider": { "type": ["string", "null"] },
+              "model": { "type": ["string", "null"] },
+              "prompt_version": { "type": ["string", "null"] },
+              "invocation_id": { "type": ["string", "null"] },
+              "needs_review": { "type": "boolean" },
+              "reported_confidence": {
+                "description": "The model's own uncalibrated estimate, kept as evidence only. Never a calibrated accuracy and never a release threshold.",
+                "type": ["number", "null"],
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "required": ["method", "basis", "provider", "model", "prompt_version",
+                         "invocation_id", "needs_review", "reported_confidence"],
+            "additionalProperties": false
+          },
           "acoustic_boundary_confidence": {
             "type": ["number", "null"],
             "minimum": 0,
@@ -183,6 +209,7 @@
           "speaker_id",
           "speaker_cluster_confidence",
           "role_attribution_confidence",
+          "role_attribution",
           "acoustic_boundary_confidence",
           "acoustic_uncertainty_ms",
           "speaker_source",
