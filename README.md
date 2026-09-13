@@ -1,45 +1,52 @@
 # AIVoiceBench
 
-面向 AI 语音终端的录音分析与评测 Harness：录音 → Evidence → Events → Metrics → Semantic Evaluation → Findings → Human Verification → Regression。
+面向 AI 语音终端、AI 玩具和语音智能体的可复现、可追溯、可比较、可回归评测 Harness。
 
-## 先读产品需求
+## 两条独立正式测量链
 
-**[中心 PRD：范围、验收、逐项代码实现标识](docs/PRD.md)**。这是审阅和修改产品行为的唯一入口。[产品文档中心](docs/product/README.md) 集中保存旧需求来源和归档；[文档导航](docs/README.md) 区分架构、测试、指标、路线图和工作日志的职责。
-
-Primary Workflow 为已有 WAV/MP3/M4A 录音导入分析；保留既有契约、Runner、ASR/Vosk、确定性引擎及后续 Audio Station/HIL。交付为 Docker 后端+前端、Windows 浏览器访问，无 Windows 安装包要求。完整真实录音 MVP 尚未验收，不把发布包或合成测试当成设备准确率证据。
-
-## 当前代码与发布
-
-本次文档审计 main 为 19d3a07；[v0.1.3 Release](https://github.com/lybym/AIVoiceBench/releases/tag/v0.1.3) 为 e3c2821，包含新版 Web、三种格式 Web 导入与模型管理。PR #43/#45 尚未合并，因此运行 main 源码与运行发布镜像可能不同。逐项区别见 PRD，不在 README 另建完成清单。
-
-## Docker / Windows 浏览器
-
-从 Release 下载镜像后在 PowerShell 中运行：
-
-```powershell
-docker load -i .\aivoicebench-v0.1.3.tar.gz
-docker run -d --name aivoicebench -p 127.0.0.1:8000:8000 -v aivoicebench-output:/data/output -v aivoicebench-cache:/data/cache aivoicebench:v0.1.3
+```text
+Active Measurement                    Recording Analysis
+Live Measurement Audio                External Recording
+Online Event Producer                 Offline Event Producer
+                  \                   /
+                   Canonical EventTimeline
+                              ↓
+                    Canonical Metric Engine
+                              ↓
+                         MetricResult
 ```
 
-打开 http://localhost:8000 。升级已有容器须保留原有卷映射。模型管理适用于可信单用户部署，语音适配器显示“待接入”时不会自动调用；存储配置不代表连通性或准确性验证。
+- **Active Measurement**：平台主动播放测试语音，通过本地 Measurement Capture 采集现场声学信号，并逐步形成正式事件和指标。
+- **Recording Analysis**：导入手机、录音笔或另一台电脑产生的独立 External Recording，执行离线声学与语义分析。
 
-The highest-priority MVP imports an existing 5–20 minute WAV/MP3/M4A conversation recording and automatically produces a trustworthy, evidence-linked report. Existing TestCase, Timeline, Evidence, metrics, findings, Runner, ASR/Vosk and deterministic engine are retained. Audio Station/HIL becomes a later automation extension. See [migration and repository audit](docs/13-import-first-migration.md).
+两条 Pipeline 不共享同一份 Audio Evidence；它们共享 Canonical Event 语义、指标定义、MetricResult 契约和版本化 Measurement Policy。External Recording 可用于独立复测、深度分析和 Measurement Equivalence 验证，但不是 Active Measurement 结果“转正”的前置条件。
 
-See `docs/` for architecture and roadmap, and `schemas/` for the canonical contracts.
+## 当前实现边界
 
-## Docker and browser delivery
+本轮文档审计基于 main `0362b22`：
 
-The final deliverable is a Docker-deployed backend and frontend, accessed through a Web UI from Windows browsers. A Windows executable or installer is not required. Supply Docker configuration, persistent storage, startup and browser usage instructions. Online ASR/TTS/LLM providers may be configured; local execution does not promise offline operation. A cloud service cluster is not required. The current CLI validates contracts and prepares local Run/audio artifacts with explicit measurement blockers; it is not yet a hardware runner or packaged application. See [local runner instructions](docs/09-local-runner.md).
+- Recording Analysis 已具备录音导入、标准化、部分声学/ASR/归属/融合，以及有足够角色证据时的 Timeline 和 canonical metrics；Judge、Findings、人工修订、完整报告与真实录音验收仍未闭环。
+- Active Voice Test 已具备浏览器播放、Control RMS VAD、Streaming ASR、Fixed/Free 控制与 execution record 基础；跨整次 Active Run 的 durable Measurement Audio、Stimulus Alignment、Streaming Acoustic Measurement、Canonical Live Timeline 和正式 Active MetricResult 仍为 planned。
+- 软件验证、浏览器验证、容器验证、真实设备验证和 Measurement Equivalence 验证是不同状态。当前没有 `measurement_equivalence_verified` 声明。
 
-The import-first milestone now also provides `python -m aivoicebench import recording.wav` (WAV/MP3/M4A), source preservation, canonical conversion/QA, optional Vosk ASR and recoverable stage-status reports. Automatic speaker/turn/event/semantic analysis is still pending. See [recording import instructions](docs/14-recording-import.md) and the [primary-workflow migration PR](https://github.com/lybym/AIVoiceBench/pull/28).
+## 先读文档
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md) for offline validation commands, [project context](docs/05-project-context.md) for the complete delivery agreement, [contract versions](docs/07-contract-versions.md) for migration and trigger semantics, and [work log](docs/06-work-log.md) for actual progress and untested dependencies.
+- [中心 PRD：产品范围、验收与实现状态](docs/PRD.md)
+- [Active Measurement 技术边界](docs/25-active-measurement.md)
+- [总体架构](docs/01-system-architecture.md)
+- [测试方法](docs/02-test-methodology.md)
+- [指标定义](docs/03-metric-definition.md)
+- [Development Roadmap](docs/04-development-roadmap.md)
+- [完整文档导航](docs/README.md)
 
+根目录 [AGENTS.md](AGENTS.md) 规定开发和状态声明规则。旧产品文件位于 `docs/product/archive/`，只作历史证据，不是当前要求。
 
-### Web release v0.1.2
+## 交付形态
 
-The browser workspace supports WAV, MP3 and M4A imports, persistent original and normalized evidence, consistent history/detail status, audio playback and Markdown report download. Docker includes FFmpeg. Health and OpenAPI read the same application version. Release publication checks the tag against that version and smoke-tests the built container with synthetic recordings in all three formats. Speaker attribution and semantic conclusions still abstain when evidence is unavailable; this is not real-device MVP acceptance.
+当前交付为 Docker 后端与前端，通过 Windows 浏览器访问；不要求 Windows EXE/安装包。Docker 内包含媒体处理依赖，运行数据通过持久卷保存。稳定版与预览版的具体启动命令、附件和 SHA-256 以 [Docker/API 文档](docs/20-docker-api.md) 与对应 GitHub Release 为准。
 
-### Model management v0.1.3
+默认部署面向可信单用户 localhost。模型和语音服务凭据只由后端持有，不进入浏览器、Git、运行快照或报告；保存配置不等于服务连通或真实效果已经验证。
 
-Use the browser Model Management page to register provider/model profiles and select defaults for result analysis or future speech capabilities. Existing compatible Chat Completions result analysis is wired; speech adapters are explicitly pending integration. Keys are write-only, configuration revisions prevent stale writes and each Web Run keeps a non-secret snapshot. See [model management](docs/16-model-management.md) for persistence, credential handling and deployment scope.
+## 验证原则
+
+合成 fixture 用于验证契约、状态机和确定性公式，不能证明实体设备表现。正式结果必须回溯到独立声学 Artifact、sample-indexed timebase、Measurement Policy、Evidence、confidence/uncertainty 和处理器版本；证据不足时输出 `insufficient_evidence`，不能猜测声学边界、说话人或设备内部根因。

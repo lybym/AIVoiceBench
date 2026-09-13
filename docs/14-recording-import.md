@@ -4,7 +4,7 @@
 
 > Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
 
-Recording Analysis is the M1 implementation priority within the dual-workflow product. Current Web/CLI share ImportRun; no TestCase or live hardware is required. Existing Runner/Station/contracts are retained.
+Recording Analysis is the M1 implementation priority and one of two independent formal Measurement Pipelines. Current Web/CLI share ImportRun; no TestCase, Execution Run or live hardware is required. Its `ART-external-recording` is independent from Active Measurement's Live Measurement Audio. Existing Runner/Station/contracts are retained; this pipeline is not an Active Result finalization service.
 
 ## What works
 

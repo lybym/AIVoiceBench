@@ -4,6 +4,8 @@
 
 The target is a voice-conversation terminal with built-in speaker/microphone. The user has not prepared a target or external station routing. This module is generic across terminal models. No actual playback, recording or loopback calibration has been performed in this task.
 
+Audio Station remains an optional higher-grade Active Measurement producer and a useful Measurement Equivalence reference path; it is not the only way Active Measurement can become formal. Browser Measurement Capture uses its own contract because the existing station schema requires PortAudio driver/device/duplex fields that a browser cannot truthfully supply. Both paths must ultimately emit compatible Canonical Event semantics and use the same metric engine.
+
 ## Windows commands
 
 Install optional dependencies and enumerate devices without recording:
@@ -26,7 +28,7 @@ These are explicit station commands, separate from preparation-only `run` until 
 
 ## Evidence and timing
 
-Capture writes capture.wav, digital stimulus-reference.wav, source/hash/format/duration metadata governed by audio-capture.schema.json, and driver-timing.json. Digital output reference is not an acoustic measurement. A room microphone captures stimulus/device/room mix; never silently relabel it isolated device output. Stereo permits externally separated routing, but channel-role verification and Run Evidence normalization remain pending.
+Station capture writes capture.wav, digital stimulus-reference.wav, source/hash/format/duration metadata governed by audio-capture.schema.json, and driver-timing.json. Digital output reference is not an acoustic measurement. A room microphone captures stimulus/device/room mix; never silently relabel it isolated device output. Stereo permits externally separated routing, but channel-role verification and Run Evidence normalization remain pending. Browser Active Measurement writes a separate durable Live Measurement Audio artifact described in [25-active-measurement.md](25-active-measurement.md); neither artifact is the External Recording used by Recording Analysis.
 
 Driver ADC/DAC/current timestamps stay in the PortAudio stream clock. Python monotonic start/end identify the command interval and are not substituted for sample timestamps. Driver times are estimates, not acoustic or device-internal event boundaries. Overflow/underflow, invalid/nonmonotonic timestamps, timeout or interruption makes capture partial with an explicit reason. Buffered samples are retained where possible. No calibration correction is automatically applied.
 

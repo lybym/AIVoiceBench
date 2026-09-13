@@ -13,7 +13,7 @@ PRD refs: PRD-F016 / F020 / F021 / F023；相关 N003、N004。技术契约文�
 | 输入 | 已完成的完整录音文件 | 浏览器麦克风的持续音频流 |
 | 生命周期 | 一次提交、一次识别；可离线重跑 | `start_session → push_audio → events → finish_input → close / cancel` |
 | 输出 | 完整 Transcript（utterances / timestamps / 说话人标签） | partial / final transcript + speech / endpoint 事件 |
-| 证据 | Measurement Evidence | Control Evidence |
+| 主要角色 | Recording Analysis 的文字/语义证据；provider timestamp 非声学真值 | Active Control Plane 的实时文字/语义观察；可被正式结果引用为语义证据，但不提供正式声学边界 |
 | 凭据 | 后端持有；按服务要求可含 Signed URL 音频发布 | 后端持有；**浏览器不接触任何长期凭据** |
 
 两者共享"provider / model / resource / 版本化调用审计 / 凭据不入库不入快照"的原则，
@@ -36,7 +36,7 @@ PRD refs: PRD-F016 / F020 / F021 / F023；相关 N003、N004。技术契约文�
 
 来源必须显式标注：`browser_vad`（浏览器 RMS VAD）、`volcengine_streaming_asr`（供应商事件）、
 `combined`（两者一致或经合并判定）。供应商给出的时间戳与本地接收时间分别保存，**不互相覆盖**；
-供应商估计的时间不是声学真值，也不升级为 Measurement Evidence。
+供应商估计的时间不是声学真值，也不升级为正式 speech boundary。Active Measurement 的正式边界优先来自独立持续保存的 Live Measurement Audio processor；ASR 文字可作为语义 Evidence 被引用。
 
 冲突处理：VAD 与供应商判停不一致时保留双方事件并标记冲突，不做静默覆盖。
 
@@ -60,7 +60,9 @@ Browser Mic
 - 控制面与音频面分开：JSON 控制事件继续走既有 `/ws`，二进制 PCM 走
   `/api/voice-test/sessions/{id}/audio`。混在同一连接会让 JSON 解析与二进制帧互相干扰。
 
-## 4. 与 VAD 的关系
+上面的 `/audio` 是 Free 模式每轮 Streaming ASR transport，不是跨整次 Run 的正式 Measurement Audio Artifact。F025 另设 Measurement Plane：同一浏览器麦克风 PCM 可被并行送往持续 Measurement Capture，但持久化、sequence/sample clock、完整性、policy 和 Evidence 契约独立；共享输入不等于 ASR control event 自动升级。
+
+## 4. 与 VAD / Measurement Acoustic Processor 的关系
 
 Browser VAD 与 Streaming ASR **并行存在**，职责不同：
 
@@ -69,6 +71,8 @@ Browser VAD 与 Streaming ASR **并行存在**，职责不同：
 
 **轮次开始不得依赖 final transcript**：VAD 先发现讲话，ASR 随后给文字。Fixed Mode 的推进
 只依赖 VAD；Streaming ASR 是增强 Observation。Partial 只记录/展示/留痕，不触发 LLM。
+
+两者都属于低延迟 Control Plane，不承担正式 acoustic onset/offset。Measurement Plane 使用版本化、streaming-compatible `AcousticBoundaryPolicy`，基于 sample index 形成 confidence/uncertainty 可追溯的 boundaries。现有 Browser RMS 阈值和 `EnergyVadSegmenter` 的 global noise/peak 算法均不能未经验证直接冒充该处理器。
 
 ### 4.1 判据是时域 RMS，阈值由噪声底抬高
 
@@ -183,6 +187,8 @@ error from server    : [Header 4B][Error code 4B][Error size 4B][Error UTF-8]
 - **真实云参数**：`end_window_size` / `force_to_speech_time` 的实际判停行为未在真实服务上观察。
 - 文档**未发布**流式最大会话时长、WebSocket 关闭码表、RTF 硬要求。
 - **实体设备 / 真实扬声器 / 真实麦克风**验收未进行。
+- **Active Measurement Audio / acoustic events**：本文件记录的 Streaming ASR transport 不等于这些能力已实现；以 [Active Measurement](25-active-measurement.md) 状态为准。
+- **Measurement Equivalence**：没有独立双录音真实实验，保持 validation_pending。
 - 这些结论只覆盖软件与受控输入验证（`software_verified` / `browser_verified`）。
 
 ## 7. 参考页面（火山引擎文档中心，2026-09-11 在线核对）
