@@ -919,4 +919,248 @@
 - Reusable implementation: existing AudioWorklet/PCM transport concepts and sequence accounting, TTS stimulus WAV/hash assets, EventTimeline/Evidence types, `compute_timeline_metrics(...)`, Recording Analysis batch pipeline and existing Control execution record. Reuse does not upgrade their current status.
 - Historical `docs/releases/*`, `docs/product/archive/*` and earlier work-log entries retain the boundary that was true for their dated release/decision; they were audited but not rewritten as current requirements. Current links point to PRD/architecture/methodology instead.
 - Docs verification: `git diff --check` reports no whitespace errors (Git only emits the repository's existing LF→CRLF checkout warning); a local Markdown-link scan checked 40 current files while intentionally excluding historical `docs/product/archive/**`, with no broken local links; path-scope checks confirm every tracked or untracked content change is `README.md` or `docs/*`; PRD reference checks confirm PRD-F023–F026 and PRD-N007 are present. No software, browser, container, real-device or measurement-equivalence test is claimed from this docs-only change.
-- Git synchronization: branch `feat/dual-measurement-pipelines`, initial docs commit `e8aa44e`; tracking [Issue #76](https://github.com/lybym/AIVoiceBench/issues/76) and review [PR #77](https://github.com/lybym/AIVoiceBench/pull/77) were created with GitHub CLI. PR remains open and unmerged; this follow-up only records the synchronization links.
+- Git synchronization: branch `feat/dual-measurement-pipelines`, initial docs commit `e8aa44e`; tracking [Issue #76](https://github.com/lybym/AIVoiceBench/issues/76) and review [PR #77](https://github.com/lybym/AIVoiceBench/pull/77) were created with GitHub CLI. PR was subsequently integrated into main at `beeacb5` before the v0.4.0 release convergence.
+
+## 2026-09-13 — Free 模式 `max_turns` 轮次语义修复与真实云端复验（Control Evidence，Issue #74）
+
+- **现象。** 自由对话 `max_turns=N` 时，系统在第 N 次平台话术**刚发出播放指令之后就立即**
+  执行 `complete(max_turns)` 并关闭当前 Turn，没有等待也没有处理设备对第 N 个问题的回答。
+  第 N 轮的回答因此无法被观测（音频通道此时会因 Turn 已关闭被拒为 stale），真实复验中
+  为观察 3 个设备回答只能把 `max_turns` 配成 4——与界面「最大轮次」的自然含义不符。
+  （上一条记录把该行为登记为「已知限制，本轮未修」；本条修复它。）
+- **根因。** `_generate_and_send_free_phrase()` 在发出第 N 次 `play` 之后，用
+  `platform_turns >= session.max_turns` 判定结束：把「**已提问数**」当成了
+  「**已完成轮次数**」。轮次的完整定义（提问 → 播放 → 设备观察 → ASR final / 显式失败 →
+  capture 收尾 → Turn 关闭）没有对应的状态，预算在观测之前就被消费掉了。
+- **目标语义（项目所有者给定，已写入 [PRD](PRD.md) 1.3.4 / PRD-F021）。**
+  `max_turns=N` = 完整执行 N 个平台轮次。第 N 个设备回答被观察并关闭**之后**：不再调用 LLM
+  生成下一问、不再调用 TTS、不发第 N+1 次 `play`；会话以 `complete(max_turns)` 结束，
+  `awaiting_turn_id=null`，最后一轮 Platform Turn 与 Device Turn 均关闭，最终 transcript、
+  capture、provider audit 与 execution events 全部保留。**不使用隐藏轮次或 `max_turns=N+1` 规避。**
+- **修复（不重写架构）。**
+  - `_generate_and_send_free_phrase()` **不再**在发完第 N 次 `play` 后结束会话；
+  - 新增 `_continue_free_run()`：在第 N 个回答被消费之后统一决定「问下一题」还是
+    「以 `complete(max_turns)` 结束」——预算用尽时不再调用 Agent 与 TTS；
+  - 最后一轮的回答仍进入执行记录：以本轮的最终 device turn 记录（`device_transcript`），
+    不会因为没有下一问而丢失；
+  - `streaming`（`capture_result`）与显式 `turn_file` 降级（`device_audio_ready`）两条观察
+    路径共用同一轮次语义；`_consume_device_observation()` 返回「运行是否已结束」，控制循环
+    据此停止读取；
+  - 自由模式 VAD 超时 + `on_no_response=continue` 原本会**停住不再继续**（发送
+    `no_response` 后既不结束也不问下一题，浏览器也不会再上报），现按策略生成下一题，
+    预算用尽时明确结束；
+  - `max_turns` 现在是 **1..50 的整数**（与页面输入范围一致），在会话创建时校验（越界/非整数
+    返回 400），不再默许会在运行期炸掉的取值；
+  - 已结束的运行（`completed` / `stopped` / `failed`）不会被迟到的停止、断线或重复消息改写，
+    也不会重复关闭 Turn。
+- **测试（新增 9 项 + 收紧既有浏览器验收）。** `tests/test_voice_streaming.py` 新增
+  `MaxTurnsRoundSemanticsTests`：`max_turns=1` 等待并保存第一个 final 后完成；
+  `max_turns=3` 保存三个回答且**不生成第四问**（脚本 Agent 有 5 句可用，只有服务端预算能让它
+  在第 3 轮停下）；`turn_file` 降级具备相同轮次语义；最后一轮 Provider failure 明确收尾；
+  最后一轮 no-response（continue 策略）以 `complete(max_turns)` 结束而不是挂起；
+  中途 no-response 仍会问下一题；重复 `capture_result` 不产生第二个 Turn；
+  已完成后迟到的停止/断线不改写结果；`max_turns` 边界校验。
+  断言覆盖 `awaiting_turn_id=null`、Platform/Device Turn 全部关闭、以及
+  `provider_calls` 中 **LLM/TTS 调用次数等于平台提问数**（不额外多一次）。
+  浏览器集成验收 `tests/test_voice_integration_acceptance.py` 改为驱动页面自身的
+  「最大轮次」输入（`max_turns=3`），并断言 `status=completed`、`stop_reason=max_turns`、
+  恰好 3 次 TTS、三次 `play` 文本；测试替身不再自带轮次上限，
+  `--free-max-turns` 这一误导性的替身开关已移除。
+- **软件验证。** 全量 `python -m unittest discover -s tests -p "test_*.py"`：
+  **568 tests, OK**（较上一条记录 +9）。候选镜像内
+  `python tests/container_acceptance.py`：**16/16 PASS**
+  （`ACCEPTANCE_SUMMARY {"version": "0.4.0-alpha.4", "total": 16, "passed": 16, "failed": []}`）。
+- **候选镜像。** `aivoicebench:free-final-turn`，`org.opencontainers.image.revision=e1c11f1`
+  （应用源码为提交 `e1c11f1`；其后仅有本文档改动）。构建后逐文件校验容器内应用源码与工作区一致：
+  `aivoicebench/api.py` = `sha256:0813747e6a2c16f3…`、
+  `aivoicebench/voice_test.py` = `sha256:5faf6b90f443bb62…`、
+  `aivoicebench/volcengine_streaming_asr.py` = `sha256:13be98e9622818ba…`、
+  `aivoicebench/version.py` = `sha256:d99a213434530e86…`。未输出、复制或提交任何 Secret。
+- **真实云端复验（火山引擎流式语音识别 2.0，`max_turns=3`）。** 会话
+  `VT-16c0c05a25a1`（free，`resolved_capture_mode=streaming`，`fallback_reason=null`），
+  设备回答先用**真实 TTS** 合成（`VT-a7dd1ca437c4`），再经**真实二进制音频通道**推入。
+  **操作端没有发送 `stop`：会话由轮次预算自行结束。**
+
+  | 轮次 | Turn | LLM 提问 | 识别到的设备回答 | capture | failure | final_basis | 耗时 | 下一消息 |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 1 | T0 | 北京今天天气怎么样？ | 南京明天晴，气温二十六度。 | finished | 无 | provider_endpoint | 1.87 s | `play` (T2) |
+  | 2 | T2 | 上海明天天气怎么样？ | 北京明天多云，最高二十八度。 | finished | 无 | provider_endpoint | 1.30 s | `play` (T4) |
+  | 3 | T4 | 那广州明天天气怎么样？ | 上海明天有雨，记得带伞。 | finished | 无 | provider_endpoint | 1.38 s | **`complete` (max_turns)** |
+
+  - **第 3 个回答被观测后才结束**：第 3 轮的 `next_type=complete`、`next_reason=max_turns`，
+    并且**没有第 4 次 `play`**（`play_issued` 恰好 3 次，问题文本即上表三句）。
+  - 计数：`play_issued` 3、`device_observation` 3、`device_transcript` 3、
+    `capture_started` 3、`capture_finished` 3、`asr_session_closed` 3、`turn_closed` 3、
+    `final_transcript` 3、`speech_ended` 3、`asr_error` 0、`partial_transcript` 15；
+    `streaming_asr_error=null`。
+  - 会话：`status=completed`、`stop_reason=max_turns`、`awaiting_turn_id=null`、
+    `provider_calls={"tts": 3, "llm": 3, "asr": 0}`（LLM/TTS 各 3 次，**没有多调用一次**）。
+  - Turn 链 T0 → D1 → T2 → D3 → T4 → D5 全部 `closed=true`：Platform Turn
+    `status=complete` / `closure_reason=device_transcript`，Device Turn
+    `status=observed` / `observation=speech_end` 并保留最终文本。
+  - 三条 capture 的 `final_basis` 均为 `provider_endpoint`、`evidence_scope=control_evidence`、
+    `frame_ordering` 无 late/duplicate/gap；每次 `asr_session_closed` 仍为
+    `termination_basis=provider_normal_close`、`close_code=1000`、`saw_last_package=false`
+    （即上一条修复在真实云端继续成立）。
+  - 静音握手（真实负例）`VT-86910b3c6aff` / stream `STR-334454f807a04dfa`：1 秒静音 →
+    `status=failed`、`failure=asr_no_final`、`empty_transcript=true`、0.75 s，**无**
+    `stream_disconnected`。
+- **证据边界（不降低 Evidence First）。** ①Streaming ASR 结果仍是 **Control Evidence**；
+  Provider 时间戳依旧不作为 acoustic ground truth；失败不伪装成回答；partial 不触发下一轮；
+  未发明缺失的最终文本（`asr_no_final` 仍记为无可用转写）。②本轮复验的音频是**受控输入**
+  （真实 TTS 输出经真实二进制音频通道送入），**不是**物理设备或浏览器麦克风；页面路径在受控
+  Provider 下的验收以浏览器集成验收为准。③`provider_calls` 是会话级调用审计，
+  通过 `GET /api/voice-test/sessions/{id}` 暴露；它**不在**持久化的
+  `execution-record.json` 文档内（重启后不随记录保留），本轮未改变该契约。
+- **已知限制（按既有策略，未改）。** 最后一轮如果**没有**可用转写且
+  `on_no_response=pause`（默认），会话按既有策略记为 `stopped`
+  （`no_device_transcript…`）而不是 `completed`；这是“无回答按会话策略处置”的既有语义，
+  本轮只保证它明确收尾、不挂起。
+
+## 2026-09-13 — 严格输入契约 + 收敛为 `v0.4.0-alpha.5` 候选 Pre-release（PR #75，未合并）
+
+- **严格 `max_turns` 契约（Issue #74 补充）。** `VoiceTestManager.create_session()` 之前用
+  `int(max_turns)` 转换，导致 JSON `1.5` 静默变成 `1`、`true` 被当成 `1`、`"3"` 被接受。
+  现在**只接受原生 `int`**：显式拒绝 `bool`（`isinstance(True, int)` 为真）、拒绝全部 `float`
+  （含 `1.0`）、拒绝字符串/`null`/其他类型，并限定 `1..50`；非法输入仍走既有风格，
+  由 `ValueError` → `HTTPException(400)` 返回明确错误。页面传入正常整数时的行为不变。
+  新增回归：接受 `1`、`50`；拒绝 `0`、`-1`、`51`、`1000`、`1.0`、`1.5`、`true`、`false`、
+  `"3"`、`null`、`[]`、`{}`（既通过 HTTP，也直接对 manager）；`max_turns=1/3` 完整轮次
+  测试保持通过。Streaming ASR 的 **Control Evidence** 边界未改动。
+- **收敛为可发布的候选版本 `v0.4.0-alpha.5`。** 应用版本、Dockerfile `version` 标签、
+  预览 Compose、Windows 启动脚本统一为 `0.4.0-alpha.5`（启动脚本保持 UTF-8 BOM 与 CRLF）；
+  新增 `docs/releases/0.4.0-alpha.5.md`，明确写明**本版由尚未合并的候选分支构建、
+  tag 指向该分支的发布候选 commit 而不是 main**，PR #73 已合并到 main 作为背景。
+  Dockerfile 新增 `org.opencontainers.image.revision`（由 `GIT_REVISION` 构建参数注入），
+  发布工作流传入解析出的提交，发布镜像因此可追溯到它的发布候选 commit。
+  发布工作流同时移除了已废弃的 `--free-max-turns` 测试服务器开关
+  （轮次预算现在来自页面自身的「最大轮次」输入，集成验收会自行填写）。
+- **发布前验证（全部在本机实跑）。**
+  - 全量 `python -m unittest discover -s tests -p "test_*.py"` → **570 tests, OK**；
+    定向 `tests.test_voice_streaming` / `test_voice_control` / `test_voice_capability` /
+    `test_model_settings` → 62 tests, OK；`tests.test_release_packaging` → 18 tests, OK。
+  - 候选镜像 `aivoicebench:v0.4.0-alpha.5`（`org.opencontainers.image.revision=120ba1c`）：
+    `/health` 与 `/openapi.json` 均返回 `0.4.0-alpha.5`；镜像内
+    `python tests/container_acceptance.py` → **16/16 PASS**。
+  - `docker save` → 删除标签（镜像被删除）→ `docker load`：镜像 ID 不变，
+    重新加载的镜像启动独立容器后 `/health` 仍是 `0.4.0-alpha.5`，容器验收再次 **16/16 PASS**。
+  - 发布附件中的 `start-aivoicebench-preview.ps1`（Windows PowerShell 5.1 实跑）与
+    `docker-compose.preview.yml`（`up -d` → `/health` → `down -v`）各启动一次隔离预览实例并
+    通过 `/health`，验证后清理了这两个隔离实例及其数据卷。
+- **真实云端复验（在本版候选镜像上，`max_turns=3`，受控输入）。**
+  会话 **`VT-7ddb00538d20`**：恰好 **3 个问题 / 3 个回答**，每轮 `status=finished`、
+  `failure=null`、`final_basis=provider_endpoint`；第 3 个回答保存后由**轮次预算**结束
+  （`next_reason=max_turns`），**没有第 4 次 `play`、没有第 4 次 LLM/TTS 调用**
+  （`provider_calls={"tts":3,"llm":3,"asr":0}`）；`status=completed`、
+  `stop_reason=max_turns`、`awaiting_turn_id=null`；Turn 链 T0→D1→T2→D3→T4→D5 全部关闭；
+  每次 `asr_session_closed` 仍为 `termination_basis=provider_normal_close`、
+  `close_code=1000`、`saw_last_package=false`（未伪造 `is_last_package`）。
+  静音握手 `VT-9fbcad1e9682`（`STR-35d54ec5d3244c50`）→ `asr_no_final`、0.67 s。
+  同规格的第一次尝试 `VT-4df0a917e13e` 是真实模型自行结束（`agent_stop`，2 轮），
+  不是预算结束；重跑（目标改为“问完三个城市再结束”）后得到上述会话，**未修改代码或判据**。
+- **证据边界。** 本版是**未合并候选分支构建的 Pre-release**，不是 main 发布；真实云验证为
+  **受控输入**（真实 TTS 输出经真实二进制音频通道）且仍是 **Control Evidence**；
+  Provider 时间戳不作为 acoustic ground truth；失败不伪装成回答、partial 不触发下一轮、
+  不发明缺失文本；真实物理设备、浏览器麦克风声学测量与 Recording Analysis 正式验收
+  **未尝试/未完成**；未勾选、未降级任何真实验收项。
+- **制品与链接。** tag `v0.4.0-alpha.5` → 提交 `120ba1ca3551f57402aec5196b34fb437b61cbdd`；
+  镜像 `aivoicebench:v0.4.0-alpha.5`
+  （`sha256:92c9f80e939c92cc3e7b879acba7d0ef8539f57e291961a5139ce70fa8a6ad8a`）；
+  归档 `aivoicebench-v0.4.0-alpha.5.tar.gz`（331,066,991 字节）
+  SHA256 `3a15f7c1809c15f9d5819cf3632e0ff8ec8b307436cf8c4a26863763b97f4385`；
+  PR #75 保持 OPEN、未合并。本版发布的完整记录见
+  [发布说明](releases/0.4.0-alpha.5.md#发布记录本次实际制品与验证)。
+
+## 2026-09-13 — 会话停止后不再把迟到转写显示为“设备（确认）”（PR #75，未合并）
+
+- **真实故障（`v0.4.0-alpha.5`）。** 自由对话 Streaming ASR、`max_turns=3`、
+  `on_no_response=pause`：前两轮正常完成，第三轮触发 `no_response_timeout`，服务端 session 已
+  `stopped`、execution-record 已固定（第三轮 `T4=no_response`），**但网页仍显示
+  “设备（确认）：…”**（例如迟到的 final “十。”），而执行记录并不把该轮当作已回答。
+- **根因（两侧都有）。**
+  1. **前端**：`#vt-device-transcript` 这一行只在收到新的实时/确认回调时被覆盖，**从不按轮次重置**；
+     一轮以 `stopped` 结束时它保留着上一轮（或停止瞬间到达的）确认文本，看起来就是该轮的
+     “确认回答”。音频 socket 的回调只检查「运行是否仍在进行」，不检查「消息属于哪一轮」，
+     也不识别服务端标记的迟到消息。
+  2. **后端**：Provider 事件只要被轮询到就会折进 capture（`capture.final_text`）并写入
+     execution record（`final_transcript`），**不检查该 capture 的 turn 是否已经关闭**；
+     即“轮次已因无回答而关闭、之后才到达的 final”会被当成该轮的转写，并随 `capture_result`
+     一起显示为确认文本。
+- **修复（不重写架构，不改 Evidence First）。**
+  - **后端**：新增 `capture_is_current()`（会话在运行 **且** 该 capture 的 turn 仍是等待观察的那一轮）
+    与 `stale_capture_reason()`（`turn_closed` / `turn_not_awaiting_observation` /
+    `session_stopped` / `session_completed` / …）。`note_streaming_events()` 只折进“当前”事件；
+    迟到事件改为 `note_stale_streaming_event()`：**不写入 turn 的转写、不写入 execution record、
+    不设置 capture 的最终文本**，而是作为有界的、显式标注的诊断保留在会话上
+    （session/turn/kind/text/reason/`control_evidence`），并通过音频 socket 以
+    `stale_transcript`（`ignored=true`、带 session/turn/reason）告知页面。
+    `capture_result` 增加 `stale` / `stale_reason` 字段；会话快照新增
+    `stale_streaming_events`（计数 + 明细）。因此**已完成轮次的 execution record 不会再被迟到事件改动**。
+  - **前端**：音频 socket 回调现在拒绝一切“不属于当前轮次”的消息——运行已结束/已取消、turn 不匹配、
+    或服务端标记为 stale/ignored——统一记为 `lateDropped` 并在自由对话日志中写明
+    “已忽略迟到识别结果（原因；会话 …/轮次 …）”，**绝不写入确认行**。会话以 `stopped`/`failed`
+    结束时清空该轮设备文本行（正常 `complete` 结束则保留最后一轮已确认的回答）。
+  - **证据边界不变**：迟到文本仍是 `control_evidence`，不产生 acoustic measurement，
+    不引入任何 latency 字段；失败仍然不是回答；不发明缺失文本。
+- **回归测试（新增 7 项）。** `tests/test_voice_streaming.py` 新增 `StaleStreamingEventTests`：
+  ① **复现用户场景**——`max_turns=3` 三轮（两轮正常回答 + 第三轮 `observation_timeout`）后投递迟到
+  definite final，断言 session/所有 turn/execution record **逐事件完全不变**，capture 的最终文本仍为空，
+  且该事件被记为 `session_stopped` 的 stale 诊断；② 已完成（`max_turns`）运行后的迟到 final 同样被忽略
+  （`session_completed`），已发生轮次的确认回答不受影响；③ 会话仍在运行时**已关闭 turn** 的迟到事件同样
+  为 stale（`turn_closed`）；④ `stale_transcript` 通知契约（`ignored=true` + session/turn/reason +
+  `control_evidence`，只发送一次）；⑤ stale 原因分类（current 时返回 None）。浏览器层
+  `tests/test_voice_integration_acceptance.py` 新增 `FreeModeStoppedRoundTests`：真实页面 + 受控麦克风跑
+  三轮，第三轮静音超时后断言**页面上不出现“设备（确认）”**、该行被清空、第三轮 turn 为
+  `no_response`（`no_response_timeout` 或 `no_device_transcript…`）、execution record 里没有该轮的
+  `device_transcript`。该测试**在修复前必然失败**（实测旧行为：`设备（确认）：设备回答：南京明天晴`
+  在停止后仍留在页面上）。
+  为让“静音不等于回答”在浏览器替身里也成立，`tests/browser_server.py` 的脚本化 Streaming ASR 改为
+  **只在真的收到信号时**才产出 partial/final（受控麦克风是增益可调的 440 Hz 振荡器，静音轮就是零帧）。
+- **软件验证。** 全量 `python -m unittest discover -s tests -p "test_*.py"`：**577 tests, OK**
+  （较上一条 +7）。定向 `tests.test_voice_streaming` 31 项、`tests.test_voice_streaming` +
+  `test_voice_control` + `test_voice_capability` + `test_model_settings` 全部通过。
+  说明：其中一次全量运行出现过 1 个与本修复无关的浏览器计时抖动（读取 `playReceived` 早于 play 到达），
+  单模块与随后两次全量运行均通过。
+- **候选镜像与浏览器复验。** 由本次修复提交构建 `aivoicebench:stale-transcript-fix`
+  （`org.opencontainers.image.revision=0fffbba`，ID
+  `sha256:4e009c61e99b030159a13f082d411db232bb0ba8b4a2d4b362d1be1f46899017`；容器内
+  `api.py`/`voice_test.py`/`static/voice_test.js` 与工作区逐文件哈希一致）。容器内
+  `container_acceptance.py` → **16/16 PASS**；在该镜像**自己的页面**上（镜像内启动受控 Provider
+  服务，浏览器走镜像的路由与静态资源）重跑 `tests.test_voice_browser` 9 项与
+  `tests.test_voice_integration_acceptance` 9 项全部通过，含本次新增的停止轮次用例。
+  镜像内运行的该用例会话 `VT-6d02af793f1c`：`status=stopped`、`stop_reason=no_response_timeout`、
+  3 个平台轮次 + 2 个设备轮次、`T4=no_response`（`no_response_timeout`、已关闭）、
+  `observation_timeout` 1 次、`device_transcript` 仅 2 次、`awaiting_turn_id=null`
+  ——即停止的那一轮没有被写成回答，页面也没有显示确认文本。
+- **边界与未改动项。** 未改动 TestCase / EventTimeline / Evidence / MetricResult / Finding / Runner /
+  ASR 适配器与 deterministic metric engine 的既有语义；未合并 PR #75；未把迟到或控制层时间戳包装成
+  声学测量证据。
+
+## 2026-09-13 — 发布候选 `v0.4.0-alpha.6`（PR #75，未合并；含迟到转写修复）
+
+- **发布内容。** 由 `fix/free-mode-final-turn-observation` 候选分支 tip 构建的测试包，包含：
+  ① 会话停止/轮次关闭后的迟到转写不再显示为“设备（确认）”（前端拒绝 + 后端 stale 规则，见上一条）；
+  ② 沿用 `max_turns` 完整轮次语义与严格整数契约（`1..50` 原生整数）。
+  版本号、Dockerfile `version` 标签、预览 Compose、Windows 启动脚本统一为 `0.4.0-alpha.6`；
+  新增 `docs/releases/0.4.0-alpha.6.md`（明确写明本版由**尚未合并**的候选分支构建、不是 main 发布）；
+  PRD 1.3.6 与 `docs/README.md` 同步。
+- **验证（本机实跑）。** 全量 `python -m unittest discover -s tests -p "test_*.py"` → **577 tests, OK**；
+  定向 68 项与 `tests.test_release_packaging` 18 项通过；候选镜像内 `container_acceptance.py`
+  → **16/16 PASS**；`docker save` → 删标签 → `docker load` 后镜像 ID 不变、重新加载的镜像启动独立容器
+  `/health` 仍为 `0.4.0-alpha.6` 且验收再次 **16/16 PASS**；把 `tests/` 复制进容器并在**镜像自己的页面**上
+  重跑 `tests.test_voice_browser`（9 项）与 `tests.test_voice_integration_acceptance`（9 项）全部通过；
+  用发布附件的启动脚本（Windows PowerShell 5.1）与 Compose 各启动一次隔离预览实例并通过 `/health`，
+  随后清理。
+- **构建环境说明（不影响制品）。** 首次构建在 `pip install` 阶段因 Docker VM 直连 PyPI 下载损坏而
+  报 hash 不匹配（`requirements` 未固定哈希，属网络路径问题）；改为通过宿主机本地代理
+  （`--build-arg HTTP(S)_PROXY=http://host.docker.internal:7897`）重建后成功，镜像内容已逐文件哈希核对。
+- **制品与链接。** tag `v0.4.0-alpha.6` → 提交 `cce12944ce9f43331647cb441f3816b15aa925a3`；
+  镜像 `aivoicebench:v0.4.0-alpha.6`
+  （`sha256:49fb043aa605ceb7835c3c08a9fe7579d5d67bac2892b2f75fda9c76beff1689`）；
+  归档 `aivoicebench-v0.4.0-alpha.6.tar.gz`（331,090,002 字节）
+  SHA256 `af8ff4dab58708abcfe0faf91b66b68f500d6a9af58444bc06357b1dbe231903`；
+  GitHub Pre-release（不接管 Latest，`v0.3.2` 仍为 Latest）。完整记录见
+  [发布说明](releases/0.4.0-alpha.6.md#发布记录本次实际制品与验证)。
+- **证据边界。** 本版为未合并候选分支的 Pre-release；浏览器验收为受控输入 / **Control Evidence**；
+  **本版未重跑真实云端**（alpha.5 的受控输入复验见该版发布说明），本次修复的迟到竞态未用真实凭据复现；
+  真实物理设备、浏览器麦克风声学测量与 Recording Analysis 正式验收未尝试/未完成。

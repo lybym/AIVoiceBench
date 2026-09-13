@@ -31,6 +31,11 @@ from aivoicebench.streaming_asr import (EVENT_FINAL, EVENT_PARTIAL, EVENT_SPEECH
                                         SOURCE_PROVIDER, StreamingASREvent)  # noqa: E402
 from aivoicebench.voice_test import VoiceTestManager  # noqa: E402
 
+# A frame counts as speech only when it carries signal: the controlled mic is a
+# 440 Hz oscillator whose gain follows the level the test sets, so a silent round
+# is a frame of zeros. 16-bit samples, so 8/32767 is well clear of any dither.
+SILENCE_THRESHOLD = 8
+
 # Which providers each controlled-acceptance profile injects. "Which capability
 # is missing" is the variable the integration acceptance needs to control, so it
 # is a first-class profile rather than an accident of the environment.
@@ -95,6 +100,18 @@ class SyntheticTTS:
         }
 
 
+def _has_signal(pcm):
+    """True when a captured frame carries real signal, not the silent baseline.
+
+    The browser tests drive a controlled 440 Hz oscillator whose gain follows the
+    level they set, so a round with no speech really is a frame of zeros. A
+    transcript may only come from a round that carried signal: silence is not an
+    answer (this is also what a real recogniser does with a silent round).
+    """
+    samples = memoryview(pcm).cast('h')
+    return any(abs(sample) >= SILENCE_THRESHOLD for sample in samples)
+
+
 class ScriptedStreamingProvider:
     """Deterministic streaming ASR stand-in for browser acceptance.
 
@@ -123,12 +140,14 @@ class ScriptedStreamingProvider:
                 self.finished = False
                 self.failure = None
                 self.state = 'open'
+                self.heard_signal = False
                 self._events = []
 
             async def push_audio(self, pcm):
                 self.audio_bytes += len(pcm)
                 self.frames += 1
-                if self.frames == 1:
+                if not self.heard_signal and _has_signal(pcm):
+                    self.heard_signal = True
                     self._events.append(StreamingASREvent(
                         kind=EVENT_PARTIAL, source=SOURCE_PROVIDER, text=provider.partial))
 
@@ -136,7 +155,7 @@ class ScriptedStreamingProvider:
                 self.finished = True
                 self.terminated = True
                 self.termination_basis = 'provider_last_package'
-                if self.audio_bytes > 0:
+                if self.heard_signal:
                     self._events.append(StreamingASREvent(
                         kind=EVENT_FINAL, source=SOURCE_PROVIDER, text=provider.final_text,
                         basis='provider_endpoint'))
@@ -244,11 +263,11 @@ def build_app(args):
 
     if profile['judge']:
         # The browser tests drive capture and control; the decision maker is a
-        # test double so the number of turns is deterministic.
+        # test double so the wording is deterministic. It deliberately keeps
+        # talking forever: how many questions a free-mode run actually asks must
+        # be decided by the server's own turn budget, not by this double.
         def fake_agent(session, history, device_text, output_root_arg, manager_arg,
                        turn_index=None):
-            if len([t for t in session.turns if t.role == 'platform']) >= args.free_max_turns:
-                return None
             index = len([t for t in session.turns if t.role == 'platform']) + 1
             text = f'第{index}个问题'
             audio = manager_arg.synthesize_text(session.session_id, text, turn_index)
@@ -301,7 +320,6 @@ def main():
                         help='which controlled providers are available')
     parser.add_argument('--free-mode', action='store_true',
                         help='alias for --profile full, kept for existing callers')
-    parser.add_argument('--free-max-turns', type=int, default=2)
     args = parser.parse_args()
 
     manager = build_app(args)

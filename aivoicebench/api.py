@@ -648,7 +648,8 @@ async def voice_test_websocket(websocket: WebSocket, session_id: str):
                     await _send_ignored(websocket, msg_type, turn_id,
                                         f'session is {session.status}')
                     continue
-                await _consume_device_observation(websocket, session, result)
+                if await _consume_device_observation(websocket, session, result):
+                    break
 
             elif msg_type == 'stop':
                 # Idempotent: stopping an already stopped session is not an error.
@@ -744,10 +745,16 @@ async def voice_test_websocket(websocket: WebSocket, session_id: str):
                                                     already_closed=True):
                             break
                     else:
+                        # Free mode: the browser's capture for this round is
+                        # already abandoned, so the next question is generated
+                        # here. A silent device must not stall the run, and a
+                        # spent turn budget still ends it explicitly.
                         await websocket.send_json({
                             'type': 'no_response', 'turn_id': turn.turn_id,
                             'policy': 'continue',
                             'note': 'no response observed; continuing by policy'})
+                        if await _continue_free_run(websocket, session):
+                            break
                 else:
                     _voice_test_manager.stop(session_id, reason='no_response_timeout')
                     await websocket.send_json({
@@ -771,14 +778,15 @@ async def voice_test_websocket(websocket: WebSocket, session_id: str):
                 except ValueError as error:
                     await _send_ignored(websocket, msg_type, turn_id, str(error))
                     continue
-                await _consume_device_observation(websocket, session, {
+                if await _consume_device_observation(websocket, session, {
                     'turn_id': capture['turn_id'],
                     'mode': 'turn_file',
                     'final_text': capture.get('transcript', ''),
                     'final_basis': 'file_asr_fallback',
                     'final_source': 'turn_file_file_asr',
                     'failure': None,
-                })
+                }):
+                    break
 
             elif msg_type == 'device_audio_failed':
                 # A failed fallback observation is not a silent "no answer": it
@@ -949,7 +957,8 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
                 capture.audio_bytes += len(pcm)
                 applied = _voice_test_manager.note_streaming_events(
                     session, capture.asr.poll_events(), capture=capture)
-                await _forward_streaming_events(websocket, applied)
+                await _forward_streaming_events(websocket, applied, turn_id=capture.turn_id)
+                await _forward_stale_streaming_events(websocket, session)
                 if capture.failure in ('invalid_audio', 'audio_capture_failed'):
                     break
                 continue
@@ -963,12 +972,18 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
             if control.get('type') == 'capture_stopped':
                 status, failure = await _finalise_capture(session, capture,
                                                           reason=control.get('reason'))
+                # Anything the provider produced after this turn was closed is
+                # reported as ignored, never as this round's transcript.
+                await _forward_stale_streaming_events(websocket, session)
+                stale_reason = _voice_test_manager.stale_capture_reason(session, capture)
                 await websocket.send_json({'type': 'capture_result', 'turn_id': turn_id,
                                            'stream_id': capture.stream_id,
                                            'final_text': capture.final_text,
                                            'final_basis': capture.final_basis,
                                            'failure': capture.failure, 'status': status,
-                                           'empty_transcript': not capture.final_text.strip()})
+                                           'empty_transcript': not capture.final_text.strip(),
+                                           'stale': stale_reason is not None,
+                                           'stale_reason': stale_reason})
                 return
     except WebSocketDisconnect:
         await _abort_capture(session, capture, failure='stream_disconnected')
@@ -981,11 +996,12 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
             pass
 
 
-async def _forward_streaming_events(websocket, events):
+async def _forward_streaming_events(websocket, events, *, turn_id=None):
     """Show the device's words to the operator while the turn is still running.
 
     Partial text is display-only: it never triggers the agent, and the trace
-    keeps it labelled as a control observation.
+    keeps it labelled as a control observation. Every update names the turn it
+    belongs to, so the page can refuse one that is no longer current.
     """
     for event in events:
         if event.kind not in ('partial_transcript', 'final_transcript'):
@@ -996,8 +1012,28 @@ async def _forward_streaming_events(websocket, events):
             await websocket.send_json({
                 'type': event.kind, 'text': event.text, 'basis': event.basis,
                 'sequence': event.sequence, 'source': event.source,
+                'turn_id': turn_id,
                 'evidence_scope': 'control_evidence'})
         except Exception:  # noqa: BLE001 - a display update must not break the run
+            return
+
+
+async def _forward_stale_streaming_events(websocket, session):
+    """Tell the page which provider output was ignored, and why.
+
+    A transcript that arrives after its turn closed must not update the round's
+    text: it is sent as an explicit ``stale_transcript`` notification carrying
+    the session, the turn and the reason, so the page can show it as ignored
+    instead of as a confirmed device answer.
+    """
+    for entry in _voice_test_manager.drain_stale_streaming_events(session):
+        try:
+            await websocket.send_json({
+                'type': 'stale_transcript', 'kind': entry['kind'], 'text': entry['text'],
+                'session_id': entry['session_id'], 'turn_id': entry['turn_id'],
+                'reason': entry['reason'], 'evidence_scope': entry['evidence_scope'],
+                'ignored': True, 'note': entry['note']})
+        except Exception:  # noqa: BLE001 - a notification must not break the run
             return
 
 
@@ -1140,6 +1176,8 @@ async def _consume_device_observation(websocket, session, result):
     happens next. Either way the platform turn that was awaiting an observation
     is closed with its real outcome, so the trace never shows a turn left open
     while the conversation has already advanced.
+
+    Returns True when the run is finished, so the caller stops reading.
     """
     transcript = (result.get('final_text') or '').strip()
     turn_id = result.get('turn_id')
@@ -1158,19 +1196,16 @@ async def _consume_device_observation(websocket, session, result):
                 session, turn, phase='no_response', status='no_response',
                 closure_reason=reason, observation=turn.observation,
                 observation_basis=turn.observation_basis)
-        session.status = 'stopped' if session.on_no_response == 'pause' else session.status
         if session.on_no_response == 'pause':
             _voice_test_manager.stop(session.session_id, reason=reason)
             await websocket.send_json({'type': 'stopped', 'reason': reason,
                                        'turn_id': turn_id,
                                        'note': 'no usable device transcript was observed'})
-            return
+            return True
         await websocket.send_json({'type': 'no_response', 'turn_id': turn_id,
                                    'policy': 'continue', 'failure': failure,
                                    'note': 'no usable device transcript; continuing by policy'})
-        await _generate_and_send_free_phrase(websocket, session, device_text='',
-                                             capture=result)
-        return
+        return await _continue_free_run(websocket, session, capture=result)
     if turn is not None and not turn.closed:
         # Closed by the verified transcript, not by a VAD suspicion: the turn's
         # own recorded observation (if the browser reported one) is preserved.
@@ -1178,8 +1213,8 @@ async def _consume_device_observation(websocket, session, result):
             session, turn, phase=PHASE_OBSERVED, status='complete',
             closure_reason='device_transcript',
             observation=turn.observation, observation_basis=turn.observation_basis)
-    await _generate_and_send_free_phrase(websocket, session, device_text=transcript,
-                                         capture=result)
+    return await _continue_free_run(websocket, session, device_text=transcript,
+                                    capture=result)
 
 
 async def _send_play(websocket, session, phrase_index):
@@ -1201,6 +1236,31 @@ async def _send_play(websocket, session, phrase_index):
         'no_response_timeout_ms': session.no_response_timeout_ms,
         'round_observation_max_ms': session.round_observation_max_ms,
     })
+
+
+async def _continue_free_run(websocket, session, *, device_text='', capture=None):
+    """Ask the next free-mode question, or finish a run whose budget is spent.
+
+    ``max_turns=N`` bounds N *complete* rounds, so the Nth answer is always
+    observed and closed before the run can end. Once the budget is spent the
+    agent and TTS are not called again: the session completes with
+    ``max_turns`` and no further play is issued.
+
+    Returns True when the run is finished.
+    """
+    if _voice_test_manager.turn_budget_reached(session):
+        if device_text:
+            # The last answer is still recorded as this run's final device turn.
+            # Rounds that do generate a further question record it in
+            # ``_generate_and_send_free_phrase`` instead; here no question
+            # follows, so nothing else would keep it in the trace.
+            _voice_test_manager.note_device_response(session, device_text)
+        _voice_test_manager.complete(session.session_id, 'max_turns')
+        await websocket.send_json({'type': 'complete', 'reason': 'max_turns'})
+        return True
+    await _generate_and_send_free_phrase(websocket, session, device_text=device_text,
+                                         capture=capture)
+    return False
 
 
 async def _generate_and_send_free_phrase(websocket, session, device_text='', capture=None):
@@ -1268,10 +1328,10 @@ async def _generate_and_send_free_phrase(websocket, session, device_text='', cap
             'no_response_timeout_ms': session.no_response_timeout_ms,
             'round_observation_max_ms': session.round_observation_max_ms,
         })
-        platform_turns = sum(1 for t in session.turns if t.role == 'platform')
-        if platform_turns >= session.max_turns:
-            _voice_test_manager.complete(session.session_id, 'max_turns')
-            await websocket.send_json({'type': 'complete', 'reason': 'max_turns'})
+        # The turn budget is deliberately NOT consumed here. ``max_turns`` counts
+        # complete rounds, so the question just played is still answered and
+        # observed; the run ends after that observation is recorded
+        # (``_continue_free_run``), never by closing this turn early.
     except Exception as error:
         await websocket.send_json({'type': 'error', 'reason': str(error)})
         _voice_test_manager.fail(session.session_id, reason=f'agent_error:{error}')
