@@ -763,3 +763,22 @@
 - **仍未验收。** 真实云 Streaming ASR / File ASR、真实扬声器 / 真实麦克风 / 实体 AI 设备、
   真实标签契约、预算与 Coverage、Barge-in 均仍为 pending；本版可声明范围为
   software_verified + container_verified + browser_verified（受控输入）。
+
+## 2026-09-13 — Streaming ASR 本地实测前置检查与 WSS 配置修复
+
+- **官方契约复核。** 重新读取火山引擎「大模型流式语音识别 API」当前页面（文档 ID
+  `6561/1354869`，页面标注最近更新 2026-08-06）。新版控制台仍使用 `X-Api-Key`；双向流式
+  优化端点为 `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`；文档列出 1.0 的
+  `volc.bigasr.sauc.*` 与推荐 2.0 的 `volc.seedasr.sauc.*` 两代小时版/并发版资源 ID。
+- **修复配置阻断。** `ModelSettings` 先前对所有 Provider 只接受 HTTP(S)，导致已经实现的
+  `volcengine_streaming_asr` 无法通过 Web/API 保存官方 WSS 端点。现在仅该协议要求安全的
+  `wss://`，其他 Provider 继续沿用原 HTTP(S) 与远程 HTTPS 限制；新增模型配置回归测试。
+- **软件验证。** `tests.test_model_settings` 11 项、`tests.test_streaming_asr` 30 项、
+  `tests.test_voice_streaming` 12 项全部通过；从本分支构建本地镜像
+  `aivoicebench:streaming-live-test`，复用宿主机持久化目录启动并通过 `/health`。
+- **真实服务探测。** 使用现有本地写入凭据向官方优化端点逐一尝试 2.0/1.0 的小时版与并发版
+  Resource ID，只发送一秒静音且不发送麦克风内容；四种组合均在 WebSocket 建连阶段返回
+  `provider_auth_failed`。火山控制台「服务管理」同时明确显示「流式语音识别 2.0 未开通」和
+  「流式语音识别 1.0 未开通」，与探测结果一致。未把失败升级为可用声明，也未改变真实验收勾选。
+- **后续条件。** 需由账号所有者明确授权开通流式语音识别服务；开通可能启用按量计费。服务开通后
+  先复验静音握手，再进行浏览器麦克风 → Streaming ASR → LLM → TTS 的真实自由对话闭环。
