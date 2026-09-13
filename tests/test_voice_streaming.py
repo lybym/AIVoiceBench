@@ -16,6 +16,7 @@ import json
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -68,14 +69,22 @@ class MockTTSProvider:
 class ScriptedStreamingSession:
     """Deterministic streaming session: no network, no vendor dependency."""
 
-    def __init__(self, *, stream_id='STR-test', script=None, failure=None):
+    def __init__(self, *, stream_id='STR-test', script=None, failure=None,
+                 normal_close=False):
         self.stream_id = stream_id
         self.script = list(script or [])
         self.failure = failure
+        # ``normal_close`` mirrors the documented async endpoint: it returns a
+        # definite final and then closes the socket itself, without ever setting
+        # the documented ``is_last_package`` field.
+        self.normal_close = normal_close
         self.audio_bytes = 0
         self.received = []
         self.finished = False
         self.saw_last_package = False
+        self.terminated = False
+        self.termination_basis = None
+        self.close_code = None
         self._events = []
         self.state = 'open'
         self.profile = {'provider': 'scripted', 'model_id': 'scripted-streaming'}
@@ -98,7 +107,18 @@ class ScriptedStreamingSession:
             self._events.append(StreamingASREvent(kind=EVENT_SPEECH_ENDED,
                                                   source=SOURCE_PROVIDER,
                                                   basis='provider_endpoint'))
+        if self.normal_close:
+            self.terminated = True
+            self.termination_basis = 'provider_normal_close'
+            self.close_code = 1000
+            self.state = 'finished'
+            return
+        # Mirrors the real adapter: the documented last package is also a
+        # termination, recorded with its own basis.
         self.saw_last_package = True
+        self.terminated = True
+        self.termination_basis = 'provider_last_package'
+        self.state = 'finished'
 
     def poll_events(self):
         events, self._events = self._events, []
@@ -122,15 +142,17 @@ class ScriptedStreamingSession:
 
 
 class ScriptedStreamingProvider:
-    def __init__(self, *, script=None, failure=None, empty=False):
+    def __init__(self, *, script=None, failure=None, empty=False, normal_close=False):
         self.script = script
         self.failure = failure
         self.empty = empty
+        self.normal_close = normal_close
         self.sessions = []
 
     async def start_session(self, *, session_id, turn_id, run_index, directory):
         session = ScriptedStreamingSession(
-            script=[] if self.empty else (self.script or ['南京']), failure=self.failure)
+            script=[] if self.empty else (self.script or ['南京']), failure=self.failure,
+            normal_close=self.normal_close)
         if self.empty:
             session.finish_input = self._empty_finish
         self.sessions.append(session)
@@ -139,6 +161,8 @@ class ScriptedStreamingProvider:
     async def _empty_finish(self):
         self.finished = True
         self.saw_last_package = True
+        self.terminated = True
+        self.termination_basis = 'provider_last_package'
 
 
 class FreeModeStreamingTests(unittest.TestCase):
@@ -328,6 +352,57 @@ class FreeModeStreamingTests(unittest.TestCase):
         summary = [e for e in record['events'] if e['kind'] == 'device_observation'][0]
         self.assertEqual(summary['detail']['capture_mode'], 'streaming')
         self.assertNotIn('payload', json.dumps(record))
+
+    def test_normal_provider_close_finishes_the_capture_without_waiting_for_the_bound(self):
+        """A normal provider close after a definite final ends the capture at once.
+
+        Real-cloud evidence (session VT-e9adbbe08a1d): the provider returned a
+        definite final and then closed the socket normally (ConnectionClosedOK)
+        without ever sending the documented last package. The capture must finish
+        with the final text instead of staying active until the control bound.
+        """
+        self.provider.normal_close = True
+        session_id = self.create_free_session(no_response_timeout_ms=8000)
+        with self.start_control(session_id) as control:
+            control.send_json({'type': 'start'})
+            control.receive_json()
+            play = control.receive_json()
+            started = time.monotonic()
+            result = self.send_capture(session_id, play['turn_id'])
+            elapsed = time.monotonic() - started
+
+            self.assertEqual(result['type'], 'capture_result')
+            self.assertEqual(result['status'], 'finished')
+            self.assertIsNone(result['failure'])
+            self.assertEqual(result['final_text'], '这是设备的回答')
+            self.assertEqual(result['final_basis'], 'provider_endpoint')
+            self.assertFalse(result['empty_transcript'])
+            self.assertLess(elapsed, 4.0,
+                            'a normal close must not wait for the no-response bound')
+
+            stream = self.provider.sessions[0]
+            self.assertTrue(stream.terminated)
+            self.assertEqual(stream.termination_basis, 'provider_normal_close')
+            self.assertEqual(stream.close_code, 1000)
+            self.assertFalse(stream.saw_last_package,
+                             'the documented is_last_package field never arrived')
+
+            # The turn still closes and the conversation advances.
+            control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+            nxt = control.receive_json()
+            self.assertEqual(nxt['type'], 'play')
+            self.assertEqual(nxt['device_text'], '这是设备的回答')
+            self.assertNotEqual(nxt['turn_id'], play['turn_id'])
+
+        record = self.record(session_id)
+        finished = [e for e in record['events'] if e['kind'] == 'capture_finished'][0]
+        self.assertEqual(finished['detail']['final_text'], '这是设备的回答')
+        self.assertEqual(finished['detail']['final_basis'], 'provider_endpoint')
+        self.assertEqual(finished['detail']['status'], 'finished')
+        observation = [e for e in record['events'] if e['kind'] == 'device_observation'][0]
+        self.assertEqual(observation['detail']['capture_mode'], 'streaming')
+        self.assertEqual(observation['detail']['final_basis'], 'provider_endpoint')
+        self.assertNotIn('stream_disconnected', json.dumps(record))
 
     def test_requested_streaming_without_a_provider_refuses_to_start(self):
         """A missing Streaming ASR is a refusal, not a silent downgrade.

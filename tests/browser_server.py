@@ -134,6 +134,8 @@ class ScriptedStreamingProvider:
 
             async def finish_input(self):
                 self.finished = True
+                self.terminated = True
+                self.termination_basis = 'provider_last_package'
                 if self.audio_bytes > 0:
                     self._events.append(StreamingASREvent(
                         kind=EVENT_FINAL, source=SOURCE_PROVIDER, text=provider.final_text,

@@ -782,3 +782,55 @@
   「流式语音识别 1.0 未开通」，与探测结果一致。未把失败升级为可用声明，也未改变真实验收勾选。
 - **后续条件。** 需由账号所有者明确授权开通流式语音识别服务；开通可能启用按量计费。服务开通后
   先复验静音握手，再进行浏览器麦克风 → Streaming ASR → LLM → TTS 的真实自由对话闭环。
+
+## 2026-09-13 — Streaming ASR 正常关闭兼容（真实云端会话 VT-e9adbbe08a1d 暴露）
+
+- **真实故障。** 火山引擎「流式语音识别 2.0」（优化端点
+  `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`、`resource_id`
+  `volc.seedasr.sauc.duration`、`model_name` `bigmodel`）在真实自由对话会话
+  `VT-e9adbbe08a1d` 中正常返回 11 次 partial transcript，并给出 definite final
+  （`final_transcript` + `speech_ended`，`basis=provider_endpoint`，`definite=true`），
+  随后由服务端主动正常关闭 WebSocket，客户端收到 `ConnectionClosedOK`。旧代码把这次关闭
+  记录为 `stream_disconnected`（`phase=read`、`error_type=ConnectionClosedOK`），
+  `saw_last_package` 始终为 false，于是 `_finalise_capture()` 一直等到控制上限，
+  capture 保持 active、Turn 停在 observing，无法进入下一轮。
+- **根因。** ① `_read_loop` 把读取阶段的任何异常都映射为 `stream_disconnected` /
+  `stream_timeout`，没有区分正常关闭与异常断开；② 终止条件只认文档中的
+  `is_last_package`，而文档的**异步**端点在判停完成后会自己关闭连接、并不一定发送该字段；
+  ③ `finish_input()` 在已经关闭的 socket 上仍尝试发送最后音频包，把正常关闭二次记成
+  传输失败；④ `_finalise_capture()` 只等待 `saw_last_package`，所以“已经正常结束但没有
+  显式最后包”的情况必然等到超时。
+- **修复（不重写架构）。** 新增**独立的真实终止证据**，与文档字段解耦：会话记录
+  `terminated`、`termination_basis`（`provider_last_package` / `provider_normal_close`）、
+  `close_code`，并进入 `summary()`、`asr_session_closed` 事件详情与调用审计；
+  `saw_last_package` 继续**只**表示 Provider 是否真的返回了 `is_last_package`，不被伪装。
+  正常关闭（1000/1001 或 `ConnectionClosedOK`）的判定：
+  - 已有 definite final → 视为正常终止（`terminated=true`、`state=finished`、`failure=None`），
+    不记录 `stream_disconnected`；
+  - 客户端已结束输入但没有可用 final → 记录 `asr_no_final`（真实失败，不是传输断开，
+    也不会被当成回答）；
+  - 客户端尚未结束输入（输入未发完）→ 仍按 `stream_disconnected` 失败。
+  异常关闭码（如 1006）与无关闭码的读取错误（`OSError`/超时）继续映射为
+  `stream_disconnected` / `stream_timeout`；Provider 错误码、鉴权与限流分类不变。
+  `finish_input()` 在已终止的会话上不再发送最后包；`_finalise_capture()` 改为等待
+  “已终止”信号（`terminated`，含文档最后包或经证据支持的正常关闭），不再等到
+  `no_response_timeout`；`_terminal_status()` 把 `asr_no_final` 明确记为
+  `insufficient_evidence`，避免“只有 partial 文本”被审计成 complete。
+- **证据边界（不降低 Evidence First）。** 正常关闭只在**有真实证据**时才被接受：
+  Provider 已给出 definite（判停）final，或客户端已结束输入；仅“socket 正常关闭”本身
+  不构成成功。`close_code` 是观测到的传输事实，不是声学结论；Streaming ASR 结果仍是
+  **control_evidence**；Provider 时间戳依旧不作为 acoustic ground truth；未发明时间戳、
+  最后包或成功状态。
+- **回归测试（新增 9 项）。** `tests/test_streaming_asr.py` 新增 `NormalCloseTests`：
+  finishing + definite final + `ConnectionClosedOK` → 成功且 `saw_last_package` 仍为 false；
+  Provider 先关闭（客户端最后包尚未发出）+ definite final → 仍成功，且随后调用
+  `finish_input()` 不会把正常关闭变成失败；正常关闭但无 definite final → `asr_no_final`；
+  正常关闭但输入未结束 → `stream_disconnected`；异常关闭码 1006 → `stream_disconnected`
+  且保留 `close_code`；无关闭码的 `OSError` → `stream_disconnected`；显式 `is_last_package`
+  的终止依据记为 `provider_last_package`。`tests/test_voice_streaming.py` 新增：
+  受控 Provider 正常关闭时 capture 立即以 `status=finished`、`final_basis=provider_endpoint`
+  完成（实测 < 4 s，而 `no_response_timeout_ms=8000`，旧实现会等满 8 s），并且 Turn 关闭、
+  下一轮 play 正常发出；执行记录中不出现 `stream_disconnected`。
+- **软件验证。** 全量 `python -m unittest discover -s tests -p "test_*.py"`：**558 tests, OK**
+  （含 `tests.test_streaming_asr` 37 项、`tests.test_voice_streaming` 13 项、
+  `tests.test_model_settings` 全部通过）。真实云端三轮复验结果见下一条记录。

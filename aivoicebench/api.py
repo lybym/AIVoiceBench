@@ -1021,19 +1021,34 @@ def _apply_frame_ordering(capture, sequence):
     return True
 
 
+def _asr_terminated(asr):
+    """True when the provider has ended the stream (no waiting is useful).
+
+    ``terminated`` distinguishes "the provider ended the stream, with real
+    evidence" from "the documented ``is_last_package`` field arrived"; either
+    signal means no further result can arrive, so both are honoured and a
+    provider that only implements the documented field still works.
+    """
+    return bool(getattr(asr, 'terminated', False)) or bool(getattr(asr, 'saw_last_package', False))
+
+
 async def _finalise_capture(session, capture, *, reason=None):
-    """Finish the ASR input and wait, bounded, for the provider's last package."""
+    """Finish the ASR input and wait, bounded, for the provider to terminate."""
     from .streaming_asr import StreamingASRUnavailable
     asr = capture.asr
     status, failure = 'finished', None
     try:
         await asr.finish_input()
         deadline = time.monotonic() + (session.no_response_timeout_ms / 1000)
-        while not asr.saw_last_package and time.monotonic() < deadline:
+        # Stop as soon as the provider has terminated: a normal close that is
+        # backed by a definite final transcript ends the stream even when the
+        # documented last-package field never arrives, and must not be held open
+        # until the control bound.
+        while not _asr_terminated(asr) and time.monotonic() < deadline:
             events = await asr.wait_events(0.25)
             _voice_test_manager.note_streaming_events(session, events, capture=capture)
         _voice_test_manager.note_streaming_events(session, asr.poll_events(), capture=capture)
-        if not asr.saw_last_package:
+        if not _asr_terminated(asr):
             failure = capture.failure or 'stream_timeout'
     except StreamingASRUnavailable:
         failure = capture.failure or 'stream_open_failed'
