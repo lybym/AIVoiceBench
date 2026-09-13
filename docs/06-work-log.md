@@ -1058,4 +1058,70 @@
   PR #75 保持 OPEN、未合并。本版发布的完整记录见
   [发布说明](releases/0.4.0-alpha.5.md#发布记录本次实际制品与验证)。
 
+## 2026-09-13 — 会话停止后不再把迟到转写显示为“设备（确认）”（PR #75，未合并）
+
+- **真实故障（`v0.4.0-alpha.5`）。** 自由对话 Streaming ASR、`max_turns=3`、
+  `on_no_response=pause`：前两轮正常完成，第三轮触发 `no_response_timeout`，服务端 session 已
+  `stopped`、execution-record 已固定（第三轮 `T4=no_response`），**但网页仍显示
+  “设备（确认）：…”**（例如迟到的 final “十。”），而执行记录并不把该轮当作已回答。
+- **根因（两侧都有）。**
+  1. **前端**：`#vt-device-transcript` 这一行只在收到新的实时/确认回调时被覆盖，**从不按轮次重置**；
+     一轮以 `stopped` 结束时它保留着上一轮（或停止瞬间到达的）确认文本，看起来就是该轮的
+     “确认回答”。音频 socket 的回调只检查「运行是否仍在进行」，不检查「消息属于哪一轮」，
+     也不识别服务端标记的迟到消息。
+  2. **后端**：Provider 事件只要被轮询到就会折进 capture（`capture.final_text`）并写入
+     execution record（`final_transcript`），**不检查该 capture 的 turn 是否已经关闭**；
+     即“轮次已因无回答而关闭、之后才到达的 final”会被当成该轮的转写，并随 `capture_result`
+     一起显示为确认文本。
+- **修复（不重写架构，不改 Evidence First）。**
+  - **后端**：新增 `capture_is_current()`（会话在运行 **且** 该 capture 的 turn 仍是等待观察的那一轮）
+    与 `stale_capture_reason()`（`turn_closed` / `turn_not_awaiting_observation` /
+    `session_stopped` / `session_completed` / …）。`note_streaming_events()` 只折进“当前”事件；
+    迟到事件改为 `note_stale_streaming_event()`：**不写入 turn 的转写、不写入 execution record、
+    不设置 capture 的最终文本**，而是作为有界的、显式标注的诊断保留在会话上
+    （session/turn/kind/text/reason/`control_evidence`），并通过音频 socket 以
+    `stale_transcript`（`ignored=true`、带 session/turn/reason）告知页面。
+    `capture_result` 增加 `stale` / `stale_reason` 字段；会话快照新增
+    `stale_streaming_events`（计数 + 明细）。因此**已完成轮次的 execution record 不会再被迟到事件改动**。
+  - **前端**：音频 socket 回调现在拒绝一切“不属于当前轮次”的消息——运行已结束/已取消、turn 不匹配、
+    或服务端标记为 stale/ignored——统一记为 `lateDropped` 并在自由对话日志中写明
+    “已忽略迟到识别结果（原因；会话 …/轮次 …）”，**绝不写入确认行**。会话以 `stopped`/`failed`
+    结束时清空该轮设备文本行（正常 `complete` 结束则保留最后一轮已确认的回答）。
+  - **证据边界不变**：迟到文本仍是 `control_evidence`，不产生 acoustic measurement，
+    不引入任何 latency 字段；失败仍然不是回答；不发明缺失文本。
+- **回归测试（新增 7 项）。** `tests/test_voice_streaming.py` 新增 `StaleStreamingEventTests`：
+  ① **复现用户场景**——`max_turns=3` 三轮（两轮正常回答 + 第三轮 `observation_timeout`）后投递迟到
+  definite final，断言 session/所有 turn/execution record **逐事件完全不变**，capture 的最终文本仍为空，
+  且该事件被记为 `session_stopped` 的 stale 诊断；② 已完成（`max_turns`）运行后的迟到 final 同样被忽略
+  （`session_completed`），已发生轮次的确认回答不受影响；③ 会话仍在运行时**已关闭 turn** 的迟到事件同样
+  为 stale（`turn_closed`）；④ `stale_transcript` 通知契约（`ignored=true` + session/turn/reason +
+  `control_evidence`，只发送一次）；⑤ stale 原因分类（current 时返回 None）。浏览器层
+  `tests/test_voice_integration_acceptance.py` 新增 `FreeModeStoppedRoundTests`：真实页面 + 受控麦克风跑
+  三轮，第三轮静音超时后断言**页面上不出现“设备（确认）”**、该行被清空、第三轮 turn 为
+  `no_response`（`no_response_timeout` 或 `no_device_transcript…`）、execution record 里没有该轮的
+  `device_transcript`。该测试**在修复前必然失败**（实测旧行为：`设备（确认）：设备回答：南京明天晴`
+  在停止后仍留在页面上）。
+  为让“静音不等于回答”在浏览器替身里也成立，`tests/browser_server.py` 的脚本化 Streaming ASR 改为
+  **只在真的收到信号时**才产出 partial/final（受控麦克风是增益可调的 440 Hz 振荡器，静音轮就是零帧）。
+- **软件验证。** 全量 `python -m unittest discover -s tests -p "test_*.py"`：**577 tests, OK**
+  （较上一条 +7）。定向 `tests.test_voice_streaming` 31 项、`tests.test_voice_streaming` +
+  `test_voice_control` + `test_voice_capability` + `test_model_settings` 全部通过。
+  说明：其中一次全量运行出现过 1 个与本修复无关的浏览器计时抖动（读取 `playReceived` 早于 play 到达），
+  单模块与随后两次全量运行均通过。
+- **候选镜像与浏览器复验。** 由本次修复提交构建 `aivoicebench:stale-transcript-fix`
+  （`org.opencontainers.image.revision=0fffbba`，ID
+  `sha256:4e009c61e99b030159a13f082d411db232bb0ba8b4a2d4b362d1be1f46899017`；容器内
+  `api.py`/`voice_test.py`/`static/voice_test.js` 与工作区逐文件哈希一致）。容器内
+  `container_acceptance.py` → **16/16 PASS**；在该镜像**自己的页面**上（镜像内启动受控 Provider
+  服务，浏览器走镜像的路由与静态资源）重跑 `tests.test_voice_browser` 9 项与
+  `tests.test_voice_integration_acceptance` 9 项全部通过，含本次新增的停止轮次用例。
+  镜像内运行的该用例会话 `VT-6d02af793f1c`：`status=stopped`、`stop_reason=no_response_timeout`、
+  3 个平台轮次 + 2 个设备轮次、`T4=no_response`（`no_response_timeout`、已关闭）、
+  `observation_timeout` 1 次、`device_transcript` 仅 2 次、`awaiting_turn_id=null`
+  ——即停止的那一轮没有被写成回答，页面也没有显示确认文本。
+- **边界与未改动项。** 未改动 TestCase / EventTimeline / Evidence / MetricResult / Finding / Runner /
+  ASR 适配器与 deterministic metric engine 的既有语义；未合并 PR #75；未把迟到或控制层时间戳包装成
+  声学测量证据。
+
+
 
