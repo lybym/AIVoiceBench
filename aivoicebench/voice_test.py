@@ -138,6 +138,17 @@ NO_RESPONSE_TIMEOUT_MAX_MS = 600000
 ROUND_OBSERVATION_MAX_MIN_MS = 2000
 ROUND_OBSERVATION_MAX_MAX_MS = 600000
 
+# Accepted range for the free-mode platform-turn budget. ``max_turns=N`` means N
+# *complete* rounds — question, playback, device observation, capture
+# finalisation and turn closure — and it is not an early-stop count. The upper
+# bound matches the page's own input bound.
+MAX_TURNS_MIN = 1
+MAX_TURNS_MAX = 50
+
+# Session states that already record how a run ended. A late stop, a socket
+# disconnect or a duplicate message must not rewrite them.
+TERMINAL_SESSION_STATES = ('stopped', 'completed', 'failed')
+
 
 class CapabilityError(ValueError):
     """A run was refused by the precheck: a required capability is missing.
@@ -584,6 +595,13 @@ class VoiceTestManager:
             raise ValueError("on_no_response must be 'pause' or 'continue'")
         if capture_mode not in CAPTURE_MODES:
             raise ValueError(f"capture_mode must be one of {CAPTURE_MODES}")
+        try:
+            max_turns = int(max_turns)
+        except (TypeError, ValueError):
+            raise ValueError('max_turns must be an integer') from None
+        if not (MAX_TURNS_MIN <= max_turns <= MAX_TURNS_MAX):
+            raise ValueError(
+                f'max_turns must be between {MAX_TURNS_MIN} and {MAX_TURNS_MAX}')
         if no_response_timeout_ms is None:
             no_response_timeout_ms = CONTROL_POLICY['no_response_timeout_ms']
         try:
@@ -858,6 +876,21 @@ class VoiceTestManager:
                 and session.status == 'running'
                 and session.awaiting_turn_id == turn.turn_id)
 
+    def platform_turns_issued(self, session):
+        """How many platform questions this run has already issued."""
+        return sum(1 for turn in session.turns if turn.role == 'platform')
+
+    def turn_budget_reached(self, session):
+        """True once ``max_turns`` platform questions have been issued.
+
+        The budget counts *complete* rounds, so reaching it does not end the run
+        by itself: the last question is still played, answered, observed and
+        finalised. Only after that last observation is recorded does the session
+        complete — instead of asking one question too many, and instead of
+        closing the last turn before its answer can arrive.
+        """
+        return self.platform_turns_issued(session) >= session.max_turns
+
     def note_device_response(self, session, text, *, source='browser'):
         """Record the device's transcript so the next turn keeps full context.
 
@@ -1121,6 +1154,11 @@ class VoiceTestManager:
         session = self.sessions.get(session_id)
         if not session:
             return None
+        if session.status in TERMINAL_SESSION_STATES:
+            # A late stop, a socket disconnect after the run already ended, or a
+            # duplicate message must not rewrite how the run actually ended and
+            # must not close a second turn.
+            return session
         pending = self.awaiting_turn(session)
         if pending is not None and not pending.closed:
             self.close_turn(session, pending, phase=PHASE_CANCELLED, status='cancelled',

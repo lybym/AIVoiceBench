@@ -448,6 +448,7 @@ Browser Mic → 持续采集 → PCM chunks → Backend → StreamingASRProvider
 ```
 
 - [ ] 保存版本化目标、策略、允许 Tool、轮次/时长/调用成本预算和停止条件；动作经过结构校验及预算检查，越界动作执行前拒绝。预算可配置，15 轮是示例而非默认 SLA。
+- [x] **`max_turns` 是完整轮次预算，不是提前停止计数**（Issue #74，software_verified）：`max_turns=N` 表示完整执行 N 个平台轮次，每轮为 Question → Playback → Device Observation → Streaming ASR final / 显式失败 → Capture Finalization → Turn Closure。第 N 个设备回答被观察并关闭**之后**，会话才以 `complete(max_turns)` 结束；不再调用 LLM 或 TTS 生成第 N+1 问、不再发出第 N+1 次 `play`、`awaiting_turn_id=null`，最后一轮 Platform Turn 与 Device Turn 均关闭，最终 transcript / capture / provider audit / execution events 全部保留。**禁止用隐藏轮次或 `max_turns=N+1` 规避。** 最后一轮出现 final transcript、`asr_no_final`、no response、Provider failure、用户停止或浏览器断开时，仍按既有策略明确收尾，不挂起会话；`max_turns` 为 1..50 的整数（与页面输入范围一致），在会话创建时校验。
 - [ ] 支持“建立临时事实 → 间隔若干轮 → 重问 → 切换话题 → 恢复原话题”等策略，遵守“不告知正在测试、不直接提示正确答案”等用户约束。
 - [x] Mic → VAD + Streaming ASR → Observation → LLM Decision → Action → TTS/Playback 循环保留 Trace（main PR #66，software_verified + container_verified + browser_verified）：模型/提示版本沿用既有 Agent 调用记录，观察引用与来源（`browser_vad` / provider / combined）、决策理由、实际音频与停止原因进入执行记录；真实设备未验收。
 - [x] **实时性要求**（main PR #66）：不得要求“收到完整 final 才认为设备开始回答”——VAD 先发现讲话、Streaming ASR 随后给文字；partial 只记录/展示/留痕，Agent 生成下一轮只使用 final，不因 partial 波动触发 LLM。
@@ -460,7 +461,7 @@ Browser Mic → 持续采集 → PCM chunks → Backend → StreamingASRProvider
 - [ ] 设备回复作为被测数据，不能改写 Harness 的目标、工具权限、预算和禁止行为。
 - [ ] M3 保存候选问题与完整轨迹供离线分析/复核；M5 基于 Measurement Evidence 和人工确认最小化用例，冻结音频/策略后交给固定 Runner 复测。探索输出不能直接成为 Golden ground truth。
 
-依据：既有路线图探索目标与用户补充；main PR #66 已实现最小实时链路并保留显式 File ASR fallback；PR #70（已合并）把预检门禁、时域判停与降级失败处置收紧为**后端强制**行为并随 `v0.4.0-alpha.3` Pre-release 发布；真实云、真实设备、预算与 Coverage 仍未验收。
+依据：既有路线图探索目标与用户补充；main PR #66 已实现最小实时链路并保留显式 File ASR fallback；PR #70（已合并）把预检门禁、时域判停与降级失败处置收紧为**后端强制**行为并随 `v0.4.0-alpha.3` Pre-release 发布；Issue #74 明确 `max_turns` 为完整轮次预算（已完成，software_verified）；真实云、真实设备、其余预算维度（成本/时长/停止条件）与 Coverage 仍未验收。
 
 ### PRD-F022 — 专业 HIL / Station
 
@@ -617,6 +618,7 @@ M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程�
 
 | PRD 版本 | 日期 | 变更 | 来源 |
 | --- | --- | --- | --- |
+| 1.3.4 | 2026-09-13 | **`max_turns` 轮次语义明确（产品行为变更，PRD-F021）**：`max_turns=N` 定义为 N 个**完整**平台轮次（Question → Playback → Device Observation → ASR final / 显式失败 → Capture Finalization → Turn Closure），预算在第 N 个回答被观察并关闭**之后**才结束会话。此前实现把「已提问数」当成「已完成轮次数」，在第 N 次 `play` 之后立即 `complete(max_turns)` 并关闭该 Turn，导致第 N 个回答无法观察（真实复验中只能配成 `max_turns=N+1` 规避，与界面「最大轮次」含义不符）。① 修复后不再生成第 N+1 问、不额外调用 LLM/TTS、不发第 N+1 次 `play`；② 最后一轮的 final transcript / `asr_no_final` / no response / Provider failure / 用户停止 / 浏览器断开均按既有策略明确收尾，不挂起；③ `max_turns` 限定为 1..50 的整数（与页面输入一致）并在会话创建时校验；④ 已结束的运行（`completed` / `stopped` / `failed`）不会被迟到的停止或断开改写；⑤ 证据边界不变：Streaming ASR 仍为 Control Evidence、Provider 时间戳不作 acoustic ground truth、失败不伪装成回答、partial 不触发下一轮、不发明缺失文本。同步 [工作日志](06-work-log.md) 与 PRD-F021 | 项目所有者指出自由对话第 N 轮回答无法观察、要求 `max_turns=N` 表示完整 N 轮（给定目标语义与验收条件，Issue #74） |
 | 1.3.3 | 2026-09-13 | **发布收敛（无产品需求变更）**：① 实现/main 基线更新为 **main `64702655fc3f7b1ee1fb285ff77382784c1d0b85`**（PR #71 合并提交）；② 当前预发布版更新为 **`v0.4.0-alpha.4`**，从收敛后的 main 重新构建、重新验收并发布；`v0.4.0-alpha.3` 与 `v0.4.0-alpha.2` 的标签、说明与附件保持不变；③ 第 7 节与第 8 节真实验收项**未勾选、未降级**，未新增 `real_recording_verified`、真实云 ASR 或实体设备验证声明；④ **PR #54（可选语义角色归属）仍未合并**，本版发布不包含该特性 | 项目所有者要求收敛本轮工作、更新文档、合并已授权的文档 PR、从收敛后的 main 重新出包并清理本地测试内容 |
 | 1.3.2 | 2026-09-12 | **事实校准（无产品需求变更）**：① 实现/main 基线更新为 **main `c020d8ddfb6c7218b9be11ae916439d6276f944d`**（PR #70 合并提交）；② 当前预发布版更新为 **`v0.4.0-alpha.3`**（Pre-release，标签指向该合并提交），`v0.4.0-alpha.2` 保留为更早的 Streaming ASR 骨架预览版；③ 1.3.1 行所述“候选”状态已由 **PR #70 合并**取代：预检强制、时域判停、降级失败处置由候选状态更新为**已合并 + software/container/browser verified 的有限范围**（受控输入，镜像内运行与导出后重新装载复验）；④ 第 7 节与第 8 节真实验收项**未勾选、未降级**，未新增 `real_recording_verified`、真实云 ASR 或实体设备验证声明；⑤ PR #54 仍未合并 | 项目所有者授权合并 #70 并发布 v0.4.0-alpha.3 后，要求把 PRD 的实现状态与基线校准到当前事实，且不改动产品需求与真实验收门槛 |
 | 1.3.1 | 2026-09-12 | **集成与候选制品一致性**：把此前只存在于本地分支（原修复提交 `6c34c74`）的语音测试修复重新表达并集成到 Streaming ASR 架构之上，并让每个模式在启动前真正被后端预检门禁约束。① 修正 VAD 判据为**时域线性 PCM RMS**（此前读频域 bin 并除以 255，非零噪声可使一轮永不结束），阈值由本机噪声底抬高，残留非零噪声仍能判定回答结束并推进；② 检测到疑似讲话后无回答超时不再适用，改由**轮次上限**显式退出（`cannot_confirm_response_end` / `observation_end_unconfirmed`），不记为回答完成；③ 新增 `GET /api/voice-test/capabilities/{mode}` 并在 `POST .../start` 与控制 socket 的 `start` **强制**同一预检：缺少项时指名拒绝、`provider_calls` 保持全 0，不先抓麦克风；默认不发起付费探测，响应/日志不含凭据、地址或签名 URL；④ **取消静默降级**：`auto` 只解析为 Streaming ASR，`turn_file` 需操作者显式选择；⑤ 降级上传先解码转换为 canonical 16 kHz mono PCM16 WAV 再调用 File ASR，文本取自归一化 segments，非法媒体/识别失败/空结果分别记录为 `invalid_audio` / `asr_failed` 且不推进下一轮；⑥ 停止后迟到的模型结果不再合成或播放；⑦ Fixed Mode 复用已有音频时不要求 ASR/LLM。同步 [Streaming ASR 边界](24-streaming-asr.md)、[Docker/API](20-docker-api.md) 与 [工作日志](06-work-log.md)。版本号因候选镜像身份与 alpha.2 区分而提升为 `0.4.0-alpha.3`；真实云、真实设备与预算/Coverage 仍未验收 | 项目所有者指出：发布的 `v0.4.0-alpha.2` 镜像与本地修复提交没有收敛，不能用镜像构建成功、版本号正确或旧 CI 通过替代“目标行为已进入发布包”的证明；并要求预检必须由后端真正执行，而不是只增加查询接口 |

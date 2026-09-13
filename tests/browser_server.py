@@ -244,11 +244,11 @@ def build_app(args):
 
     if profile['judge']:
         # The browser tests drive capture and control; the decision maker is a
-        # test double so the number of turns is deterministic.
+        # test double so the wording is deterministic. It deliberately keeps
+        # talking forever: how many questions a free-mode run actually asks must
+        # be decided by the server's own turn budget, not by this double.
         def fake_agent(session, history, device_text, output_root_arg, manager_arg,
                        turn_index=None):
-            if len([t for t in session.turns if t.role == 'platform']) >= args.free_max_turns:
-                return None
             index = len([t for t in session.turns if t.role == 'platform']) + 1
             text = f'第{index}个问题'
             audio = manager_arg.synthesize_text(session.session_id, text, turn_index)
@@ -301,7 +301,6 @@ def main():
                         help='which controlled providers are available')
     parser.add_argument('--free-mode', action='store_true',
                         help='alias for --profile full, kept for existing callers')
-    parser.add_argument('--free-max-turns', type=int, default=2)
     args = parser.parse_args()
 
     manager = build_app(args)

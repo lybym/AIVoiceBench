@@ -120,14 +120,14 @@ def _wait_for_health(base, timeout=60):
 _STATE = {}
 
 
-def _start_server(profile, *, round_max_ms=None, free_max_turns=3, first_phrase_ms=1200):
+def _start_server(profile, *, round_max_ms=None, first_phrase_ms=1200):
     port = _free_port()
     log = open(Path(_STATE['tmp'].name) / f'server-{profile}.log', 'w+', encoding='utf-8')
     _STATE['logs'].append(log)
     argv = [sys.executable, str(REPO_ROOT / 'tests' / 'browser_server.py'),
             '--port', str(port), '--output', str(Path(_STATE['tmp'].name) / f'out-{profile}'),
             '--first-phrase-ms', str(first_phrase_ms), '--phrase-ms', '400',
-            '--profile', profile, '--free-max-turns', str(free_max_turns)]
+            '--profile', profile]
     if round_max_ms:
         argv += ['--round-max-ms', str(round_max_ms)]
     proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=log, stderr=subprocess.STDOUT)
@@ -253,12 +253,15 @@ class IntegrationAcceptanceTestCase(unittest.TestCase):
 
     # ------------------------------------------------------------- helpers
 
-    def open_free_mode(self, capture_mode=None):
+    def open_free_mode(self, capture_mode=None, max_turns=None):
         self.page.goto(f'{self.base}/')
         self.page.click('#nav-voice-test')
         self.page.click('text=自由对话（大模型）')
         if capture_mode:
             self.page.select_option('#vt-free-capture-mode', capture_mode)
+        if max_turns is not None:
+            # The operator's own control: how many complete rounds to run.
+            self.page.fill('#vt-free-max-turns', str(max_turns))
         self.page.fill('#vt-free-goal', '测试设备的天气查询能力')
         return self.page
 
@@ -301,6 +304,10 @@ class IntegrationAcceptanceTestCase(unittest.TestCase):
 
     def record(self, session_id):
         return _get(self.base, f'/__test__/record/{session_id}')
+
+    def server_state(self, session_id):
+        """The server's own session snapshot (carries the provider-call audit)."""
+        return _get(self.base, f'/__test__/state/{session_id}')
 
 
 class MissingAsrRefusalTests(IntegrationAcceptanceTestCase):
@@ -553,7 +560,7 @@ class FreeModeThreeRoundTests(IntegrationAcceptanceTestCase):
     PROFILE = 'full'
 
     def test_three_consecutive_rounds_use_the_real_capture_path(self):
-        self.open_free_mode('streaming')
+        self.open_free_mode('streaming', max_turns=3)
         self.page.click('#vt-start-free')
         self.wait_for_play_count(1)
         session_id = self.state()['session_id']
@@ -565,7 +572,8 @@ class FreeModeThreeRoundTests(IntegrationAcceptanceTestCase):
                 "n => (document.getElementById('vt-free-log')||{}).textContent"
                 ".split('平台').length - 1 >= n", arg=expected - 1, timeout=30000)
 
-        # The third answer is observed, then the agent stops at the turn budget.
+        # The third answer is observed, and only then does the turn budget end
+        # the run: the last question is answered, not abandoned.
         self.speak_and_stop(streaming=True)
         self.page.wait_for_function(
             "() => { const el = document.getElementById('vt-status');"
@@ -577,10 +585,14 @@ class FreeModeThreeRoundTests(IntegrationAcceptanceTestCase):
         self.assertEqual(state['stats']['failures'], 0)
         record = self.record(session_id)
         self.assertEqual(record['resolved_capture_mode'], 'streaming')
+        self.assertEqual(record['status'], 'completed')
+        self.assertEqual(record['stop_reason'], 'max_turns')
+        self.assertIsNone(record['awaiting_turn_id'])
         turns = [item for item in record['runs'] if item['current']][0]['turns']
         roles = [turn['role'] for turn in turns]
         self.assertEqual(roles.count('platform'), 3, roles)
         self.assertEqual(roles.count('device'), 3, roles)
+        self.assertTrue(all(turn['closed'] for turn in turns), turns)
         observations = [e for e in record['events'] if e['kind'] == 'device_observation']
         self.assertEqual(len(observations), 3)
         for observation in observations:
@@ -593,6 +605,13 @@ class FreeModeThreeRoundTests(IntegrationAcceptanceTestCase):
         self.assertEqual(scripted['file_asr_calls'], [])
         self.assertGreaterEqual(scripted['streaming_audio_bytes'], 3 * 3200,
                                 'each round must have streamed real audio frames')
+        # Exactly three questions were synthesized and sent: the budget did not
+        # buy itself a hidden extra round, and the last answer was not skipped.
+        audit = self.server_state(session_id)['provider_calls']
+        self.assertEqual(audit['tts'], 3, audit)
+        self.assertEqual([e['detail']['text'] for e in record['events']
+                          if e['kind'] == 'play_issued'],
+                         ['第1个问题', '第2个问题', '第3个问题'])
 
 
 if __name__ == '__main__':

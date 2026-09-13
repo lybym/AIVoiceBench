@@ -154,18 +154,30 @@ class ScriptedStreamingProvider:
             script=[] if self.empty else (self.script or ['南京']), failure=self.failure,
             normal_close=self.normal_close)
         if self.empty:
-            session.finish_input = self._empty_finish
+            # The empty stream still terminates like the real adapter: the
+            # documented last package arrives, it just carries no transcript.
+            # The flags belong to the *session* being finalised, not to this
+            # provider object.
+            async def _empty_finish(_session=session):
+                _session.finished = True
+                _session.saw_last_package = True
+                _session.terminated = True
+                _session.termination_basis = 'provider_last_package'
+                _session.state = 'finished'
+
+            session.finish_input = _empty_finish
         self.sessions.append(session)
         return session
 
-    async def _empty_finish(self):
-        self.finished = True
-        self.saw_last_package = True
-        self.terminated = True
-        self.termination_basis = 'provider_last_package'
 
+class FreeModeHarness:
+    """Shared fixture for the free-mode backend integration tests.
 
-class FreeModeStreamingTests(unittest.TestCase):
+    The ASR provider, the LLM agent and TTS are deterministic stand-ins; the
+    HTTP and WebSocket surface, the session state and the execution record are
+    the real ones.
+    """
+
     phrases = ['第一个问题', '第二个问题']
 
     def setUp(self):
@@ -205,6 +217,9 @@ class FreeModeStreamingTests(unittest.TestCase):
     def _fake_agent(self, session, history, device_text, output_root, manager, turn_index=None):
         self.agent_calls.append({'device_text': device_text, 'history': list(history),
                                  'turn_index': turn_index})
+        # The real agent records its provider call; the double does the same so
+        # the session's own call audit is meaningful in these tests.
+        manager.note_provider_call(session, 'llm')
         if len(self.agent_calls) > len(self.phrases):
             return None
         text = self.phrases[len(self.agent_calls) - 1]
@@ -258,6 +273,9 @@ class FreeModeStreamingTests(unittest.TestCase):
         response = self.control.get(f'/api/voice-test/sessions/{session_id}/execution-record')
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
+
+class FreeModeStreamingTests(FreeModeHarness, unittest.TestCase):
+    """Free-mode Streaming ASR loop, transport and fallback labelling."""
 
     # --------------------------------------------------------------- tests
 
@@ -708,6 +726,283 @@ class FreeModeStreamingTests(unittest.TestCase):
             ignored = control.receive_json()
         self.assertEqual(ignored['type'], 'ignored')
         self.assertIn('capture', ignored['reason'])
+
+
+class MaxTurnsRoundSemanticsTests(FreeModeHarness, unittest.TestCase):
+    """``max_turns=N`` means N *complete* platform rounds (PRD-F016/F021).
+
+    A round is question -> playback -> device observation -> capture
+    finalisation -> turn closure. The budget therefore ends the run *after* the
+    Nth answer has been observed and closed — never right after the Nth question
+    was issued, which left the last answer unobservable and forced operators to
+    configure ``max_turns=N+1``.
+    """
+
+    # The scripted agent is willing to keep talking past the budget: it owns five
+    # phrases, so only the server's turn budget can stop the run at three.
+    phrases = ['问题一', '问题二', '问题三', '问题四', '问题五']
+
+    # ------------------------------------------------------------- helpers
+
+    def start_free_run(self, control):
+        """Send ``start`` and return the first play instruction."""
+        control.send_json({'type': 'start'})
+        mode = control.receive_json()
+        self.assertEqual(mode['type'], 'capture_mode', mode)
+        play = control.receive_json()
+        self.assertEqual(play['type'], 'play', play)
+        return play
+
+    def answer_over_streaming(self, control, session_id, play):
+        """Stream one answer, let control consume it, and return the reply."""
+        result = self.send_capture(session_id, play['turn_id'])
+        self.assertEqual(result['type'], 'capture_result', result)
+        self.assertEqual(result['final_text'], '这是设备的回答')
+        control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+        return control.receive_json()
+
+    def upload_answer(self, session_id, play):
+        """Upload one whole-turn recording for the explicitly chosen fallback."""
+        response = self.control.post(
+            f'/api/voice-test/sessions/{session_id}/device-audio',
+            content=canonical_wav_bytes(),
+            headers={'Content-Type': 'audio/wav', 'X-Voice-Mime-Type': 'audio/wav',
+                     'X-Voice-Capture-Id': play['capture_id'],
+                     'X-Voice-Turn-Id': play['turn_id']})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['status'], 'recognized', response.text)
+
+    # --------------------------------------------------------------- tests
+
+    def test_max_turns_one_waits_for_and_saves_the_first_answer(self):
+        session_id = self.create_free_session(max_turns=1)
+        with self.start_control(session_id) as control:
+            play = self.start_free_run(control)
+            # Exactly one question was generated before any answer existed.
+            self.assertEqual(len(self.agent_calls), 1)
+            done = self.answer_over_streaming(control, session_id, play)
+            self.assertEqual(done['type'], 'complete', done)
+            self.assertEqual(done['reason'], 'max_turns')
+
+        session = self.manager.get_session(session_id)
+        self.assertEqual(session.status, 'completed')
+        self.assertEqual(session.stop_reason, 'max_turns')
+        self.assertIsNone(session.awaiting_turn_id)
+        self.assertEqual([turn.role for turn in session.turns], ['platform', 'device'])
+        self.assertTrue(all(turn.closed for turn in session.turns))
+        self.assertEqual(session.turns[0].closure_reason, 'device_transcript')
+        # The closing transcript is the evidence; no VAD observation is invented
+        # for a turn whose answer was recognised rather than merely suspected.
+        self.assertIsNone(session.turns[0].observation)
+        self.assertEqual(session.turns[1].text, '这是设备的回答')
+        # One question, one answer, one synthesis and one model decision.
+        self.assertEqual(session.provider_calls, {'tts': 1, 'llm': 1, 'asr': 0})
+
+        record = self.record(session_id)
+        self.assertEqual(record['status'], 'completed')
+        self.assertEqual(record['stop_reason'], 'max_turns')
+        self.assertIsNone(record['awaiting_turn_id'])
+        kinds = [event['kind'] for event in record['events']]
+        self.assertEqual(kinds.count('play_issued'), 1)
+        self.assertEqual(kinds.count('device_observation'), 1)
+        self.assertEqual(kinds.count('device_transcript'), 1)
+        # The platform turn is closed; the device turn is created already closed.
+        self.assertEqual(kinds.count('turn_closed'), 1)
+        self.assertIn('session_completed', kinds)
+        # No queue of questions was generated ahead of the observed answer.
+        self.assertEqual([e['detail']['text'] for e in record['events']
+                          if e['kind'] == 'play_issued'], ['问题一'])
+
+    def test_max_turns_three_answers_three_and_never_asks_a_fourth(self):
+        session_id = self.create_free_session(max_turns=3)
+        with self.start_control(session_id) as control:
+            play = self.start_free_run(control)
+            for index in range(3):
+                self.assertEqual(play['type'], 'play', play)
+                self.assertEqual(play['text'], self.phrases[index])
+                self.assertEqual(len(self.agent_calls), index + 1)
+                play = self.answer_over_streaming(control, session_id, play)
+            # The third answer was observed and closed before the run ended.
+            self.assertEqual(play['type'], 'complete', play)
+            self.assertEqual(play['reason'], 'max_turns')
+
+        session = self.manager.get_session(session_id)
+        self.assertEqual(len(self.agent_calls), 3, self.agent_calls)
+        self.assertEqual(session.provider_calls, {'tts': 3, 'llm': 3, 'asr': 0})
+        self.assertEqual(session.status, 'completed')
+        self.assertIsNone(session.awaiting_turn_id)
+        self.assertEqual([turn.role for turn in session.turns],
+                         ['platform', 'device'] * 3)
+        self.assertTrue(all(turn.closed for turn in session.turns))
+        self.assertEqual([turn.text for turn in session.turns if turn.role == 'device'],
+                         ['这是设备的回答'] * 3)
+        # The last platform turn is closed by its verified answer, not by the
+        # budget itself.
+        self.assertEqual(session.turns[-2].closure_reason, 'device_transcript')
+
+        record = self.record(session_id)
+        self.assertEqual(record['status'], 'completed')
+        self.assertEqual([event['detail']['text'] for event in record['events']
+                          if event['kind'] == 'play_issued'], self.phrases[:3])
+        self.assertEqual(len([event for event in record['events']
+                              if event['kind'] == 'device_observation']), 3)
+        self.assertEqual(len([event for event in record['events']
+                              if event['kind'] == 'capture_finished']), 3)
+
+    def test_turn_file_fallback_has_the_same_round_semantics(self):
+        original = self.manager._providers
+        self.manager._providers = RunProviders(
+            tts=original.tts, judge=original.judge, asr=original.asr)
+        try:
+            session_id = self.create_free_session(max_turns=2, capture_mode='turn_file')
+            with self.start_control(session_id) as control:
+                play = self.start_free_run(control)
+                self.assertEqual(play['capture']['mode'], 'turn_file')
+                for index in range(2):
+                    self.assertEqual(play['text'], self.phrases[index])
+                    self.upload_answer(session_id, play)
+                    control.send_json({'type': 'device_audio_ready',
+                                       'turn_id': play['turn_id'],
+                                       'capture_id': play['capture_id']})
+                    play = control.receive_json()
+                self.assertEqual(play['type'], 'complete', play)
+                self.assertEqual(play['reason'], 'max_turns')
+        finally:
+            self.manager._providers = original
+
+        session = self.manager.get_session(session_id)
+        self.assertEqual(len(self.agent_calls), 2)
+        self.assertEqual(session.provider_calls['llm'], 2)
+        self.assertIsNone(session.awaiting_turn_id)
+        self.assertEqual([turn.role for turn in session.turns],
+                         ['platform', 'device'] * 2)
+        self.assertTrue(all(turn.closed for turn in session.turns))
+        record = self.record(session_id)
+        self.assertEqual(record['resolved_capture_mode'], 'turn_file')
+        self.assertEqual(len([event for event in record['events']
+                              if event['kind'] == 'play_issued']), 2)
+        self.assertEqual(len([event for event in record['events']
+                              if event['kind'] == 'device_observation']), 2)
+
+    def test_last_round_provider_failure_ends_the_run_explicitly(self):
+        # A recogniser that fails without producing a usable final: a real
+        # provider failure, never an empty success.
+        self.provider.empty = True
+        self.provider.failure = 'provider_rate_limited'
+        session_id = self.create_free_session(max_turns=1)
+        with self.start_control(session_id) as control:
+            play = self.start_free_run(control)
+            result = self.send_capture(session_id, play['turn_id'])
+            self.assertTrue(result['empty_transcript'])
+            self.assertEqual(result['failure'], 'provider_rate_limited')
+            control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+            stopped = control.receive_json()
+        self.assertEqual(stopped['type'], 'stopped', stopped)
+        self.assertIn('provider_rate_limited', stopped['reason'])
+        # The failure never became an answer and never produced another question.
+        self.assertEqual(len(self.agent_calls), 1)
+        session = self.manager.get_session(session_id)
+        self.assertEqual(session.status, 'stopped')
+        self.assertIsNone(session.awaiting_turn_id)
+        self.assertTrue(all(turn.closed for turn in session.turns))
+        self.assertEqual([turn.role for turn in session.turns], ['platform'])
+        record = self.record(session_id)
+        observation = [event for event in record['events']
+                       if event['kind'] == 'device_observation'][0]
+        self.assertEqual(observation['detail']['text'], '')
+        self.assertEqual(observation['detail']['failure'], 'provider_rate_limited')
+
+    def test_last_round_no_response_timeout_completes_instead_of_hanging(self):
+        session_id = self.create_free_session(max_turns=1, on_no_response='continue')
+        with self.start_control(session_id) as control:
+            play = self.start_free_run(control)
+            control.send_json({'type': 'observation_timeout', 'turn_id': play['turn_id'],
+                               'wait_ms': 1000, 'reason': 'no_response_observed'})
+            self.assertEqual(control.receive_json()['type'], 'no_response')
+            done = control.receive_json()
+        self.assertEqual(done['type'], 'complete', done)
+        self.assertEqual(done['reason'], 'max_turns')
+        # A silence is never turned into an answer or into another question.
+        self.assertEqual(len(self.agent_calls), 1)
+        session = self.manager.get_session(session_id)
+        self.assertEqual(session.status, 'completed')
+        self.assertIsNone(session.awaiting_turn_id)
+        self.assertEqual(session.turns[0].observation, 'no_response')
+        self.assertEqual(session.turns[0].closure_reason, 'no_response_timeout')
+        self.assertEqual([turn.role for turn in session.turns], ['platform'])
+
+    def test_mid_run_no_response_timeout_still_asks_the_next_question(self):
+        session_id = self.create_free_session(max_turns=2, on_no_response='continue')
+        with self.start_control(session_id) as control:
+            play = self.start_free_run(control)
+            control.send_json({'type': 'observation_timeout', 'turn_id': play['turn_id'],
+                               'wait_ms': 1000, 'reason': 'no_response_observed'})
+            self.assertEqual(control.receive_json()['type'], 'no_response')
+            second = control.receive_json()
+            self.assertEqual(second['type'], 'play', second)
+            self.assertEqual(second['text'], self.phrases[1])
+            done = self.answer_over_streaming(control, session_id, second)
+            self.assertEqual(done['type'], 'complete', done)
+
+        session = self.manager.get_session(session_id)
+        self.assertEqual(len(self.agent_calls), 2)
+        self.assertEqual(session.status, 'completed')
+        self.assertIsNone(session.awaiting_turn_id)
+        self.assertEqual([turn.role for turn in session.turns],
+                         ['platform', 'platform', 'device'])
+        self.assertTrue(all(turn.closed for turn in session.turns))
+        self.assertEqual(session.turns[0].closure_reason, 'no_response_timeout')
+
+    def test_a_duplicate_capture_result_never_creates_a_second_turn(self):
+        session_id = self.create_free_session(max_turns=2)
+        with self.start_control(session_id) as control:
+            play = self.start_free_run(control)
+            self.send_capture(session_id, play['turn_id'])
+            control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+            second = control.receive_json()
+            self.assertEqual(second['type'], 'play')
+            # The same answer reported twice must not advance the run twice.
+            control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+            ignored = control.receive_json()
+            self.assertEqual(ignored['type'], 'ignored', ignored)
+            # Still waiting on the second question, with no extra turn created.
+            session = self.manager.get_session(session_id)
+            self.assertEqual([turn.role for turn in session.turns],
+                             ['platform', 'device', 'platform'])
+            self.assertEqual(session.awaiting_turn_id, session.turns[2].turn_id)
+
+    def test_a_late_stop_cannot_rewrite_a_completed_run(self):
+        session_id = self.create_free_session(max_turns=1)
+        with self.start_control(session_id) as control:
+            play = self.start_free_run(control)
+            self.answer_over_streaming(control, session_id, play)
+
+        # A socket disconnect, a reconnect or a duplicate stop after the run
+        # already ended must not re-close a turn or rewrite the outcome.
+        self.manager.stop(session_id, reason='disconnected')
+        session = self.manager.get_session(session_id)
+        self.assertEqual(session.status, 'completed')
+        self.assertEqual(session.stop_reason, 'max_turns')
+        self.assertEqual(len(session.turns), 2)
+        self.assertTrue(all(turn.closed for turn in session.turns))
+        record = self.record(session_id)
+        kinds = [event['kind'] for event in record['events']]
+        self.assertEqual(kinds.count('session_completed'), 1)
+        self.assertEqual(kinds.count('session_stopped'), 0)
+        self.assertEqual(kinds.count('turn_closed'), 1)
+        self.assertEqual(kinds.count('device_transcript'), 1)
+
+    def test_max_turns_must_be_a_positive_bounded_integer(self):
+        for value in (0, -1, 51, 1000, 'x', None):
+            response = self.control.post('/api/voice-test/sessions',
+                                         json={'mode': 'free', 'goal': '边界',
+                                               'max_turns': value})
+            self.assertEqual(response.status_code, 400, (value, response.text))
+        # The page's own bound is accepted.
+        accepted = self.control.post('/api/voice-test/sessions',
+                                     json={'mode': 'free', 'goal': '边界', 'max_turns': 50})
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        self.assertEqual(accepted.json()['max_turns'], 50)
 
 
 if __name__ == '__main__':
