@@ -219,6 +219,41 @@ def extract_result(document: dict):
     return None, None
 
 
+# ------------------------------------------------------- close classification
+
+# Documented normal WebSocket closures. The documented async SAUC endpoint closes
+# the socket itself once the segment has been endpointed, so a normal close after
+# a definite final is a real termination and not a transport failure.
+NORMAL_CLOSE_CODES = (1000, 1001)
+# Real termination evidence, recorded separately from ``is_last_package`` so the
+# documented provider field keeps its exact meaning.
+TERMINATION_LAST_PACKAGE = 'provider_last_package'
+TERMINATION_NORMAL_CLOSE = 'provider_normal_close'
+
+
+def close_code_of(error):
+    """The WebSocket close code carried by ``error``, when it exposes one.
+
+    ``websockets`` closure exceptions carry ``code`` plus the received/sent
+    frames; a socket error or a timeout carries no close code at all, so it can
+    never be mistaken for a normal closure.
+    """
+    for candidate in (getattr(error, 'code', None),
+                      getattr(getattr(error, 'rcvd', None), 'code', None),
+                      getattr(getattr(error, 'sent', None), 'code', None)):
+        if isinstance(candidate, int):
+            return candidate
+    return None
+
+
+def is_normal_close(error, code=None):
+    """True for a normal closure (1000/1001 or the library's OK exception)."""
+    resolved = close_code_of(error) if code is None else code
+    if resolved is not None:
+        return resolved in NORMAL_CLOSE_CODES
+    return type(error).__name__ == 'ConnectionClosedOK'
+
+
 # ------------------------------------------------------------------- transport
 
 class _RealConnection:
@@ -334,6 +369,13 @@ class VolcengineStreamingSession:
         self._last_text = ''
         self._last_definite = ''
         self._saw_last_package = False
+        # Provider termination is tracked separately from the documented
+        # ``is_last_package`` field: a normal WebSocket close after a definite
+        # final endpoint is also a real termination, and ``saw_last_package``
+        # must keep meaning exactly what the provider sent.
+        self._terminated = False
+        self._termination_basis = None
+        self._close_code = None
         self._audit = None
         self._audit_outputs = []
         self._lock = asyncio.Lock()
@@ -463,14 +505,60 @@ class VolcengineStreamingSession:
         self._state = 'finishing'
 
     async def finish_input(self):
+        if self._terminated or self._saw_last_package:
+            # The provider already ended the stream; sending a last packet on a
+            # closed socket would only invent a transport failure.
+            if self._state in ('open', 'finishing'):
+                self._state = 'finished'
+            return
         if self._state == 'open':
             try:
                 await self._send_last_packet()
-            except Exception:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001
+                if self._note_close(error, phase='finish_input'):
+                    return
                 self._failure = self._failure or 'stream_disconnected'
                 self._record(StreamingASREvent(kind=EVENT_ERROR, source=SOURCE_PROVIDER,
                                                error='stream_disconnected',
                                                detail={'phase': 'finish_input'}))
+
+    def _note_close(self, error, *, phase):
+        """Classify a transport close; True when it terminates the stream.
+
+        A normal closure is only accepted as a termination when it is backed by
+        real provider evidence: a definitive (endpointed) final transcript, or an
+        input the client has already finished. Everything else stays a failure.
+        """
+        code = close_code_of(error)
+        if self._close_code is None:
+            self._close_code = code
+        if not is_normal_close(error, code):
+            return False
+        if self._last_definite.strip():
+            # Real evidence: the provider endpointed a definite segment and then
+            # closed the socket itself. The client's own last packet is not
+            # required, because the async endpoint may close before it arrives.
+            self._terminated = True
+            self._termination_basis = self._termination_basis or TERMINATION_NORMAL_CLOSE
+            if self._state in ('open', 'finishing'):
+                self._state = 'finished'
+            return True
+        if self._state == 'finishing':
+            # The client finished its input, but no usable final transcript was
+            # produced. Normal closure, failed outcome: never reported as an
+            # answer and never as a transport disconnect.
+            self._terminated = True
+            self._termination_basis = self._termination_basis or TERMINATION_NORMAL_CLOSE
+            if self._failure is None:
+                self._failure = 'asr_no_final'
+                self._record(StreamingASREvent(
+                    kind=EVENT_ERROR, source=SOURCE_PROVIDER, error='asr_no_final',
+                    detail={'phase': phase, 'close_code': code,
+                            'error_type': type(error).__name__,
+                            'note': 'provider closed normally without a definite final transcript'}))
+            return True
+        # Closed before the client finished its input: not a termination.
+        return False
 
     # ---------------------------------------------------------------- events
 
@@ -514,6 +602,8 @@ class VolcengineStreamingSession:
             raise
         except Exception as error:  # noqa: BLE001
             if self._state in ('closed', 'cancelled'):
+                return
+            if self._note_close(error, phase='read'):
                 return
             text = f'{type(error).__name__} {error}'.lower()
             category = 'stream_timeout' if 'timeout' in text else 'stream_disconnected'
@@ -562,6 +652,7 @@ class VolcengineStreamingSession:
             self._emit_transcripts(result, shape, sequence)
         if document.get('is_last_package') is True:
             self._saw_last_package = True
+            self._termination_basis = self._termination_basis or TERMINATION_LAST_PACKAGE
             if not self._last_text.strip():
                 self._failure = self._failure or 'asr_no_final'
                 self._record(StreamingASREvent(
@@ -626,7 +717,29 @@ class VolcengineStreamingSession:
 
     @property
     def saw_last_package(self):
+        """Exactly what the provider sent: its documented ``is_last_package``."""
         return self._saw_last_package
+
+    @property
+    def terminated(self):
+        """True once no further provider result can arrive.
+
+        Set by the documented last package **or** by a normal provider close that
+        real evidence backs (a definite final transcript, or an input the client
+        already finished). It never implies success: ``failure`` and the final
+        text decide the outcome.
+        """
+        return self._terminated or self._saw_last_package
+
+    @property
+    def termination_basis(self):
+        """The real termination evidence: last package, normal close, or None."""
+        return self._termination_basis
+
+    @property
+    def close_code(self):
+        """The WebSocket close code observed, for evidence; None when absent."""
+        return self._close_code
 
     def summary(self):
         return {
@@ -641,6 +754,9 @@ class VolcengineStreamingSession:
             'state': self._state,
             'failure': self._failure,
             'saw_last_package': self._saw_last_package,
+            'terminated': self.terminated,
+            'termination_basis': self._termination_basis,
+            'close_code': self._close_code,
             'final_text': self.last_text,
             'evidence_scope': 'control_evidence',
         }
@@ -674,7 +790,11 @@ class VolcengineStreamingSession:
             self._record(StreamingASREvent(
                 kind=EVENT_SESSION_CLOSED, source=SOURCE_PROVIDER, basis=reason,
                 detail={'cancelled': bool(cancelled), 'audio_bytes': self._audio_bytes,
-                        'final_text': self.last_text, 'failure': self._failure}))
+                        'final_text': self.last_text, 'failure': self._failure,
+                        'saw_last_package': self._saw_last_package,
+                        'terminated': self.terminated,
+                        'termination_basis': self._termination_basis,
+                        'close_code': self._close_code}))
             status, failure_code = self._terminal_status(cancelled)
             self._finish_audit(status, failure_code=failure_code)
 
@@ -690,6 +810,10 @@ class VolcengineStreamingSession:
             return 'failed', 'invalid_output'
         if self._failure == 'provider_error':
             return 'failed', 'provider_error'
+        if self._failure == 'asr_no_final':
+            # A clean stream that produced no usable final transcript is not a
+            # completed recognition, whatever partial text was seen.
+            return 'insufficient_evidence', None
         if self._last_text.strip():
             return 'complete', None
         return 'insufficient_evidence', None

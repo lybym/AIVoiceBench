@@ -1021,19 +1021,34 @@ def _apply_frame_ordering(capture, sequence):
     return True
 
 
+def _asr_terminated(asr):
+    """True when the provider has ended the stream (no waiting is useful).
+
+    ``terminated`` distinguishes "the provider ended the stream, with real
+    evidence" from "the documented ``is_last_package`` field arrived"; either
+    signal means no further result can arrive, so both are honoured and a
+    provider that only implements the documented field still works.
+    """
+    return bool(getattr(asr, 'terminated', False)) or bool(getattr(asr, 'saw_last_package', False))
+
+
 async def _finalise_capture(session, capture, *, reason=None):
-    """Finish the ASR input and wait, bounded, for the provider's last package."""
+    """Finish the ASR input and wait, bounded, for the provider to terminate."""
     from .streaming_asr import StreamingASRUnavailable
     asr = capture.asr
     status, failure = 'finished', None
     try:
         await asr.finish_input()
         deadline = time.monotonic() + (session.no_response_timeout_ms / 1000)
-        while not asr.saw_last_package and time.monotonic() < deadline:
+        # Stop as soon as the provider has terminated: a normal close that is
+        # backed by a definite final transcript ends the stream even when the
+        # documented last-package field never arrives, and must not be held open
+        # until the control bound.
+        while not _asr_terminated(asr) and time.monotonic() < deadline:
             events = await asr.wait_events(0.25)
             _voice_test_manager.note_streaming_events(session, events, capture=capture)
         _voice_test_manager.note_streaming_events(session, asr.poll_events(), capture=capture)
-        if not asr.saw_last_package:
+        if not _asr_terminated(asr):
             failure = capture.failure or 'stream_timeout'
     except StreamingASRUnavailable:
         failure = capture.failure or 'stream_open_failed'
@@ -1122,11 +1137,14 @@ async def _consume_device_observation(websocket, session, result):
 
     An empty transcript is never treated as an answer: it is recorded as "no
     observation" and the session's explicit on_no_response policy decides what
-    happens next.
+    happens next. Either way the platform turn that was awaiting an observation
+    is closed with its real outcome, so the trace never shows a turn left open
+    while the conversation has already advanced.
     """
     transcript = (result.get('final_text') or '').strip()
     turn_id = result.get('turn_id')
     failure = result.get('failure')
+    turn = _voice_test_manager.turn_by_id(session, turn_id)
     _voice_test_manager.record_event(session, 'device_observation', turn_id=turn_id,
                                      detail={'capture_mode': result.get('mode'),
                                              'final_basis': result.get('final_basis'),
@@ -1134,8 +1152,13 @@ async def _consume_device_observation(websocket, session, result):
                                              'text': transcript, 'failure': failure,
                                              'evidence_scope': 'control_evidence'})
     if not transcript:
-        session.status = 'stopped' if session.on_no_response == 'pause' else session.status
         reason = f'no_device_transcript:{failure}' if failure else 'no_device_transcript'
+        if turn is not None and not turn.closed:
+            _voice_test_manager.close_turn(
+                session, turn, phase='no_response', status='no_response',
+                closure_reason=reason, observation=turn.observation,
+                observation_basis=turn.observation_basis)
+        session.status = 'stopped' if session.on_no_response == 'pause' else session.status
         if session.on_no_response == 'pause':
             _voice_test_manager.stop(session.session_id, reason=reason)
             await websocket.send_json({'type': 'stopped', 'reason': reason,
@@ -1148,6 +1171,13 @@ async def _consume_device_observation(websocket, session, result):
         await _generate_and_send_free_phrase(websocket, session, device_text='',
                                              capture=result)
         return
+    if turn is not None and not turn.closed:
+        # Closed by the verified transcript, not by a VAD suspicion: the turn's
+        # own recorded observation (if the browser reported one) is preserved.
+        _voice_test_manager.close_turn(
+            session, turn, phase=PHASE_OBSERVED, status='complete',
+            closure_reason='device_transcript',
+            observation=turn.observation, observation_basis=turn.observation_basis)
     await _generate_and_send_free_phrase(websocket, session, device_text=transcript,
                                          capture=result)
 

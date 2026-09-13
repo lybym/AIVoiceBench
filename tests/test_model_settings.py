@@ -74,6 +74,27 @@ class ModelSettingsTests(unittest.TestCase):
             d=payload(p);d['routes']['judge']=None;d['routes']['tts']=p['id']
             with self.subTest(parameters=parameters), self.assertRaises(SettingsError):
                 self.store.update(d)
+
+    def test_streaming_asr_requires_secure_websocket_endpoint(self):
+        p=profile('streaming')
+        p.update(protocol='volcengine_streaming_asr', capabilities=['streaming_asr'],
+                 model='bigmodel',
+                 base_url='wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async',
+                 parameters={'resource_id':'volc.seedasr.sauc.duration',
+                             'end_window_size':800, 'force_to_speech_time':1000})
+        d=payload(p);d['routes']['judge']=None;d['routes']['streaming_asr']=p['id']
+        self.store.update(d)
+        snapshot,providers=self.store.capture()
+        self.assertEqual(snapshot['readiness']['streaming_asr'],'credential_missing')
+        self.assertIsNotNone(providers.streaming_asr)
+        configured=providers.streaming_asr(self.root)
+        self.assertEqual(configured.endpoint,p['base_url'])
+        self.assertEqual(configured.resource_id,'volc.seedasr.sauc.duration')
+        for invalid in ('https://openspeech.bytedance.com/api/v3/sauc/bigmodel_async',
+                        'ws://127.0.0.1/asr'):
+            bad={**p,'base_url':invalid}
+            with self.subTest(base_url=invalid),self.assertRaises(SettingsError):
+                ModelSettings(self.root/'invalid').update(payload(bad))
     def test_api_redacts_invalid_input_and_rejects_cross_origin(self):
         with patch.object(api,'OUTPUT_ROOT',self.root),TestClient(api.app) as client:
             d=payload();d['secrets']={'judge':'secret-canary'}

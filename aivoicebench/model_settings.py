@@ -72,8 +72,11 @@ def validate_profile(p):
     if not isinstance(url,str) or len(url)>1000:
         raise SettingsError('无效的服务地址')
     parsed=urlsplit(url)
-    if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise SettingsError('服务地址必须为不含密钥、查询参数或账号密码的 HTTP(S) 地址')
+    allowed_schemes = (('wss',) if p['protocol']=='volcengine_streaming_asr'
+                       else ('http','https'))
+    if parsed.scheme not in allowed_schemes or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        expected = 'WSS' if p['protocol']=='volcengine_streaming_asr' else 'HTTP(S)'
+        raise SettingsError(f'服务地址必须为不含密钥、查询参数或账号密码的 {expected} 地址')
     if parsed.scheme=='http' and parsed.hostname not in ('localhost','127.0.0.1','::1','host.docker.internal'):
         raise SettingsError('远程服务必须使用 HTTPS；本地模型可使用 HTTP')
     p['base_url']=url.rstrip('/')

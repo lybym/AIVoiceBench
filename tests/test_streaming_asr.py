@@ -19,8 +19,10 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 
-from aivoicebench.streaming_asr import (ERROR_CATEGORIES, EVENT_ERROR, EVENT_FINAL,
+from aivoicebench.streaming_asr import (BASIS_PROVIDER_ENDPOINT, ERROR_CATEGORIES,
+                                        EVENT_ERROR, EVENT_FINAL,
                                         EVENT_PARTIAL, EVENT_SESSION_CLOSED,
                                         EVENT_SESSION_STARTED, EVENT_SPEECH_ENDED,
                                         SOURCE_BROWSER_VAD, SOURCE_COMBINED,
@@ -116,6 +118,65 @@ class _FakeConnection:
 
     async def close(self):
         self.server.closed = True
+
+
+class NormalClose(Exception):
+    """Stand-in for ``websockets.exceptions.ConnectionClosedOK`` (1000/1001).
+
+    The documented async SAUC endpoint closes the socket itself once the segment
+    has been endpointed, and the client observes ConnectionClosedOK.
+    """
+
+    def __init__(self, code=1000, reason='ok'):
+        super().__init__(f'normal closure (code {code})')
+        self.code = code
+        self.rcvd = SimpleNamespace(code=code, reason=reason)
+
+
+class AbnormalClose(Exception):
+    """Stand-in for ``websockets.exceptions.ConnectionClosedError``."""
+
+    def __init__(self, code=1006, reason='abnormal'):
+        super().__init__(f'abnormal closure (code {code})')
+        self.code = code
+        self.rcvd = SimpleNamespace(code=code, reason=reason)
+
+
+class ClosingServer(FakeServer):
+    """Delivers the scripted frames, then closes the socket.
+
+    ``close_on_last_packet`` waits for the documented last packet (the client
+    finished its input); ``close_after_frames`` closes once that many frames have
+    been delivered, which is how the documented async endpoint behaves when it
+    endpointed a segment and closed on its own.
+    """
+
+    def __init__(self, responses=(), *, close=None, close_after_frames=None,
+                 close_on_last_packet=False, **kwargs):
+        super().__init__(responses, **kwargs)
+        self.close = close
+        self.close_after_frames = close_after_frames
+        self.close_on_last_packet = close_on_last_packet
+        self._close_pending = False
+        self._delivered = 0
+
+    async def on_client(self, data):
+        await super().on_client(data)
+        frame = parse_frame(data)
+        if (self.close_on_last_packet
+                and frame['message_type'] == MSG_AUDIO_ONLY_REQUEST
+                and frame['flags'] == FLAG_LAST_NO_SEQUENCE):
+            self._close_pending = True
+
+    async def next_server_frame(self):
+        if self._outbox.empty():
+            reached = (self.close_after_frames is not None
+                       and self._delivered >= self.close_after_frames)
+            if reached or self._close_pending:
+                raise self.close or NormalClose()
+        frame = await super().next_server_frame()
+        self._delivered += 1
+        return frame
 
 
 class FrameCodecTests(unittest.TestCase):
@@ -252,7 +313,7 @@ class ProviderValidationTests(unittest.TestCase):
             asyncio.run(run())
 
 
-class SessionTests(unittest.TestCase):
+class SessionCase(unittest.TestCase):
     """Each scenario runs inside ONE event loop.
 
     The session owns a background reader task, so it must be opened, fed and
@@ -282,6 +343,9 @@ class SessionTests(unittest.TestCase):
                 await session.cancel()
 
         return asyncio.run(scenario())
+
+
+class SessionTests(SessionCase):
 
     def test_handshake_headers_and_start_request(self):
         server = FakeServer()
@@ -592,6 +656,218 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(a.summary()['audio_bytes'], 200)
         self.assertEqual(b.summary()['audio_bytes'], 400)
         self.assertTrue(a.summary()['stream_id'].startswith('STR-'))
+
+
+class NormalCloseTests(SessionCase):
+    """A normal provider close after a definite final is a real termination.
+
+    Real-cloud evidence: the documented async endpoint returned 11 partials and a
+    definite final (`basis=provider_endpoint`), then closed the socket itself, and
+    the client saw ConnectionClosedOK. The old code recorded that as
+    ``stream_disconnected`` (phase=read) and left the capture active forever.
+    """
+
+    FINAL_TEXT = '请稍等一会哈。当然可以呀，我会一直陪着你的。'
+
+    def definite_frame(self, text=None, sequence=2):
+        text = text or self.FINAL_TEXT
+        return server_frame({'code': 0, 'payload_sequence': sequence, 'payload_msg': {'result': {
+            'text': text, 'utterances': [{'text': text, 'definite': True,
+                                          'start_time': 0, 'end_time': 2600}]}}}, sequence=sequence)
+
+    def partial_frame(self, text='请稍等一会哈', sequence=1):
+        return server_frame({'code': 0, 'payload_sequence': sequence, 'payload_msg': {'result': {
+            'text': text, 'utterances': [{'text': text, 'definite': False}]}}}, sequence=sequence)
+
+    @staticmethod
+    def on_audio(frames):
+        return lambda frame: list(frames) if frame['message_type'] == MSG_AUDIO_ONLY_REQUEST else []
+
+    def test_normal_close_after_client_finish_with_definite_final_succeeds(self):
+        server = ClosingServer([self.on_audio([self.partial_frame(), self.definite_frame()])],
+                               close=NormalClose(1000), close_on_last_packet=True)
+        captured = {}
+
+        async def body(session):
+            await session.push_audio(b'\x00\x00' * 4000)
+            await session.finish_input()
+            for _ in range(60):
+                if session.terminated:
+                    break
+                await asyncio.sleep(0.05)
+            captured.update(events=session.poll_events(), session=session,
+                            state=session.state, failure=session.failure,
+                            terminated=session.terminated,
+                            saw_last_package=session.saw_last_package,
+                            basis=session.termination_basis, close_code=session.close_code,
+                            summary=session.summary())
+
+        self.run_session(server, body)
+        session = captured['session']
+        # The normal close is accepted, with the definite final as its evidence.
+        self.assertTrue(captured['terminated'])
+        self.assertIsNone(captured['failure'])
+        self.assertEqual(captured['state'], 'finished')
+        self.assertEqual(captured['basis'], 'provider_normal_close')
+        self.assertEqual(captured['close_code'], 1000)
+        # The documented field keeps its exact meaning: the provider never sent it.
+        self.assertFalse(captured['saw_last_package'])
+        self.assertFalse(captured['summary']['saw_last_package'])
+        self.assertTrue(captured['summary']['terminated'])
+        self.assertEqual(captured['summary']['termination_basis'], 'provider_normal_close')
+        self.assertEqual(captured['summary']['close_code'], 1000)
+        self.assertEqual(session.last_text, self.FINAL_TEXT)
+        # No transport failure may be recorded for a normal termination.
+        self.assertEqual([e for e in captured['events'] if e.kind == EVENT_ERROR], [])
+        finals = [e for e in captured['events'] if e.kind == EVENT_FINAL]
+        self.assertEqual(len(finals), 1)
+        self.assertEqual(finals[0].text, self.FINAL_TEXT)
+        self.assertEqual(finals[0].basis, BASIS_PROVIDER_ENDPOINT)
+        self.assertEqual(session._terminal_status(False), ('complete', None))
+
+    def test_normal_close_before_client_finish_with_definite_final_succeeds(self):
+        """The async endpoint may close before our own last packet arrives."""
+        server = ClosingServer([self.on_audio([self.partial_frame(), self.definite_frame()])],
+                               close=NormalClose(1000), close_after_frames=2)
+        captured = {}
+
+        async def body(session):
+            await session.push_audio(b'\x00\x00' * 4000)
+            for _ in range(60):
+                if session.terminated:
+                    break
+                await asyncio.sleep(0.05)
+            captured.update(terminated=session.terminated, state=session.state,
+                            failure=session.failure)
+            # The turn ends later, when the browser stops the capture: sending the
+            # last packet on the already-closed socket must not invent a failure.
+            await session.finish_input()
+            captured.update(after_finish_state=session.state, after_finish_failure=session.failure,
+                            events=session.poll_events())
+
+        self.run_session(server, body)
+        self.assertTrue(captured['terminated'])
+        self.assertEqual(captured['state'], 'finished')
+        self.assertIsNone(captured['failure'])
+        self.assertEqual(captured['after_finish_state'], 'finished')
+        self.assertIsNone(captured['after_finish_failure'])
+        self.assertEqual([e for e in captured['events'] if e.kind == EVENT_ERROR], [])
+
+    def test_normal_close_without_a_definite_final_is_not_an_answer(self):
+        server = ClosingServer([self.on_audio([self.partial_frame()])],
+                               close=NormalClose(1000), close_on_last_packet=True)
+        captured = {}
+
+        async def body(session):
+            await session.push_audio(b'\x00\x00' * 4000)
+            await session.finish_input()
+            for _ in range(60):
+                if session.terminated:
+                    break
+                await asyncio.sleep(0.05)
+            captured.update(events=session.poll_events(), session=session,
+                            failure=session.failure, basis=session.termination_basis)
+
+        self.run_session(server, body)
+        self.assertEqual(captured['failure'], 'asr_no_final')
+        self.assertTrue(captured['session'].terminated)
+        self.assertFalse(captured['session'].saw_last_package)
+        self.assertEqual([e for e in captured['events'] if e.kind == EVENT_FINAL], [])
+        errors = [e for e in captured['events'] if e.kind == EVENT_ERROR]
+        self.assertEqual([e.error for e in errors], ['asr_no_final'])
+        # A clean stream with no usable final is not a completed recognition.
+        self.assertEqual(captured['session']._terminal_status(False),
+                         ('insufficient_evidence', None))
+
+    def test_normal_close_before_the_client_finishes_the_input_is_a_disconnect(self):
+        server = ClosingServer([self.on_audio([self.partial_frame()])],
+                               close=NormalClose(1000), close_after_frames=1)
+        captured = {}
+
+        async def body(session):
+            await session.push_audio(b'\x00\x00' * 4000)
+            for _ in range(60):
+                if session.failure:
+                    break
+                await asyncio.sleep(0.05)
+            captured.update(events=session.poll_events(), failure=session.failure,
+                            terminated=session.terminated)
+
+        self.run_session(server, body)
+        self.assertEqual(captured['failure'], 'stream_disconnected')
+        self.assertFalse(captured['terminated'])
+        errors = [e for e in captured['events'] if e.kind == EVENT_ERROR]
+        self.assertEqual([e.error for e in errors], ['stream_disconnected'])
+        self.assertEqual(errors[0].detail['phase'], 'read')
+
+    def test_abnormal_close_is_still_a_disconnect(self):
+        server = ClosingServer([self.on_audio([self.definite_frame()])],
+                               close=AbnormalClose(1006), close_on_last_packet=True)
+        captured = {}
+
+        async def body(session):
+            await session.push_audio(b'\x00\x00' * 4000)
+            await session.finish_input()
+            for _ in range(60):
+                if session.failure:
+                    break
+                await asyncio.sleep(0.05)
+            captured.update(events=session.poll_events(), failure=session.failure,
+                            terminated=session.terminated, close_code=session.close_code)
+
+        self.run_session(server, body)
+        self.assertEqual(captured['failure'], 'stream_disconnected')
+        self.assertFalse(captured['terminated'])
+        self.assertEqual(captured['close_code'], 1006)
+        errors = [e for e in captured['events'] if e.kind == EVENT_ERROR]
+        self.assertEqual([e.error for e in errors], ['stream_disconnected'])
+        self.assertEqual(errors[0].detail['error_type'], 'AbnormalClose')
+
+    def test_read_failure_without_a_close_code_is_still_a_disconnect(self):
+        server = ClosingServer([self.on_audio([self.definite_frame()])],
+                               close=OSError('connection reset by peer'),
+                               close_on_last_packet=True)
+        captured = {}
+
+        async def body(session):
+            await session.push_audio(b'\x00\x00' * 4000)
+            await session.finish_input()
+            for _ in range(60):
+                if session.failure:
+                    break
+                await asyncio.sleep(0.05)
+            captured.update(failure=session.failure, terminated=session.terminated,
+                            close_code=session.close_code)
+
+        self.run_session(server, body)
+        self.assertEqual(captured['failure'], 'stream_disconnected')
+        self.assertFalse(captured['terminated'])
+        self.assertIsNone(captured['close_code'])
+
+    def test_explicit_last_package_records_its_own_termination_basis(self):
+        response = server_frame({'code': 0, 'is_last_package': True, 'payload_sequence': 5,
+                                 'payload_msg': {'result': {'text': '北京呢'}}}, sequence=5,
+                                flags=0b0011)
+        server = FakeServer()
+        server.final_frames = lambda: [response]
+        captured = {}
+
+        async def body(session):
+            await session.push_audio(b'\x00\x00' * 2000)
+            await session.finish_input()
+            await asyncio.sleep(0.1)
+            # Read the live state before ``run_session`` shuts the session down.
+            captured.update(state=session.state, summary=session.summary(),
+                            saw_last_package=session.saw_last_package,
+                            terminated=session.terminated,
+                            basis=session.termination_basis)
+
+        self.run_session(server, body)
+        self.assertTrue(captured['saw_last_package'])
+        self.assertTrue(captured['terminated'])
+        self.assertEqual(captured['basis'], 'provider_last_package')
+        self.assertEqual(captured['summary']['termination_basis'], 'provider_last_package')
+        self.assertEqual(captured['state'], 'finished')
 
 
 class RealWebSocketTransportTests(unittest.TestCase):
