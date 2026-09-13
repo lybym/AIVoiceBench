@@ -3,6 +3,8 @@
 PRD refs: PRD-F004–F009/F016/F017; Issues #22/#24/#25/#27/#30.
 Audited 2026-09-11 at main c612d36 (published as v0.2.0-alpha.2), then re-checked against main 8d01ef2 (= v0.3.2). Complete M1 and real-recording acceptance remain pending.
 
+Recording Analysis is an independent formal Measurement Pipeline over `ART-external-recording`. It shares Canonical Event semantics and the metric engine with Active Measurement, but never consumes the Active pipeline's Live Measurement Audio as a qualification step and never “promotes” an execution control trace. External recordings remain valuable for independent retest, deep offline analysis, audit, human review, regression and Measurement Equivalence.
+
 ## One Run
 
 Web upload and CLI `import` use `import_recording()` and `ImportRun.execute()`.

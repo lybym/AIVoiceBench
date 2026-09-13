@@ -11,12 +11,13 @@
 
 - 2026-09-10：用户明确主动测试/录音分析双主流程，普通本地音频与专业 HIL 拆分。
 - 2026-09-11：用户要求按最新代码更新 docs。
+- 2026-09-13：用户明确把 Active Voice Test 提升为可独立产生正式 Measurement Result 的 Active Measurement Pipeline；Recording Analysis 保持另一条独立正式 Pipeline。两者不共享 Audio Evidence，共享 Canonical Measurement Semantics；External Recording 不再是 Active Result 转正前置。随后用户把本任务范围收紧为**仅迭代 docs 内容**，禁止本轮修改代码、schema、测试或前端。
 
 ## 工作区与审计边界
 
 授权仓库：lybym/AIVoiceBench。主检出位于本机 WORK/12 CODE/AIVoiceBench；现有分支、未提交内容及其他工作树不应被文档审计改动；工作区状态需每次核对。隔离工作目录是执行安排，不是产品要求。
 
-2026-09-11 审计，并已对齐 main `8d01ef2`（正式发布 `v0.3.2`）。审计当时 main 与已公开预览版 `v0.2.0-alpha.2` 均为 `c612d36`，Latest 稳定版为 `v0.1.3` —— 这两处是审计时点的历史记录，已不再是当前状态。录音主链、聚类、指标契约、TTS（API-Key V3 SSE）与发布修复均已合入 main；主动语音测试链路亦已进入 main 并随 `v0.3.2` 发布；语义角色 PR #54 仍未合并。状态与证据见 PRD 第 1/3/7 节，后续任务需重新核对 refs。
+2026-09-13 本任务重新 fetch 并核对 `origin/main` = `0362b221ec06d2eba8134851469c34d4c1215952`。Recording Analysis 已有部分正式 Event/Metric 主链；Active Voice 已有 Control Plane 的浏览器播放、RMS VAD、Streaming ASR 与 Agent 基础，但 main 没有跨整次 Run 的 durable Measurement Audio、sample-clock Evidence、Stimulus Alignment 或 Canonical Live Timeline。本轮只收敛文档，不升级这些实现状态。
 
 硬件信息只有“自带麦克风/扬声器的语音终端”，型号未定；尚无用户真实录音验收。合成语音、静音和软件夹具不是设备性能证据。
 

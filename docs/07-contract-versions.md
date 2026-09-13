@@ -46,7 +46,7 @@ The seed Timeline wrapper was not governed by a schema. `event-timeline.schema.j
 
 ### Time and tracks
 
-All Event/Evidence/gap times are finite, nonnegative milliseconds from a documented run monotonic origin. Wall-clock time is not used for duration arithmetic. Boundaries are point events (`end_ms == start_ms`); ASR/custom intervals may span time. Intervals use `[start, end)` for duration arithmetic, while point evidence at a boundary is allowed.
+All Event/Evidence/gap times are finite, nonnegative milliseconds from the Timeline's documented time base. Measurement timelines prefer `audio_relative_ms` from sample index; wall-clock time is not used for duration arithmetic. Boundaries are point events (`end_ms == start_ms`); ASR/custom intervals may span time. Intervals use `[start, end)` for duration arithmetic, while point evidence at a boundary is allowed.
 
 Each audio artifact references one logical recording track, with an explicit clock ID/sample rate and sync metadata. `run_ms = sample_index * 1000 / sample_rate_hz + offset_ms`; drift and uncertainty bound cross-track calculations. `duration_ms` is artifact-local elapsed duration; evidence offsets are always run-relative. Multichannel files may be exposed as separate logical track artifacts. `uncalibrated` uses null offsets/uncertainty/drift; consumers must not subtract unrelated clocks. `synthetic` calibration and artifacts cannot be relabeled a hardware run. Calibration measurement/verification belongs to #6; schema validation is not calibration.
 
@@ -57,6 +57,8 @@ Hardware runs require stimulus/device-output track declarations and non-null dev
 Events are in nondecreasing `start_ms` order. For equal times the serialized array order is the stable tie-break; no implicit event priority is inferred. Start/end pairs use type + turn ID + response ID. Device speech requires both turn and response; interrupted old and new responses use distinct response IDs. Tester pauses can close/reopen speech within one turn. Complete timelines cannot have unmatched pairs. Partial timelines may retain observed unmatched boundaries with explicit gaps; never generate a missing start/end to make the structure look complete. A blocked timeline can have zero events/evidence and a reason plus required evidence.
 
 `planned_pause_*` represents declared stimulus timing, not an observed device-internal VAD state. `controller` captures scheduling/execution records; measured acoustic onsets should cite audio. `asr_segment` requires text and producer profile identifying the external ASR configuration. It must not be labeled internal device ASR unless supported by an explicit device-log source. `custom` requires a namespaced custom name. New core event types require versioned taxonomy changes instead of arbitrary payload fields.
+
+Active Measurement reuses the same canonical event types. `playback_started/ended`, Browser VAD and Streaming ASR provider timestamps remain control/alignment evidence; formal `tester_speech_start/end` must cite the Live Measurement Audio and Stimulus Alignment producer. `execution-record.json` remains a separate control artifact and is not silently upgraded into EventTimeline 2.0.0.
 
 ### Source, scope and confidence
 
@@ -71,6 +73,16 @@ Run `python -m aivoicebench validate --kind timeline <timeline.json>`. It checks
 Migrates inline evidence to Evidence IDs with explicit supporting event IDs. Adds definition_version, execution_kind, structured aggregation/counts/input metric references and traceable threshold policy. Replaces seed string/null values and ambiguous aggregation strings. `observed` represents measurements without a threshold; pass/fail requires a consistent configured comparison. Missing/ineligible results require reason plus null value. White-box metrics require device-log Evidence when linked to a Timeline. No precise technical timing from an LLM.
 
 Validate with `python -m aivoicebench validate --kind metric --timeline examples/timeline.example.json examples/metrics.example.json`. Aggregate input IDs resolve in the future report container; this command checks one Timeline's evidence. Definition/formula details and calculation examples are in `03-metric-definition.md`. Reference arithmetic is implemented/tested; capture/event selection remains #8.
+
+MetricResult 3.0.0 is currently emitted by the Recording Analysis canonical engine and remains the required result family for Active Measurement. Pipeline provenance and provisional/finalized lifecycle will be added through a versioned, backward-readable contract evolution when Active Timeline wiring lands; do not create a realtime-only metric schema. Until then, `execution_kind` retains its existing hardware/imported/synthetic meaning and must not be silently reinterpreted as the measurement pipeline.
+
+## Planned Active Measurement Audio 1.0.0 (PRD-F025)
+
+The next Active Measurement foundation is designed to add a dedicated `active-measurement-audio.schema.json`; that schema does not exist on the docs-only branch yet. It will bind one Active Execution Run to one durable PCM WAV plus capture-integrity and Stimulus Reference metadata. Required semantics include sample-clock origin, SHA-256, exact sample counts, received/gap-filled frames, duplicate/stale/gap accounting, browser device settings, capture start/end, terminal reason and `measurement_policy_version`.
+
+This is separate from `audio-capture.schema.json` 1.0.0, whose contract is the existing PortAudio/HIL duplex capture with `capture.wav` and `stimulus-reference.wav`. Reusing that station-specific shape for browser streaming would make legacy required fields (numeric input/output devices, driver latency, two fixed artifacts) lie. Both contracts remain readable; a later convergence may introduce a common artifact envelope without rewriting historical station documents.
+
+The Measurement Audio contract does not itself assert speech boundaries, source attribution, a complete Timeline or a passing metric. Capture gaps can be preserved with zero samples to maintain the sample clock, but policy eligibility remains explicit. Stimulus references establish immutable inputs and an alignment interface; playback callbacks never satisfy tester acoustic events by themselves.
 
 ## Finding 2.0.0 / Evidence 1.0.0 integration (Issue #4)
 

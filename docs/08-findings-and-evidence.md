@@ -29,6 +29,10 @@ Closed taxonomy: wake_word, vad, endpoint, asr, aec, network, llm, prompt, conte
 
 Every finding, including an observation, references at least one Evidence object with an artifact, track (nullable for nonaudio), run-relative start/end, source and confidence. Confirmed/fixed defects additionally require a nonzero-duration snippet. Evidence IDs, event IDs, metric IDs and run/case/execution_kind must resolve consistently. A finding's linked event evidence must be included among its Evidence IDs. Linked MetricResults are validated with the same Timeline. Missing recording/event belongs in Timeline gaps or an insufficient-evidence metric, not an invented confirmed defect.
 
+Active Measurement Evidence and External Recording Evidence are both formal but independent. A finding produced from an Active Timeline must resolve to `ART-live-measurement-audio-*`; a Recording Analysis finding resolves to `ART-external-recording-*`. A paired equivalence report may reference both result sets, but one finding/metric must never silently borrow the other pipeline's acoustic interval. Control Evidence in `execution-record.json` can explain why an action occurred and may provide non-acoustic semantic context, but it does not replace Measurement Audio Evidence.
+
+Active provisional events cannot support a confirmed/fixed finding until their required boundaries are finalized. Capture gaps, source-attribution ambiguity or single-microphone overlap may correctly produce insufficient_evidence; they must not be converted into a low-confidence confirmed Barge-in defect.
+
 Snippet intervals locate original artifacts; optional transcript_excerpt supplements them. A snippet is not a replacement for the original artifact or its hash. The runtime must verify existence/hash, path containment and access controls before opening evidence. Synthetic examples retain execution_kind=synthetic and placeholder assets; they are not physical recordings or accepted regressions.
 
 ## Regression candidate lifecycle

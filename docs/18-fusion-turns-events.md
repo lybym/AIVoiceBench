@@ -10,6 +10,8 @@ ImportRun 分别登记 acoustic、diarization、attribution、fusion、turns、t
 
 有已知角色才构建 turns/responses 和 Timeline/指标；_timeline() 绑定 Run 身份。未知角色下相关阶段不足证据。完整旧/新回答语义关联、timeout 健康窗口和真实混音打断判定仍待验收。
 
+Active Measurement 将通过独立 Online Event Producer 产生相同 Canonical Event 类型；它利用已知 Stimulus Reference 形成 tester evidence，而不是机械复用 `speaker_0/speaker_1` 角色映射。两条 Pipeline 的声学 Evidence ID/Artifact 必须不同，event producer/policy 进入 provenance；下游继续使用同一 Timeline/Metric 语义。单麦克风 overlap 的旧 response stop boundary 在 reference cancellation/AEC/source-aware evidence 就绪前保持 insufficient_evidence。
+
 依据：[diarization.py](../aivoicebench/diarization.py)、[fusion.py](../aivoicebench/fusion.py)、[import_pipeline.py](../aivoicebench/import_pipeline.py)；测试：[ASR 聚类](../tests/test_asr_diarization.py)、[融合](../tests/test_fusion_speakers.py)、[显式角色端到端](../tests/test_explicit_attribution_e2e.py)。注入响应/人工角色 fixture 不证明实际服务标签契约、角色识别或真实设备准确性。
 
 独立 fusion CLI 保留；用法为 python -m aivoicebench fusion acoustic.json --output artifacts/fusion。历史算法见 [快照](product/archive/2026-09-10/18-fusion-turns-events.md)。

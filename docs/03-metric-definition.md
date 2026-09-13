@@ -8,13 +8,19 @@ Definitions are versioned independently from schemas. No thresholds in this docu
 
 External Recording measurement uses **`audio_relative_ms`** — position inside the imported recording, origin at the first decoded sample. This is the correct basis for imported-recording latency, overlap, barge-in and event boundaries.
 
-`run_monotonic_ms` is reserved for Control Evidence: actual program/controller execution timing during an Active Voice Test (playback command time, invocation latency, controller state). It must never describe the acoustic position of an event inside an external recording.
+Active Measurement uses the same **`audio_relative_ms`** semantics, derived from the first sample of its own `ART-live-measurement-audio`. Its wall clock, client/server monotonic clocks, playback callbacks and WebSocket receive time are diagnostics or alignment priors, not alternate formula inputs.
+
+`run_monotonic_ms` records Control Evidence: actual program/controller execution timing during an Active Voice Test (playback command time, invocation latency, controller state). It must never describe the acoustic position of a Measurement Event.
 
 Do not subtract a playback log clock from a phone recording timestamp. Cross-device clocks require an explicit mapping with recorded uncertainty (PRD-F024).
 
 ## Shared rules
 
-All imported-recording times use the `audio_relative_ms` basis with explicit event/turn/response association. Compare clocks only when their mapping is established and sufficiently accurate for the selected policy. Preserve uncertainty; a threshold decision inside its uncertainty band must remain insufficient evidence/manual review at runtime. No substitution of scheduling intent for acoustic onset. No internal component inference from black-box E2E audio.
+**Metric definitions are pipeline-invariant.** Active Measurement and Recording Analysis both feed Canonical EventTimeline into `compute_timeline_metrics(...)` and emit the same canonical names/PRD refs. Do not create `live_*` and `offline_*` variants or duplicate formulas. Pipeline, event producer, measurement policy, artifact IDs, confidence/uncertainty and finalization state travel as provenance. Given the same canonical event values and policy, metric values must be identical regardless of pipeline.
+
+All measurement times use the owning audio artifact's `audio_relative_ms` basis with explicit event/turn/response association. Compare clocks only when their mapping is established and sufficiently accurate for the selected policy. Preserve uncertainty; a threshold decision inside its uncertainty band must remain insufficient evidence/manual review at runtime. No substitution of scheduling intent for acoustic onset. No internal component inference from black-box E2E audio.
+
+Active results may be displayed as `provisional` while required event boundaries can still change. A formal stored MetricResult is emitted only after the boundary policy finalizes its inputs; missing evidence maps to `insufficient_evidence`, and violated capture/contract integrity maps to an invalid result/artifact rather than a plausible number. Recording Analysis is not a finalization service for Active Measurement.
 
 Every observed/pass/fail MetricResult references timestamped Evidence and supporting event IDs when boundaries exist. Exact inputs and formula/definition version must remain recoverable. Same-case repeated attempts and versions must not be mixed silently. Dry-run/synthetic outputs retain execution_kind and cannot qualify a release. A valid contract does not certify the content of the evidence.
 
@@ -87,6 +93,12 @@ Boolean rates use named false_endpoint_rate, barge_in_success_rate, context_succ
 ## White-box reservations
 
 internal_vad_latency_ms, internal_asr_latency_ms, internal_llm_latency_ms and internal_tts_latency_ms are reserved for instrumented device stage start/end logs on documented clock mappings. aec_erle_db requires calibrated echo/reference/residual signal evidence and signal/window definitions. These are not Phase 1 black-box metrics: without the appropriate logs/signals return insufficient_evidence. Black-box AEC behavior must not be presented as ERLE. Schema/source validation is necessary but does not establish that a log contains the right semantic boundaries; runtime adapter validation remains required.
+
+## Measurement Equivalence validation metrics
+
+Equivalence is a validation layer over paired, independent pipeline results, not a new device-experience metric family. For compatible `metric_id`/definition/policy pairs, report signed differences (Active − Recording), Mean Bias, Median Absolute Error, P95 Absolute Error and Bland-Altman limits of agreement. For event/classification outputs, report speech-start/end detection agreement, timeout classification agreement and barge-in classification agreement with eligible/excluded counts.
+
+The initial `first_speech_latency_ms` targets—Median |Δ| ≤ 30 ms, P95 |Δ| ≤ 80 ms and |systematic bias| ≤ 20 ms—are provisional engineering targets pending real paired experiments. They are not industry standards, default release gates or evidence of current accuracy.
 
 ## Reporting
 

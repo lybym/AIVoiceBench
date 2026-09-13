@@ -4,6 +4,8 @@
 
 [compute_timeline_metrics()](../aivoicebench/metrics.py) 直接输出规范 MetricResult **3.0.0**，旧 [engine.py](../aivoicebench/engine.py) 保留显式 Case/Timeline 计算。2.0.0 历史结果仍可读，验证器按版本检查，不把新字段强加给旧数据。
 
+该函数及其后续版本是 Active Measurement 与 Recording Analysis 的唯一 Canonical Metric Producer。Event Producer 和 Audio Evidence 可以不同；相同 canonical events/policy 必须得到相同数值。不得新增 `live_first_speech_latency` / `offline_first_speech_latency` 或复制公式。Active Timeline 接线仍 planned，不能因本文声明统一方向就写成已实现。
+
 | 范围 | 已实现 | 尚缺 / 限制 |
 | --- | --- | --- |
 | M002 First Speech | 同轮 tester end→device onset；提前发声为 not_applicable | 自动角色及真实边界质量 |

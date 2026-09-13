@@ -21,10 +21,14 @@
 | GET | /api/voice-test/capabilities/{mode} | 按模式返回所需项/缺少项/浏览器需自查项；`connectivity: not_probed`（不发起付费探测），不含凭据、地址或签名 URL |
 | POST | /api/voice-test/sessions/{id}/start | 启动一轮；能力预检不通过时返回 409 并指名缺少项，**不发起任何 LLM/TTS/ASR 调用**（控制 socket 的 `start` 同样返回 `blocked`） |
 | POST | /api/voice-test/sessions/{id}/device-audio | 显式降级路径的整轮录音上传；先解码转换为 canonical 16 kHz mono PCM16 WAV 再调用 File ASR；非法媒体 422、识别失败/空结果 502，均记录明确状态且不推进下一轮 |
+| WebSocket（planned） | /api/voice-test/sessions/{id}/measurement-audio | Fixed/Free 共用的持续 PCM Measurement Capture；独立于 control socket 与每轮 Streaming ASR socket，保存 sample-indexed WAV 与完整性元数据 |
+| GET（planned） | /api/voice-test/sessions/{id}/measurement-audio、`.../metadata` | 下载当前 Active Run 的正式 Measurement Audio Artifact / contract metadata；未最终化或不存在时明确返回状态 |
 
 上传上限 1 GiB、最长 30 分钟为实现限制。云 ASR 需要路由、凭据及音频 PUT/GET/host 配置，不能只填 Key；ASR-native 聚类需绑定 diarization 路由且服务返回标签。普通 Web 无角色编辑入口，缺角色时 turns/timeline/metrics 弃权。
 
 ImportRun 尚未执行 Judge/Findings，当前报告是阶段状态报告，空发现不代表设备通过。完整结论报告、人工修订和通用重分析 API/UI 未闭环；resume 不是通用重算接口。
+
+Active Measurement API 在本任务文档收敛时仍为 planned。现有 `/audio` WebSocket 只服务 Free 模式每轮 Streaming ASR，不持久保存跨整次 Run 的 Measurement Audio；它不能被误报为 F025 已实现。新增 Measurement 通道不得改变 Fixed 模式“不依赖 Streaming ASR”或 Free 模式现有控制链。
 
 默认可信单用户 localhost 部署，配置数据库为本地明文，远程访问需认证代理。音频发布 URL 必须为允许主机的 HTTPS、443（或省略端口），PUT/GET 同对象并回读校验；模型管理对本地服务 HTTP 的许可不适用于音频发布。
 
