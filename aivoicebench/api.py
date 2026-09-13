@@ -1137,11 +1137,14 @@ async def _consume_device_observation(websocket, session, result):
 
     An empty transcript is never treated as an answer: it is recorded as "no
     observation" and the session's explicit on_no_response policy decides what
-    happens next.
+    happens next. Either way the platform turn that was awaiting an observation
+    is closed with its real outcome, so the trace never shows a turn left open
+    while the conversation has already advanced.
     """
     transcript = (result.get('final_text') or '').strip()
     turn_id = result.get('turn_id')
     failure = result.get('failure')
+    turn = _voice_test_manager.turn_by_id(session, turn_id)
     _voice_test_manager.record_event(session, 'device_observation', turn_id=turn_id,
                                      detail={'capture_mode': result.get('mode'),
                                              'final_basis': result.get('final_basis'),
@@ -1149,8 +1152,13 @@ async def _consume_device_observation(websocket, session, result):
                                              'text': transcript, 'failure': failure,
                                              'evidence_scope': 'control_evidence'})
     if not transcript:
-        session.status = 'stopped' if session.on_no_response == 'pause' else session.status
         reason = f'no_device_transcript:{failure}' if failure else 'no_device_transcript'
+        if turn is not None and not turn.closed:
+            _voice_test_manager.close_turn(
+                session, turn, phase='no_response', status='no_response',
+                closure_reason=reason, observation=turn.observation,
+                observation_basis=turn.observation_basis)
+        session.status = 'stopped' if session.on_no_response == 'pause' else session.status
         if session.on_no_response == 'pause':
             _voice_test_manager.stop(session.session_id, reason=reason)
             await websocket.send_json({'type': 'stopped', 'reason': reason,
@@ -1163,6 +1171,13 @@ async def _consume_device_observation(websocket, session, result):
         await _generate_and_send_free_phrase(websocket, session, device_text='',
                                              capture=result)
         return
+    if turn is not None and not turn.closed:
+        # Closed by the verified transcript, not by a VAD suspicion: the turn's
+        # own recorded observation (if the browser reported one) is preserved.
+        _voice_test_manager.close_turn(
+            session, turn, phase=PHASE_OBSERVED, status='complete',
+            closure_reason='device_transcript',
+            observation=turn.observation, observation_basis=turn.observation_basis)
     await _generate_and_send_free_phrase(websocket, session, device_text=transcript,
                                          capture=result)
 

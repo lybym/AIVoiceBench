@@ -404,6 +404,31 @@ class FreeModeStreamingTests(unittest.TestCase):
         self.assertEqual(observation['detail']['final_basis'], 'provider_endpoint')
         self.assertNotIn('stream_disconnected', json.dumps(record))
 
+    def test_observed_transcript_closes_the_turn_and_advances(self):
+        """The platform turn is closed by the verified transcript, not left open."""
+        session_id = self.create_free_session()
+        with self.start_control(session_id) as control:
+            control.send_json({'type': 'start'})
+            control.receive_json()
+            play = control.receive_json()
+            self.send_capture(session_id, play['turn_id'])
+            control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+            nxt = control.receive_json()
+            self.assertEqual(nxt['type'], 'play')
+            self.assertNotEqual(nxt['turn_id'], play['turn_id'])
+
+        record = self.record(session_id)
+        run = [item for item in record['runs'] if item['current']][0]
+        observed = [turn for turn in run['turns'] if turn['turn_id'] == play['turn_id']][0]
+        self.assertTrue(observed['closed'])
+        self.assertEqual(observed['status'], 'complete')
+        self.assertEqual(observed['closure_reason'], 'device_transcript')
+        closed = [event for event in record['events'] if event['kind'] == 'turn_closed'
+                  and event['turn_id'] == play['turn_id']]
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]['detail']['closure_reason'], 'device_transcript')
+        self.assertNotEqual(record['awaiting_turn_id'], play['turn_id'])
+
     def test_requested_streaming_without_a_provider_refuses_to_start(self):
         """A missing Streaming ASR is a refusal, not a silent downgrade.
 
