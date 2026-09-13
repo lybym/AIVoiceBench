@@ -837,14 +837,17 @@
 
 ## 2026-09-13 — Streaming ASR 正常关闭兼容：真实云端复验（火山引擎流式语音识别 2.0）
 
-- **被测产物。** 由本分支 tip（`741f24f` + `2a18dbc`）构建的本地候选镜像
-  `aivoicebench:streaming-close-fix`，复用宿主机既有持久化目录
-  （`aivoicebench-data/output`、`cache`、`recordings`，含已写入的本地模型凭据），
-  以 `127.0.0.1:8003` 启动并通过 `/health`（`version=0.4.0-alpha.4`）。
-  构建后逐文件校验容器内应用源码与工作区一致：`aivoicebench/api.py` =
-  `sha256:6433b7d6e6cb25ad…`、`aivoicebench/volcengine_streaming_asr.py` =
-  `sha256:4a977829b5302219…`。镜像 `org.opencontainers.image.revision` 标签记录构建时的
-  分支提交；该标签之后未再变更应用源码。未输出、复制或提交任何 Secret。
+- **被测产物。** 由本分支构建的本地候选镜像 `aivoicebench:streaming-close-fix`
+  （应用源码为 `b322441` + `741f24f` + `2a18dbc` 三个修复提交，之后的提交只改本文档），
+  复用宿主机既有持久化目录（`aivoicebench-data/output`、`cache`、`recordings`，
+  含已写入的本地模型凭据），以 `127.0.0.1:8003` 启动并通过 `/health`
+  （`version=0.4.0-alpha.4`）。构建后用逐文件哈希校验容器内应用源码与工作区**完全一致**：
+  `aivoicebench/api.py` = `sha256:6433b7d6e6cb25ad…`、
+  `aivoicebench/volcengine_streaming_asr.py` = `sha256:4a977829b5302219…`、
+  `aivoicebench/model_settings.py` = `sha256:c1a24dcbf41215eb…`、
+  `aivoicebench/version.py` = `sha256:d99a213434530e86…`。镜像的
+  `org.opencontainers.image.revision` 标签记录构建时的分支提交，因此候选镜像可追溯到
+  产生它的提交、且其应用源码与上面四个哈希一一对应。未输出、复制或提交任何 Secret。
 - **真实端点。** `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`、
   `resource_id=volc.seedasr.sauc.duration`、`model_name=bigmodel`；
   `capture_mode` 协商结果为 `streaming`（`fallback_reason=null`、
