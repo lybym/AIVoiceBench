@@ -833,4 +833,74 @@
   下一轮 play 正常发出；执行记录中不出现 `stream_disconnected`。
 - **软件验证。** 全量 `python -m unittest discover -s tests -p "test_*.py"`：**558 tests, OK**
   （含 `tests.test_streaming_asr` 37 项、`tests.test_voice_streaming` 13 项、
-  `tests.test_model_settings` 全部通过）。真实云端三轮复验结果见下一条记录。
+  `tests.test_model_settings` 全部通过）。真实云端复验结果见下一条记录。
+
+## 2026-09-13 — Streaming ASR 正常关闭兼容：真实云端复验（火山引擎流式语音识别 2.0）
+
+- **被测产物。** 由本分支 tip（`741f24f` + `2a18dbc`）构建的本地候选镜像
+  `aivoicebench:streaming-close-fix`，复用宿主机既有持久化目录
+  （`aivoicebench-data/output`、`cache`、`recordings`，含已写入的本地模型凭据），
+  以 `127.0.0.1:8003` 启动并通过 `/health`（`version=0.4.0-alpha.4`）。
+  构建后逐文件校验容器内应用源码与工作区一致：`aivoicebench/api.py` =
+  `sha256:6433b7d6e6cb25ad…`、`aivoicebench/volcengine_streaming_asr.py` =
+  `sha256:4a977829b5302219…`。镜像 `org.opencontainers.image.revision` 标签记录构建时的
+  分支提交；该标签之后未再变更应用源码。未输出、复制或提交任何 Secret。
+- **真实端点。** `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`、
+  `resource_id=volc.seedasr.sauc.duration`、`model_name=bigmodel`；
+  `capture_mode` 协商结果为 `streaming`（`fallback_reason=null`、
+  `streaming_available=true`），即真实走了 Streaming ASR，没有回落到逐轮识别。
+- **静音握手（真实负例）。** 会话 `VT-1a8f97ea9779`，stream `STR-b59bfa427c1447cf`：
+  发送 5 帧 / 32000 字节（1 秒 16 kHz 单声道静音）后，Provider 以**正常关闭**
+  （`close_code=1000`、`ConnectionClosedOK`）结束，且没有 definite final。
+  记录为 `status=failed`、`failure=asr_no_final`、`empty_transcript=true`、
+  `terminated=true`、`termination_basis=provider_normal_close`、`close_code=1000`、
+  `saw_last_package=false`，耗时 0.84 s。**没有**出现 `stream_disconnected`：
+  正常关闭不再被误判为传输断开，但“没有可用 final”仍是一次真实失败，
+  不会被当成回答，也没有被升级为成功。
+- **真实三轮自由对话（同一条控制连接，符合页面用法）。** 会话 `VT-728bca5f045b`：
+  设备侧回答先用**真实 TTS** 合成（`VT-0f32b83d1a10`，三个 WAV），再经**真实二进制音频
+  通道**（`[4B 大端序号][PCM16LE]`）推入，并以 `capture_stopped` 结束，随后由控制通道
+  推进下一轮。
+
+  | 轮次 | Turn | LLM 提问 | 识别到的设备回答 | capture 状态 | failure | final_basis | 耗时 |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 1 | T0 | 北京今天天气怎么样？ | 南京明天晴，气温二十六度。 | finished | 无 | provider_endpoint | 1.22 s |
+  | 2 | T2 | 上海今天天气怎么样？ | 北京明天多云，最高二十八度。 | finished | 无 | provider_endpoint | 1.39 s |
+  | 3 | T4 | 广州今天天气怎么样？ | 上海明天有雨，记得带伞。 | finished | 无 | provider_endpoint | 1.49 s |
+
+  三轮 `capture_finished` 均为 `status=finished`、`failure=null`、
+  `final_basis=provider_endpoint`、`evidence_scope=control_evidence`、
+  `frame_ordering` 无 late/duplicate/gap；每次 `asr_session_closed` 都是
+  `terminated=true`、`termination_basis=provider_normal_close`、`close_code=1000`
+  而 **`saw_last_package=false`** —— 即本次正常终止是**独立证据**，没有伪装文档中的
+  `is_last_package` 字段。
+- **轮次推进与关闭。** 事件计数：`partial_transcript` 13、`final_transcript` 3、
+  `speech_ended` 3、`asr_error` 0、`capture_started` 3、`capture_finished` 3、
+  `device_observation` 3、`device_transcript` 3、`asr_session_closed` 3、
+  `turn_closed` 4、`play_issued` 4；`streaming_asr_error=null`，
+  执行记录中不出现 `stream_disconnected`。Turn 链 T0 → D1 → T2 → D3 → T4 → D5 依次
+  完成：平台 Turn 关闭为 `closure_reason=device_transcript`，设备 Turn 为
+  `status=observed`、`observation=speech_end`，随后正常发出下一轮 `play`；
+  会话停止后 `awaiting_turn_id=null`。**结论：capture 正常结束、Turn 正常关闭、
+  下一轮正常开始，旧的“停在 observing 直到超时”不再出现。**
+- **本条目同时记录的 Turn 关闭修复。** 真实验收时发现 free 模式此前从不关闭平台 Turn
+  （`closed=false`），Turn 会一直留在事件流里；`2a18dbc` 让
+  `_consume_device_observation()` 在收到 `capture_result` 后立即以
+  `phase=observed / status=complete / closure_reason=device_transcript` 关闭对应
+  Turn（无可用转写时记为 `phase=no_response / status=no_response`），并保留
+  `turn.observation` 与 `turn.observation_basis`。上表的关闭结果即该修复的真实证据。
+- **证据边界（不降低 Evidence First）。** ①本轮复验的音频是**受控输入**：真实 TTS 生成的
+  语音经真实二进制音频通道送入，**不是**物理设备或浏览器麦克风；页面路径在受控 Provider 下
+  的浏览器验收仍以 v0.4.0-alpha.4 的浏览器验收为准。②静音握手是**真实负例**，只用来说明
+  正常关闭的分类，不构成识别能力结论。③Streaming ASR 结果仍是 **control_evidence**，
+  Provider 时间戳依旧不作为 acoustic ground truth；`close_code` 是观测到的传输事实，
+  不是声学结论；未发明时间戳、最后包或成功状态。④接受正常关闭的条件仍严于“socket 正常关闭
+  本身”：必须 Provider 已给出 definite（判停）final，或客户端已结束输入。
+- **软件验证（本 tip）。** 全量 `python -m unittest discover -s tests -p "test_*.py"`：
+  **559 tests, OK**（含 `tests.test_streaming_asr` 37 项、`tests.test_voice_streaming`
+  14 项、`tests.test_model_settings` 全部通过）。`tests.test_voice_streaming` 多出的一项
+  即 Turn 关闭/推进的回归测试。
+- **已知限制（本轮未修，仅记录）。** `max_turns=N` 时，第 N 次 `play` 之后会立即发送
+  `complete(max_turns)` 并关闭该 Turn，因此第 N 轮回答无法被观测；本次复验用
+  `max_turns=4` 观测 3 轮，多余的 T6 以 `closure_reason=max_turns` 关闭。
+  这是既有行为，不属于正常关闭兼容修复的范围。
