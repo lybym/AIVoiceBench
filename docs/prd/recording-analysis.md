@@ -1,0 +1,34 @@
+# Recording Analysis 产品需求
+
+本文承载 PRD-F001–F019。Requirement ID 覆盖：PRD-F001、PRD-F002、PRD-F003、PRD-F004、PRD-F005、PRD-F006、PRD-F007、PRD-F008、PRD-F009、PRD-F010、PRD-F011、PRD-F012、PRD-F013、PRD-F014、PRD-F015、PRD-F016、PRD-F017、PRD-F018、PRD-F019。Recording Analysis 是独立正式 Measurement Pipeline：External Recording → Import → Normalize/QA → Acoustic/ASR/Diarization → Attribution/Fusion → Turn/EventTimeline → Canonical Metrics → Judge/Findings/Review/Report。
+
+| ID | 需求与验收摘要 | 当前状态 |
+| --- | --- | --- |
+| F001 | 导入 WAV/MP3/M4A 与可选设备资料；不要求 TestCase；损坏输入也保留 Import Run 与失败原因 | ✅ implemented；真实 5–20 分钟录音验收待完成 |
+| F002 | 原始/标准化/派生资产不可变，记录 Hash、元数据、父引用、转换器与参数 | ✅ implemented（限定导入资产） |
+| F003 | 统一标准化与 Audio QA；格式、时长、空音频、解码失败等须明确诊断 | ✅ implemented；QA 不等于准确率保证 |
+| F004 | 可恢复分阶段编排，阶段输入输出、失败、重试与审计可追溯 | 🟡 partial；Judge/Findings 尚未接入主链 |
+| F005 | File ASR 的完整录音识别、原生响应审计、时间戳与可选签名 URL 发布 | 🟡 partial；真实服务与质量待验收 |
+| F006 | Speaker/source attribution：角色证据不足时保持 unknown，不按先后猜 tester/device | 🟡 partial |
+| F007 | Turn/Response 关联必须有可解释角色和时序证据；歧义可弃权 | 🟡 partial |
+| F008 | 自动 EventTimeline 由 Canonical Event 组成，并可追溯音频/转写/归属 Evidence | 🟡 partial |
+| F009 | 唯一确定性 Metric Engine 产出 MetricResult；不并行计算同名公式 | 🟡 partial |
+| F010 | Structured LLM Harness/Judge 受 schema、Evidence、版本与失败状态约束 | 🟡 partial；ImportRun 未执行完整 Judge |
+| F011 | Findings 必须关联指标、证据、置信度、影响和复核状态 | 🟡 partial |
+| F012 | 人工修订为新 revision，不覆盖机器原件；可重算并显示差异 | 🟡 partial |
+| F013 | 生成 Markdown/JSON 报告，保留结论至证据的回溯路径 | 🟡 partial |
+| F014 | Web/CLI 统一的分析工作台，呈现阶段、转写、回放、失败和审计 | 🟡 partial |
+| F015 | 后端托管的模型配置、路由、快照与调用审计；配置存在不等于服务可用 | ✅ implemented |
+| F016 | File ASR、Streaming ASR 与 TTS 按生命周期分家族；浏览器不持有长期凭据 | 🟡 partial；真实云/设备待验收 |
+| F017 | 同一原件可产生新 AnalysisRevision；旧产物、配置和差异可追溯 | 🟡 partial |
+| F018 | Compare 仅在 case/audio/policy/model/环境可比时报告差异，条件不兼容须拒绝比较 | ⬜ planned |
+| F019 | Frozen Golden Voice：冻结刺激资产及 Hash/参数/精确静音；不等于设备真值 | ⬜ planned |
+
+## 共同验收边界
+
+- External Recording 是独立声学原件，不得被改写为 Active Measurement Evidence。
+- 声学、角色和语义证据各自标记来源、置信度和不确定性；缺失时输出 `unknown`、`needs_review` 或 `insufficient_evidence`。
+- File ASR 的 timestamp 与 transcript 是文字/语义证据，不自动成为声学真值。
+- 真实录音、真实云服务、人工标注和实体设备验收必须与软件/容器/浏览器验证分开记录。
+
+详细技术边界见 [录音导入](../14-recording-import.md)、[Recording backbone](../23-recording-backbone.md)、[声学分段](../17-acoustic-segmentation.md)、[融合/Turn/Event](../18-fusion-turns-events.md) 与 [确定性引擎](../12-deterministic-engine.md)。
