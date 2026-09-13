@@ -78,6 +78,9 @@ jobs:
           push: false
           load: true
           tags: ${{ env.IMAGE_NAME }}:${{ github.event.inputs.tag }}
+          # The published image must name the commit it was built from.
+          build-args: |
+            GIT_REVISION=${{ steps.source.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -131,6 +134,8 @@ jobs:
           docker exec acceptance python /app/tests/container_acceptance.py
           # Serve the image's own UI with test-only controlled providers so the
           # real page can be driven; the image's default command is unchanged.
+          # The free-mode turn budget comes from the page's own 最大轮次 input
+          # (the integration acceptance sets it); the servers take no such knob.
           # One server per capability profile: the integration acceptance varies
           # *which* capability is missing, so it cannot share a single server.
           docker exec -d acceptance python /app/tests/browser_server.py \
@@ -139,20 +144,20 @@ jobs:
             --free-mode
           docker exec -d acceptance python /app/tests/browser_server.py \
             --host 0.0.0.0 --port 8100 --output /data/output/acc-full \
-            --first-phrase-ms 1200 --phrase-ms 400 --free-max-turns 3 --round-max-ms 6000 \
+            --first-phrase-ms 1200 --phrase-ms 400 --round-max-ms 6000 \
             --profile full
           docker exec -d acceptance python /app/tests/browser_server.py \
             --host 0.0.0.0 --port 8101 --output /data/output/acc-streaming-only \
-            --first-phrase-ms 1200 --phrase-ms 400 --free-max-turns 3 --profile streaming-only
+            --first-phrase-ms 1200 --phrase-ms 400 --profile streaming-only
           docker exec -d acceptance python /app/tests/browser_server.py \
             --host 0.0.0.0 --port 8102 --output /data/output/acc-no-asr \
-            --first-phrase-ms 1200 --phrase-ms 400 --free-max-turns 3 --profile no-asr
+            --first-phrase-ms 1200 --phrase-ms 400 --profile no-asr
           docker exec -d acceptance python /app/tests/browser_server.py \
             --host 0.0.0.0 --port 8103 --output /data/output/acc-turn-file \
-            --first-phrase-ms 1200 --phrase-ms 400 --free-max-turns 3 --profile turn-file
+            --first-phrase-ms 1200 --phrase-ms 400 --profile turn-file
           docker exec -d acceptance python /app/tests/browser_server.py \
             --host 0.0.0.0 --port 8104 --output /data/output/acc-turn-file-fail \
-            --first-phrase-ms 1200 --phrase-ms 400 --free-max-turns 3 --profile turn-file-fail
+            --first-phrase-ms 1200 --phrase-ms 400 --profile turn-file-fail
           for port in 8099 8100 8101 8102 8103 8104; do
             for _ in $(seq 1 60); do
               if curl -fsS "http://127.0.0.1:${port}/health" > /dev/null; then break; fi

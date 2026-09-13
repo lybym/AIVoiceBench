@@ -169,6 +169,11 @@ const VT = (function () {
       cancelled: false,
       finished: false,
       turnId: null,
+      // Free mode: the device-transcript line currently on screen, and the turn
+      // it belongs to. A late callback must never overwrite it, and a run that
+      // ends without confirming the round clears it instead of leaving a stale
+      // "confirmed answer" visible (see `showDeviceText` / `clearDeviceText`).
+      deviceText: null,
       audio: null,
       // The playback currently being awaited. `cancelAudio()` ends it, so a
       // cancelled play never leaves an await (or its timers) pending.
@@ -314,6 +319,8 @@ const VT = (function () {
       session_lost: '会话已失效（后端可能已重启）',
     };
     const text = labels[reason] || reason || '未知原因';
+    // An interrupted run has no confirmed answer for the round on screen.
+    clearDeviceText(run);
     stopLocal(run, null, { silent: true });
     run.finished = true;
     updateStatus(`测试中断：${text}。可重新开始。`);
@@ -438,11 +445,46 @@ const VT = (function () {
     if (el) el.textContent = text;
   }
 
-  function showDeviceText(text, kind) {
-    const el = $('vt-device-transcript');
-    if (!el) return;
+  /* The device-transcript line always describes the round being observed *now*.
+   *
+   * `turnId` is the run's current turn: a callback for anything else is not a
+   * current observation, and a callback that arrives after the run stopped must
+   * never rewrite this line as a confirmed answer for a round the trace says was
+   * not answered. (The server also marks late provider output as stale; both
+   * sides refuse it.)
+   */
+  function showDeviceText(text, kind, turnId) {
     const label = kind === 'final' ? '设备（确认）' : '设备（实时）';
-    el.textContent = text ? `${label}：${text}` : '';
+    const el = $('vt-device-transcript');
+    if (el) el.textContent = text ? `${label}：${text}` : '';
+    if (activeRun) {
+      activeRun.deviceText = text
+        ? { text, kind, turnId: turnId || null, confirmed: kind === 'final' }
+        : null;
+    }
+  }
+
+  /* Drop the round's transcript line: it no longer describes anything current. */
+  function clearDeviceText(run) {
+    const el = $('vt-device-transcript');
+    if (el) el.textContent = '';
+    if (run) run.deviceText = null;
+  }
+
+  /* A transcript that arrived for a finished run (or a turn the page is no
+   * longer observing) is not an answer. Report it as ignored, with the session,
+   * the turn and the reason, and leave the round's text untouched. */
+  function noteStaleTranscript(run, reason, message) {
+    if (run) run.stats.lateDropped += 1;
+    // A burst of late partials must not flood the log or the status line.
+    if (run && (run.stats.staleLogged || 0) >= 3) return;
+    if (run) run.stats.staleLogged = (run.stats.staleLogged || 0) + 1;
+    const sessionId = (run && run.sessionId) || (message && message.session_id) || '未知会话';
+    const turnId = (message && (message.turn_id || message.turnId))
+      || (run && run.turnId) || '未知轮次';
+    appendFreeLog('系统',
+      `已忽略迟到识别结果（${reason}；会话 ${sessionId} / 轮次 ${turnId}），未更新本轮文本。`);
+    captureStatus('已忽略迟到识别结果（未确认为本轮回答）。');
   }
 
   function captureIsStreaming(run) {
@@ -553,20 +595,40 @@ const VT = (function () {
     socket.onmessage = (event) => {
       let message;
       try { message = JSON.parse(event.data); } catch (_) { return; }
-      if (!isActive(run)) return;
+      if (!isActive(run) || run.finished) {
+        // The run already ended: a late callback must not update this session's
+        // UI, and it is reported as ignored rather than shown as the answer.
+        noteStaleTranscript(run, run && run.finished ? 'run_finished' : 'run_inactive', message);
+        return;
+      }
+      const messageTurn = message.turn_id || message.turnId || null;
+      if (messageTurn && run.turnId && messageTurn !== run.turnId) {
+        noteStaleTranscript(run, 'stale_turn', message);
+        return;
+      }
+      if (message.ignored || message.stale || message.type === 'stale_transcript') {
+        noteStaleTranscript(run, message.stale_reason || message.reason || 'stale', message);
+        if (message.type === 'capture_result') {
+          // The flow still has to finish; only the display is refused.
+          capture.result = message;
+          clearTimeout(capture.resultTimer);
+          capture.resolveResult(message);
+        }
+        return;
+      }
       if (message.type === 'capture_ready') {
         capture.started = true;
         const rate = capture.contextRate === CAPTURE_TARGET_RATE
           ? '' : `（浏览器采集 ${capture.contextRate} Hz，已重采样到 16 kHz）`;
         captureStatus(`实时识别中：设备回答会边识别边显示${rate}`);
       } else if (message.type === 'partial_transcript') {
-        showDeviceText(message.text, 'partial');
+        showDeviceText(message.text, 'partial', run.turnId);
         capture.partials = (capture.partials || 0) + 1;
       } else if (message.type === 'final_transcript') {
-        showDeviceText(message.text, 'final');
+        showDeviceText(message.text, 'final', run.turnId);
       } else if (message.type === 'capture_result') {
         capture.result = message;
-        if (message.final_text) showDeviceText(message.final_text, 'final');
+        if (message.final_text) showDeviceText(message.final_text, 'final', run.turnId);
         captureStatus(message.empty_transcript
           ? `本轮未获得设备文本${message.failure ? `（${message.failure}）` : ''}。`
           : '本轮实时识别完成。');
@@ -1260,12 +1322,17 @@ const VT = (function () {
       } else if (msg.type === 'complete') {
         run.finished = true;
         stopLocal(run, null, { silent: true });
+        // The run ended because the last answer was observed and recorded, so
+        // the confirmed line still describes a real round.
         appendFreeLog('系统', '测试结束：' + (msg.reason || ''));
         updateStatus('测试完成：' + (msg.reason || ''));
       } else if (msg.type === 'stopped') {
         const timedOut = msg.reason === 'no_response_timeout';
         stopLocal(run, null, { silent: true });
-        appendFreeLog('系统', '已停止');
+        // A stopped run has no confirmed answer for the round on screen: drop the
+        // line instead of leaving a text that the trace does not treat as one.
+        clearDeviceText(run);
+        appendFreeLog('系统', '已停止' + (timedOut ? '：未观察到设备回答' : ''));
         updateStatus(timedOut
           ? '已停止：未观察到设备回答（已达到控制等待上限）。'
           : `已停止：${msg.reason || ''}`);
