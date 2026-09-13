@@ -653,3 +653,92 @@
   Coverage 仍待完成，未升级任何真实验收状态。真实 ASR 测试仍缺的最小条件：云 Streaming ASR
   与 File ASR 的可用凭据（含新控制台鉴权头与资源 ID），以及一台可被扬声器驱动、麦克风回采的
   实体 AI 设备。
+
+## 2026-09-12 — v0.4.0-alpha.3 合并、发布与现场恢复记录
+
+- **PR #70 已合并。** 合并前 head 为 `0db96825feca73ec5a3bde613a94666de7295a70`（本地、远端与
+  PR head 一致，未变化），CI（`Contract validation` 的 ubuntu-latest / windows-latest /
+  browser-acceptance 三个作业，含新增的集成验收步骤，以及 `Recording backbone container`）
+  全部成功，review thread / review / issue comment 均为 0。合并方式为 merge commit，
+  **最终 merge commit 为 `c020d8ddfb6c7218b9be11ae916439d6276f944d`**（父提交 `dc0bcae` + `0db9682`），
+  合并后 `origin/main` 即该提交；分支 `fix/free-voice-integration` 保留未删除。
+- **v0.4.0-alpha.3 已发布为 Pre-release。** 发布地址
+  https://github.com/lybym/AIVoiceBench/releases/tag/v0.4.0-alpha.3 ，标签 `v0.4.0-alpha.3`
+  指向上述 merge commit；附件为 `aivoicebench-v0.4.0-alpha.3.tar.gz`、
+  `docker-compose.preview.yml`、`start-aivoicebench-preview.ps1`、`SHA256SUMS.txt`、
+  `RELEASE-NOTES-v0.4.0-alpha.3.md`（下载后逐项校验和一致）。`v0.3.2` 仍为 GitHub Latest；
+  `v0.4.0-alpha.2` 的标签、正文与附件均未改动；未合并 #54。
+- **制品身份。** 镜像由该 merge commit 重新构建（**不是**把候选包 `…-candidate-f924ac2.tar.gz`
+  改名发布）：`aivoicebench:v0.4.0-alpha.3`，镜像
+  `org.opencontainers.image.revision=c020d8ddfb6c7218b9be11ae916439d6276f944d`，镜像 ID
+  `sha256:57ffc1b81cdc23461da7e678b1b1d9e96e53f431ad10ceb397b5aa7bc411579f`，镜像内 `VERSION`
+  与 `/health` 均为 `0.4.0-alpha.3`；镜像内 5 个源文件 SHA256 与合并提交工作树逐一相同。
+  归档 SHA256 为 `dc4b660889066992da041e503b22163088867be4a68cf91d9bc4017b312accc7`。
+  该镜像未使用 Release workflow 构建：该工作流不写入构建来源标签，无法满足「镜像 revision /
+  VERSION / `/health` / Tag 统一指向最终发布基线」，因此以合并提交为构建上下文手工构建并打标签，
+  其余步骤与既定发布流程一致。
+- **制品级复验（在该镜像内运行）。** 16 项容器验收全部通过（固定对话三轮推进、停止不推进且留痕、
+  无回答超时记为“未观察到回答”、播放失败可恢复、控制记录落盘）；38 项定向模块通过
+  （`test_voice_capability` 预检契约与后端强制、`test_voice_streaming` 降级上传状态机、
+  `test_voice_control` 停止与执行记录原子写入回归）；9 项浏览器回归通过；8 项定向验收 A～E 通过：
+  A 缺 Streaming ASR 时自由模式在首句 LLM/TTS 前被拒绝（HTTP 409 与控制 socket `blocked`，
+  `provider_calls={"tts":0,"llm":0,"asr":0}`、`run_index=0`、无 `play_issued`、未抓麦克风）；
+  B 只有 Streaming ASR、无 File ASR 与 Signed URL 时仍走实时链路（`file_asr_calls=[]`、
+  `streaming_audio_bytes>0`）；C 残留非零噪声仍结束并推进、持续噪声产生
+  `cannot_confirm_response_end`（`observation_end_unconfirmed`）而非回答完成；
+  D `turn_file` 非法媒体 422、识别失败与空结果 502，不产生空 transcript 成功、不推进下一轮；
+  E 受控 provider 自由模式连续三轮。容器内 `/app` 全部来自镜像，仅通过 `docker cp` 拷入测试
+  驱动，未挂载宿主机源码。
+- **导出与重新装载复验。** `docker save` → 删除本地标签 → `docker load` 后镜像 ID 不变；用独立容器
+  （`avb-release-8003-reload`）与独立数据卷（`avb-release-reload-data`）在 127.0.0.1:8003 重跑
+  上述关键项全部通过，能力预检/缺项拒绝的原始响应与首轮逐字段一致。
+- **现场事件（2026-09-12 12:28 左右，Docker 引擎事件）。** 引擎事件显示在 12:28:40–12:28:56
+  的 16 秒窗口内，先删除容器（`aivoicebench-free-fix-test`、`aivoicebench-alpha2-test`、
+  `aivoicebench-preview` 以及当时用于验收的候选容器），随后删除不再被运行容器引用的镜像
+  （`aivoicebench:v0.4.0-alpha.1`、`aivoicebench:free-voice-fix-local`、
+  `aivoicebench:v0.4.0-alpha.2`、候选镜像）。**数据卷与构建缓存未被删除。** 该窗口内本会话只执行了
+  `gh` / `git` 命令（发布合并发生在 12:30:32），未对这三个实例或其镜像发出删除命令；引擎事件不含
+  发起者信息，**无法确定触发者，本记录不作归因**。此事件不是代码缺陷、不是安全事件，也不指认任何
+  具体工具或人为操作。
+- **现场恢复。** 8000 / 8001 / 8002 已按原容器名、原端口（仅 127.0.0.1）、原数据卷 + 缓存卷重建：
+  `aivoicebench-preview`（8000，`aivoicebench:v0.4.0-alpha.1`）与 `aivoicebench-alpha2-test`
+  （8002，`aivoicebench:v0.4.0-alpha.2`）从各自 GitHub Release 附件重新装载，**镜像 ID 与事件前
+  完全一致**（`sha256:14e46ecd3f50…` / `sha256:e58826b8b59f…`）；`aivoicebench-free-fix-test`
+  （8001，`aivoicebench:free-voice-fix-local`）由原工作树 `release/v0.3.0` @ `c39ac92`（工作树
+  干净）用同一 Dockerfile 重新构建，源码与标签一致但**镜像 ID 变化**（原 `131ce00926fe`，重建后
+  `sha256:4bd944293f96…`，因基础镜像需重新拉取）。三个实例 `/health`、`/api/runs`（各 11 条）与
+  `/api/models`（settings revision 8、2 个配置档、judge/tts 已配置）均正常；数据卷内容完整
+  （各 391 文件，含 11 个 `RUN-*`、六个已生成固定话术音频与已停止会话历史）。
+  **容器 ID、创建时间与容器级环境变量无法从数据卷恢复**：应用配置（模型设置库）在数据卷中未丢失，
+  但若此前通过容器 `-e` 参数提供凭据（如 `AIVOICEBENCH_AUDIO_PUT_URL` /
+  `AIVOICEBENCH_AUDIO_GET_URL` / `AIVOICEBENCH_AUDIO_HOST` / `ARK_API_KEY`），需人工按原值重新配置。
+  该次引擎清理也可能同时删除了本机其他项目的已停止容器与未被引用的镜像（数据卷未删），本记录
+  无法枚举其原有清单。
+- **仍未验收（本轮未升级任何真实验收状态）。** 真实云 Streaming ASR 与 File ASR 调用、真实云判停
+  实测、真实扬声器 / 真实麦克风 / 实体 AI 设备、真实标签契约、预算与 Coverage、Barge-in 均仍为
+  pending；本版可声明的范围是 software_verified + container_verified + browser_verified（受控输入）。
+  真实 ASR 测试仍缺的最小条件：云 Streaming ASR 与 File ASR 的可用凭据（含新控制台鉴权头与
+  资源 ID），以及一台可被扬声器驱动、麦克风回采的实体 AI 设备。
+- **PR #54 仍未合并**（本轮未触碰）。
+
+### 2026-09-12 19:59 — 同一引擎清理事件再次发生（补充记录）
+
+- **同一模式再次出现。** 引擎事件显示 19:58:57–19:59:40 再次发生同类事件：先 `kill` 并销毁容器
+  （`avb-release-8003-reload`、`aivoicebench-preview`、`aivoicebench-free-fix-test`、
+  `aivoicebench-alpha2-test`），随后删除全部镜像（`aivoicebench:v0.4.0-alpha.1` /
+  `v0.4.0-alpha.2` / `v0.4.0-alpha.3` / `free-voice-fix-local`，以及本机其他镜像
+  `python:3.12-slim`、`alpine:latest`）。**数据卷与构建缓存同样未删除。** 距首次同类事件
+  （12:28）约 7.5 小时，说明该清理在本机是重复发生的；事件日志仍不包含发起者信息，
+  **本记录不作归因**，也不将其表述为代码缺陷、安全攻击或某个工具的行为。
+- **已再次恢复。** `aivoicebench:v0.4.0-alpha.1` 与 `aivoicebench:v0.4.0-alpha.2` 再次从各自
+  GitHub Release 附件装载，**镜像 ID 仍与事件前一致**（`sha256:14e46ecd3f50…` /
+  `sha256:e58826b8b59f…`）；`aivoicebench:free-voice-fix-local` 再次由 `release/v0.3.0` @
+  `c39ac92` 重建（镜像 ID 再次变化，本次为 `sha256:80197058e785…`）；`aivoicebench:v0.4.0-alpha.3`
+  由发布时导出的归档重新装载，镜像 ID 仍为 `sha256:57ffc1b81cdc…`。8000 / 8001 / 8002 与
+  8003 上的发布验收实例均按原名称、端口与数据卷恢复，`/health` 分别为 `0.4.0-alpha.1`、
+  `0.4.0-alpha.1`、`0.4.0-alpha.2`、`0.4.0-alpha.3`；三个既有实例的 `/api/models` 仍为
+  settings revision 8、2 个配置档（judge/tts 已配置），数据卷内容完整。
+- **不受影响的部分。** GitHub 上的 Release、Tag 与附件（含 `v0.4.0-alpha.3`、`v0.3.2` Latest、
+  `v0.4.0-alpha.2`）以及仓库代码均未受影响；本机需要重新装载镜像即可继续使用。
+- **说明。** 容器级环境变量与容器 ID/创建时间同样无法从数据卷恢复（同首次事件）。若需要长期
+  保持这些实例运行，建议排查本机是否存在周期性清理行为；本记录不对其来源作认定。
