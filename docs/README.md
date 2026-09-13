@@ -1,8 +1,8 @@
 # 文档导航
 
-2026-09-13 已按 main `0362b22` 核对。产品现定义 Active Measurement 与 Recording Analysis 两条独立正式 Measurement Pipeline；Active Measurement Audio 基础、完整 M1、真实云 Streaming ASR、实体设备与 Measurement Equivalence 验证仍待完成。先看 [Active Measurement](25-active-measurement.md)、[总体架构](01-system-architecture.md)、[Roadmap](04-development-roadmap.md) 和 PRD 的实现状态。
+2026-09-13 已按 main `beeacb5` 核对。产品现定义 Active Measurement 与 Recording Analysis 两条独立正式 Measurement Pipeline；Active Measurement Audio 基础、完整 M1、真实云 Streaming ASR、实体设备与 Measurement Equivalence 验证仍待完成。先看 [Active Measurement](25-active-measurement.md)、[总体架构](01-system-architecture.md)、[Roadmap](04-development-roadmap.md) 和 PRD 的实现状态。
 
-- **[产品需求 PRD](PRD.md)**：审阅/修改功能、优先级、验收和代码实现标识。
+- **[产品需求 PRD](PRD.md)**：唯一产品入口，维护边界、全局原则、需求目录和正式里程碑；详细功能/指标/验收/追踪/历史见 [PRD 分册导航](prd/README.md)。
 - [产品文档中心](product/README.md)：旧来源归集映射、冲突处置、集中历史快照。
 - [系统架构](01-system-architecture.md)：技术边界与目标设计。
 - [测试方法](02-test-methodology.md)、[指标定义](03-metric-definition.md)、[契约版本](07-contract-versions.md)：验证和数据约束。
