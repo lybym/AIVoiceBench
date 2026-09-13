@@ -1123,5 +1123,34 @@
   ASR 适配器与 deterministic metric engine 的既有语义；未合并 PR #75；未把迟到或控制层时间戳包装成
   声学测量证据。
 
+## 2026-09-13 — 发布候选 `v0.4.0-alpha.6`（PR #75，未合并；含迟到转写修复）
+
+- **发布内容。** 由 `fix/free-mode-final-turn-observation` 候选分支 tip 构建的测试包，包含：
+  ① 会话停止/轮次关闭后的迟到转写不再显示为“设备（确认）”（前端拒绝 + 后端 stale 规则，见上一条）；
+  ② 沿用 `max_turns` 完整轮次语义与严格整数契约（`1..50` 原生整数）。
+  版本号、Dockerfile `version` 标签、预览 Compose、Windows 启动脚本统一为 `0.4.0-alpha.6`；
+  新增 `docs/releases/0.4.0-alpha.6.md`（明确写明本版由**尚未合并**的候选分支构建、不是 main 发布）；
+  PRD 1.3.6 与 `docs/README.md` 同步。
+- **验证（本机实跑）。** 全量 `python -m unittest discover -s tests -p "test_*.py"` → **577 tests, OK**；
+  定向 68 项与 `tests.test_release_packaging` 18 项通过；候选镜像内 `container_acceptance.py`
+  → **16/16 PASS**；`docker save` → 删标签 → `docker load` 后镜像 ID 不变、重新加载的镜像启动独立容器
+  `/health` 仍为 `0.4.0-alpha.6` 且验收再次 **16/16 PASS**；把 `tests/` 复制进容器并在**镜像自己的页面**上
+  重跑 `tests.test_voice_browser`（9 项）与 `tests.test_voice_integration_acceptance`（9 项）全部通过；
+  用发布附件的启动脚本（Windows PowerShell 5.1）与 Compose 各启动一次隔离预览实例并通过 `/health`，
+  随后清理。
+- **构建环境说明（不影响制品）。** 首次构建在 `pip install` 阶段因 Docker VM 直连 PyPI 下载损坏而
+  报 hash 不匹配（`requirements` 未固定哈希，属网络路径问题）；改为通过宿主机本地代理
+  （`--build-arg HTTP(S)_PROXY=http://host.docker.internal:7897`）重建后成功，镜像内容已逐文件哈希核对。
+- **制品与链接。** tag `v0.4.0-alpha.6` → 提交 `cce12944ce9f43331647cb441f3816b15aa925a3`；
+  镜像 `aivoicebench:v0.4.0-alpha.6`
+  （`sha256:49fb043aa605ceb7835c3c08a9fe7579d5d67bac2892b2f75fda9c76beff1689`）；
+  归档 `aivoicebench-v0.4.0-alpha.6.tar.gz`（331,090,002 字节）
+  SHA256 `af8ff4dab58708abcfe0faf91b66b68f500d6a9af58444bc06357b1dbe231903`；
+  GitHub Pre-release（不接管 Latest，`v0.3.2` 仍为 Latest）。完整记录见
+  [发布说明](releases/0.4.0-alpha.6.md#发布记录本次实际制品与验证)。
+- **证据边界。** 本版为未合并候选分支的 Pre-release；浏览器验收为受控输入 / **Control Evidence**；
+  **本版未重跑真实云端**（alpha.5 的受控输入复验见该版发布说明），本次修复的迟到竞态未用真实凭据复现；
+  真实物理设备、浏览器麦克风声学测量与 Recording Analysis 正式验收未尝试/未完成。
+
 
 
