@@ -614,5 +614,67 @@ class FreeModeThreeRoundTests(IntegrationAcceptanceTestCase):
                          ['第1个问题', '第2个问题', '第3个问题'])
 
 
+class FreeModeStoppedRoundTests(IntegrationAcceptanceTestCase):
+    """Case F: a stopped round must not keep a late transcript as its answer.
+
+    Report: with ``max_turns=3`` and ``on_no_response=pause``, the third round hit
+    the control bound, the server stopped the session and the record fixed the
+    turn as ``no_response`` — yet the page still showed a late
+    ``final_transcript`` labelled ``设备（确认）``, which the trace never treats as
+    that round's answer.
+    """
+
+    PROFILE = 'full'
+
+    def test_stopped_third_round_shows_no_confirmed_transcript(self):
+        self.open_free_mode('streaming', max_turns=3)
+        self.page.click('#vt-start-free')
+        self.wait_for_play_count(1)
+
+        # Rounds one and two are answered normally (real capture path, real page).
+        for expected in (2, 3):
+            self.speak_and_stop(streaming=True)
+            self.wait_for_play_count(expected, timeout=40000)
+        session_id = self.state()['session_id']
+
+        # Round three stays silent: the browser reports its control timeout and
+        # the server closes the round without an answer.
+        self.page.wait_for_function(
+            "() => { const el = document.getElementById('vt-status');"
+            " return !!el && el.textContent.includes('已停止'); }", timeout=60000)
+
+        # The round's transcript line must not present a confirmed answer. Before
+        # the fix a late final stayed on screen as "设备（确认）：…".
+        device_line = self.page.inner_text('#vt-device-transcript')
+        self.assertNotIn('设备（确认）', device_line, device_line)
+        self.assertEqual(device_line.strip(), '', device_line)
+        log_text = self.page.inner_text('#vt-free-log')
+        self.assertNotIn('设备（确认）', log_text, log_text)
+
+        state = self.state()
+        self.assertGreaterEqual(state['stats']['timeouts'], 1, state['stats'])
+        record = self.record(session_id)
+        self.assertEqual(record['status'], 'stopped')
+        self.assertNotEqual(record['status'], 'completed')
+        run = [item for item in record['runs'] if item['current']][0]
+        platform = [turn for turn in run['turns'] if turn['role'] == 'platform']
+        self.assertEqual(len(platform), 3, run['turns'])
+        last = platform[-1]
+        self.assertTrue(last['closed'])
+        self.assertEqual(last['status'], 'no_response')
+        # Either the browser's control bound or the empty capture ends it; both
+        # are an explicit "not answered", never a transcript.
+        self.assertIn(last['closure_reason'],
+                      ('no_response_timeout', 'no_device_transcript',
+                       'no_device_transcript:asr_no_final'), last['closure_reason'])
+        for event in record['events']:
+            if event['kind'] == 'device_transcript':
+                self.assertNotEqual(event['turn_id'], last['turn_id'],
+                                    'a stopped round must not gain a device transcript')
+        # The rounds that did happen are still recorded as real answers.
+        self.assertEqual(len([event for event in record['events']
+                              if event['kind'] == 'device_transcript']), 2)
+
+
 if __name__ == '__main__':
     unittest.main()

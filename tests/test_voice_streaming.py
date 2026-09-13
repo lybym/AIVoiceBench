@@ -1033,5 +1033,249 @@ class MaxTurnsRoundSemanticsTests(FreeModeHarness, unittest.TestCase):
         self.assertEqual(session.max_turns, 1)
 
 
+class StaleStreamingEventTests(FreeModeHarness, unittest.TestCase):
+    """A transcript that arrives after its turn closed is not that turn's answer.
+
+    Real report (v0.4.0-alpha.5, ``max_turns=3``, ``on_no_response=pause``): the
+    third round hit ``no_response_timeout`` and the session stopped, but the page
+    still showed a late ``final_transcript`` as the confirmed device answer, for
+    a turn the execution record says was never answered. The run's outcome must
+    not change because a provider event arrived late, and the page must be told
+    that the text was ignored instead of being shown it as an answer.
+    """
+
+    # The scripted agent must be willing to ask a third question.
+    phrases = ['问题一', '问题二', '问题三']
+
+    def late_final_event(self, text='十。'):
+        return StreamingASREvent(kind=EVENT_FINAL, source=SOURCE_PROVIDER, text=text,
+                                 basis='provider_endpoint', sequence=99)
+
+    def start_run_with_a_platform_turn(self, **extra):
+        """Start a free run and return (session, first platform turn)."""
+        session_id = self.create_free_session(**extra)
+        session = self.manager.get_session(session_id)
+        control = self.control.websocket_connect(
+            f'/api/voice-test/sessions/{session_id}/ws')
+        control.__enter__()
+
+        def _close():
+            try:
+                control.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001 - the server may already have closed it
+                pass
+
+        self.addCleanup(_close)
+        control.send_json({'type': 'start'})
+        self.assertEqual(control.receive_json()['type'], 'capture_mode')
+        play = control.receive_json()
+        self.assertEqual(play['type'], 'play', play)
+        return session, play
+
+    def open_capture_for(self, session, turn_id):
+        return self.manager.begin_capture(
+            session, turn_id=turn_id, stream_id='STR-late', sample_rate=16000,
+            channels=1, bits=16, asr=ScriptedStreamingSession())
+
+    def test_late_final_after_the_session_stopped_is_not_the_turns_answer(self):
+        session, play = self.start_run_with_a_platform_turn(max_turns=3)
+        turn = self.manager.turn_by_id(session, play['turn_id'])
+        capture = self.open_capture_for(session, turn.turn_id)
+        # The browser reports its control timeout first: the turn closes as
+        # "no response" and the session stops.
+        self.manager.close_turn(session, turn, phase='no_response', status='no_response',
+                                closure_reason='no_response_timeout',
+                                observation='no_response', observation_basis=None)
+        self.manager.stop(session.session_id, reason='no_response_timeout')
+        record_before = self.record(session.session_id)
+        turns_before = [(t.turn_id, t.status, t.closed, t.closure_reason)
+                        for t in session.turns]
+
+        applied = self.manager.note_streaming_events(session, [self.late_final_event()],
+                                                     capture=capture)
+
+        # Nothing was applied, nothing became this turn's transcript, and the
+        # fixed run did not gain a single event.
+        self.assertEqual(applied, [])
+        self.assertEqual(capture.final_text, '')
+        self.assertIsNone(capture.final_basis)
+        self.assertEqual([(t.turn_id, t.status, t.closed, t.closure_reason)
+                          for t in session.turns], turns_before)
+        self.assertEqual(session.status, 'stopped')
+        self.assertEqual(session.stop_reason, 'no_response_timeout')
+        record_after = self.record(session.session_id)
+        self.assertEqual(len(record_after['events']), len(record_before['events']))
+        kinds = [event['kind'] for event in record_after['events']]
+        self.assertEqual(kinds.count('final_transcript'), 0)
+        self.assertEqual(kinds.count('device_transcript'), 0)
+        self.assertEqual(kinds.count('device_observation'), 0)
+
+        # The late text is kept as an explicitly-labelled diagnostic instead.
+        self.assertEqual(len(session.stale_streaming_events), 1)
+        stale = session.stale_streaming_events[0]
+        self.assertEqual(stale['reason'], 'session_stopped')
+        self.assertEqual(stale['turn_id'], turn.turn_id)
+        self.assertEqual(stale['session_id'], session.session_id)
+        self.assertEqual(stale['text'], '十。')
+        self.assertEqual(stale['kind'], EVENT_FINAL)
+        self.assertEqual(stale['evidence_scope'], 'control_evidence')
+        self.assertIn('not a confirmed answer', stale['note'])
+        # Not a measurement and not a latency claim.
+        self.assertNotIn('latency', json.dumps(stale))
+
+    def test_late_final_after_a_completed_run_is_ignored_too(self):
+        session_id = self.create_free_session(max_turns=1)
+        with self.start_control(session_id) as control:
+            control.send_json({'type': 'start'})
+            control.receive_json()
+            play = control.receive_json()
+            result = self.send_capture(session_id, play['turn_id'])
+            self.assertEqual(result['type'], 'capture_result')
+            control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+            done = control.receive_json()
+            self.assertEqual((done['type'], done['reason']), ('complete', 'max_turns'))
+
+        session = self.manager.get_session(session_id)
+        capture = self.open_capture_for(session, play['turn_id'])
+        record_before = self.record(session_id)
+        applied = self.manager.note_streaming_events(session, [self.late_final_event('十一。')],
+                                                     capture=capture)
+        self.assertEqual(applied, [])
+        self.assertEqual(capture.final_text, '')
+        record_after = self.record(session_id)
+        self.assertEqual(len(record_after['events']), len(record_before['events']))
+        self.assertEqual(record_after['stop_reason'], 'max_turns')
+        self.assertEqual(session.stale_streaming_events[0]['reason'], 'session_completed')
+        # The confirmed answer of the round that did happen is untouched.
+        self.assertEqual(session.turns[1].text, '这是设备的回答')
+
+    def test_a_late_event_for_a_closed_turn_of_a_running_session_is_stale(self):
+        """The same rule applies while the session runs: a closed turn is closed."""
+        session, play = self.start_run_with_a_platform_turn(max_turns=2,
+                                                            on_no_response='continue')
+        turn = self.manager.turn_by_id(session, play['turn_id'])
+        capture = self.open_capture_for(session, turn.turn_id)
+        self.manager.close_turn(session, turn, phase='no_response', status='no_response',
+                                closure_reason='no_response_timeout',
+                                observation='no_response', observation_basis=None)
+        # The session is still running (continue policy re-asks the question).
+        self.assertEqual(session.status, 'running')
+        self.assertEqual(self.manager.stale_capture_reason(session, capture), 'turn_closed')
+        before = len(session.events)
+        applied = self.manager.note_streaming_events(session, [self.late_final_event()],
+                                                     capture=capture)
+        self.assertEqual(applied, [])
+        self.assertEqual(len(session.events), before)
+        self.assertEqual(session.stale_streaming_events[0]['reason'], 'turn_closed')
+
+    def test_stale_events_are_reported_as_ignored_not_as_a_transcript(self):
+        """The page is told "ignored" with the session, the turn and the reason."""
+        session, play = self.start_run_with_a_platform_turn(max_turns=3)
+        turn = self.manager.turn_by_id(session, play['turn_id'])
+        capture = self.open_capture_for(session, turn.turn_id)
+        self.manager.close_turn(session, turn, phase='no_response', status='no_response',
+                                closure_reason='no_response_timeout',
+                                observation='no_response', observation_basis=None)
+        self.manager.stop(session.session_id, reason='no_response_timeout')
+        self.manager.note_streaming_events(session, [self.late_final_event()], capture=capture)
+
+        sent = []
+
+        class StubSocket:
+            async def send_json(self, payload):
+                sent.append(payload)
+
+        asyncio.run(api._forward_stale_streaming_events(StubSocket(), session))
+
+        self.assertEqual(len(sent), 1, sent)
+        message = sent[0]
+        self.assertEqual(message['type'], 'stale_transcript')
+        self.assertIs(message['ignored'], True)
+        self.assertEqual(message['session_id'], session.session_id)
+        self.assertEqual(message['turn_id'], turn.turn_id)
+        self.assertEqual(message['reason'], 'session_stopped')
+        self.assertEqual(message['text'], '十。')
+        self.assertEqual(message['evidence_scope'], 'control_evidence')
+        # Never sent as a live transcript update.
+        self.assertNotIn(message['type'], ('partial_transcript', 'final_transcript'))
+        # Drained: a second forward sends nothing again.
+        asyncio.run(api._forward_stale_streaming_events(StubSocket(), session))
+
+    def test_capture_result_names_why_it_is_stale(self):
+        """A capture finalised after its turn closed is reported as stale."""
+        session, play = self.start_run_with_a_platform_turn(max_turns=2,
+                                                            on_no_response='continue')
+        turn = self.manager.turn_by_id(session, play['turn_id'])
+        capture = self.open_capture_for(session, turn.turn_id)
+        # While the turn is awaiting an answer the capture is current: no reason.
+        self.assertTrue(self.manager.capture_is_current(session, capture))
+        self.assertIsNone(self.manager.stale_capture_reason(session, capture))
+        self.manager.close_turn(session, turn, phase='no_response', status='no_response',
+                                closure_reason='no_response_timeout',
+                                observation='no_response', observation_basis=None)
+        self.assertFalse(self.manager.capture_is_current(session, capture))
+        self.assertEqual(self.manager.stale_capture_reason(session, capture), 'turn_closed')
+        self.manager.finish_capture(session, capture=capture, status='finished')
+        self.manager.stop(session.session_id, reason='user_stop')
+        self.assertEqual(self.manager.stale_capture_reason(session, capture),
+                         'session_stopped')
+
+
+    def test_third_round_timeout_then_a_late_final_leaves_the_record_unchanged(self):
+        """The reported scenario, end to end on the server side.
+
+        Two rounds answer normally, the third hits the no-response bound, and a
+        late definite final for that third round must change nothing: not the
+        session, not the turn, not one event of the execution record.
+        """
+        session_id = self.create_free_session(max_turns=3)
+        with self.start_control(session_id) as control:
+            control.send_json({'type': 'start'})
+            control.receive_json()
+            play = control.receive_json()
+            for _ in range(2):
+                result = self.send_capture(session_id, play['turn_id'])
+                self.assertEqual(result['type'], 'capture_result', result)
+                control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+                play = control.receive_json()
+                self.assertEqual(play['type'], 'play', play)
+            third_turn = play['turn_id']
+            control.send_json({'type': 'observation_timeout', 'turn_id': third_turn,
+                               'wait_ms': 2500, 'reason': 'no_response_observed'})
+            stopped = control.receive_json()
+            self.assertEqual(stopped['type'], 'stopped', stopped)
+            self.assertEqual(stopped['reason'], 'no_response_timeout')
+
+        session = self.manager.get_session(session_id)
+        self.assertEqual(session.status, 'stopped')
+        third = self.manager.turn_by_id(session, third_turn)
+        self.assertEqual((third.status, third.closed), ('no_response', True))
+        # The late event arrives on a capture that was still attached to that
+        # (now closed) turn: snapshot the record after that capture exists, so
+        # only the late final can change anything.
+        capture = self.open_capture_for(session, third_turn)
+        record_before = self.record(session_id)
+        kinds_before = [event['kind'] for event in record_before['events']]
+        turns_before = [(turn.turn_id, turn.role, turn.status, turn.closed,
+                         turn.closure_reason) for turn in session.turns]
+
+        applied = self.manager.note_streaming_events(session, [self.late_final_event()],
+                                                     capture=capture)
+
+        self.assertEqual(applied, [])
+        self.assertEqual(capture.final_text, '')
+        self.assertEqual(session.status, 'stopped')
+        self.assertEqual(session.stop_reason, 'no_response_timeout')
+        self.assertEqual([(turn.turn_id, turn.role, turn.status, turn.closed,
+                           turn.closure_reason) for turn in session.turns], turns_before)
+        record_after = self.record(session_id)
+        self.assertEqual([event['kind'] for event in record_after['events']], kinds_before)
+        self.assertEqual(record_after['events'], record_before['events'],
+                         'a late transcript must not change one event of the record')
+        self.assertNotIn('final_transcript', [event['kind'] for event in record_after['events']
+                                              if event['turn_id'] == third_turn])
+        self.assertEqual(session.stale_streaming_events[0]['reason'], 'session_stopped')
+
+
 if __name__ == '__main__':
     unittest.main()

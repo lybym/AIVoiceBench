@@ -92,6 +92,9 @@ UPLOAD_STATES = ('uploading', 'recognized', 'invalid_audio', 'asr_failed', 'disc
 ASR_FINAL_TIMEOUT_MS = 15000
 # Partials are kept for the trace, bounded so a long turn cannot grow forever.
 MAX_STREAMING_PARTIAL_EVENTS = 200
+# How many late provider events are kept as an explicitly-labelled diagnostic
+# once their turn is already closed (see ``note_stale_streaming_event``).
+MAX_STALE_STREAMING_EVENTS = 20
 
 STREAMING_EVIDENCE_SCOPE = 'control_evidence'
 
@@ -373,6 +376,13 @@ class VoiceTestSession:
     # Authoritative copy of the last finished capture, written by the audio
     # socket and read by the control loop. The browser's echo is never trusted.
     last_capture_result: Optional[dict] = None
+    # Provider events that arrived after their turn had already been closed.
+    # They are never folded into that turn's transcript and never written to the
+    # execution record (the run's outcome is already fixed); they stay here as a
+    # bounded, explicitly-labelled diagnostic that is also reported to the page
+    # as stale. A transcript that arrives late must not look like an answer.
+    stale_streaming_events: list = field(default_factory=list)
+    pending_stale_streaming_events: list = field(default_factory=list)
     capped_notes: list = field(default_factory=list)
     # Each start begins a new run. Turn ids are unique for the whole session so
     # a late event from an earlier run can never be mistaken for the current
@@ -414,6 +424,13 @@ class VoiceTestSession:
             'capture_fallback_reason': self.capture_fallback_reason,
             'round_observation_max_ms': self.round_observation_max_ms,
             'provider_calls': dict(self.provider_calls),
+            # Late provider output kept outside the run's event stream: the
+            # execution record of a finished turn must not change because a
+            # transcript arrived afterwards (see ``note_stale_streaming_event``).
+            'stale_streaming_events': {
+                'count': len(self.stale_streaming_events),
+                'events': list(self.stale_streaming_events),
+            },
             'run_index': self.run_index,
             'turns': [t.to_dict() for t in self.turns],
             'stop_reason': self.stop_reason,
@@ -896,6 +913,66 @@ class VoiceTestManager:
         """
         return self.platform_turns_issued(session) >= session.max_turns
 
+    def capture_is_current(self, session, capture):
+        """True while this capture still belongs to the turn awaiting an answer."""
+        if capture is None:
+            return False
+        turn = self.turn_by_id(session, capture.turn_id)
+        return session.status == 'running' and self.is_current_turn(session, turn)
+
+    def stale_capture_reason(self, session, capture):
+        """Why a capture's output can no longer belong to its turn.
+
+        Returns None while the capture is still current.
+        """
+        if capture is None:
+            return 'unknown_capture'
+        if self.capture_is_current(session, capture):
+            return None
+        if session.status != 'running':
+            return f'session_{session.status}'
+        turn = self.turn_by_id(session, capture.turn_id)
+        if turn is None:
+            return 'unknown_turn'
+        if turn.closed:
+            return 'turn_closed'
+        return 'turn_not_awaiting_observation'
+
+    def note_stale_streaming_event(self, session, capture, event, reason):
+        """Keep a late provider event as an explicitly-labelled stale diagnostic.
+
+        The run's outcome for that turn is already fixed, so the event is **not**
+        folded into the turn's transcript, **not** written to the execution
+        record, and **never** shown to the operator as a confirmed answer. It is
+        kept (bounded) with its session, turn and reason, and it is queued so the
+        audio socket can tell the page that the text was ignored.
+        """
+        entry = {
+            'session_id': session.session_id,
+            'turn_id': capture.turn_id,
+            'stream_id': capture.stream_id,
+            'kind': event.kind,
+            'text': event.text,
+            'basis': event.basis,
+            'error': event.error,
+            'reason': reason,
+            'at': utc_now(),
+            'evidence_scope': STREAMING_EVIDENCE_SCOPE,
+            'note': ('provider event arrived after its turn was already closed; '
+                     'not this turn\'s transcript and not a confirmed answer'),
+        }
+        session.stale_streaming_events.append(entry)
+        del session.stale_streaming_events[:-MAX_STALE_STREAMING_EVENTS]
+        session.pending_stale_streaming_events.append(entry)
+        del session.pending_stale_streaming_events[:-MAX_STALE_STREAMING_EVENTS]
+        return entry
+
+    def drain_stale_streaming_events(self, session):
+        """Take the stale events the page has not been told about yet."""
+        pending = session.pending_stale_streaming_events
+        session.pending_stale_streaming_events = []
+        return pending
+
     def note_device_response(self, session, text, *, source='browser'):
         """Record the device's transcript so the next turn keeps full context.
 
@@ -946,13 +1023,25 @@ class VoiceTestManager:
         return capture
 
     def note_streaming_events(self, session, events, *, capture=None):
-        """Fold unified streaming events into the control trace (never raw PCM)."""
+        """Fold unified streaming events into the control trace (never raw PCM).
+
+        Only events for the capture's turn *while it is still awaiting an
+        observation* are folded in. Anything that arrives after that turn closed
+        (or after the session stopped) is kept as an explicitly-labelled stale
+        diagnostic instead: it is not written to the execution record and it is
+        never presented as this turn's transcript. Returns the applied events.
+        """
         capture = capture or session.capture
         if capture is None:
             return []
+        current = self.capture_is_current(session, capture)
+        stale_reason = None if current else self.stale_capture_reason(session, capture)
         applied = []
         for event in events:
             capture.events_seen += 1
+            if not current:
+                self.note_stale_streaming_event(session, capture, event, stale_reason)
+                continue
             if event.kind == EVENT_PARTIAL:
                 if len(capture.partials) < MAX_STREAMING_PARTIAL_EVENTS:
                     capture.partials.append({'text': event.text, 'sequence': event.sequence,

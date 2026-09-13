@@ -957,7 +957,8 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
                 capture.audio_bytes += len(pcm)
                 applied = _voice_test_manager.note_streaming_events(
                     session, capture.asr.poll_events(), capture=capture)
-                await _forward_streaming_events(websocket, applied)
+                await _forward_streaming_events(websocket, applied, turn_id=capture.turn_id)
+                await _forward_stale_streaming_events(websocket, session)
                 if capture.failure in ('invalid_audio', 'audio_capture_failed'):
                     break
                 continue
@@ -971,12 +972,18 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
             if control.get('type') == 'capture_stopped':
                 status, failure = await _finalise_capture(session, capture,
                                                           reason=control.get('reason'))
+                # Anything the provider produced after this turn was closed is
+                # reported as ignored, never as this round's transcript.
+                await _forward_stale_streaming_events(websocket, session)
+                stale_reason = _voice_test_manager.stale_capture_reason(session, capture)
                 await websocket.send_json({'type': 'capture_result', 'turn_id': turn_id,
                                            'stream_id': capture.stream_id,
                                            'final_text': capture.final_text,
                                            'final_basis': capture.final_basis,
                                            'failure': capture.failure, 'status': status,
-                                           'empty_transcript': not capture.final_text.strip()})
+                                           'empty_transcript': not capture.final_text.strip(),
+                                           'stale': stale_reason is not None,
+                                           'stale_reason': stale_reason})
                 return
     except WebSocketDisconnect:
         await _abort_capture(session, capture, failure='stream_disconnected')
@@ -989,11 +996,12 @@ async def voice_test_audio_websocket(websocket: WebSocket, session_id: str):
             pass
 
 
-async def _forward_streaming_events(websocket, events):
+async def _forward_streaming_events(websocket, events, *, turn_id=None):
     """Show the device's words to the operator while the turn is still running.
 
     Partial text is display-only: it never triggers the agent, and the trace
-    keeps it labelled as a control observation.
+    keeps it labelled as a control observation. Every update names the turn it
+    belongs to, so the page can refuse one that is no longer current.
     """
     for event in events:
         if event.kind not in ('partial_transcript', 'final_transcript'):
@@ -1004,8 +1012,28 @@ async def _forward_streaming_events(websocket, events):
             await websocket.send_json({
                 'type': event.kind, 'text': event.text, 'basis': event.basis,
                 'sequence': event.sequence, 'source': event.source,
+                'turn_id': turn_id,
                 'evidence_scope': 'control_evidence'})
         except Exception:  # noqa: BLE001 - a display update must not break the run
+            return
+
+
+async def _forward_stale_streaming_events(websocket, session):
+    """Tell the page which provider output was ignored, and why.
+
+    A transcript that arrives after its turn closed must not update the round's
+    text: it is sent as an explicit ``stale_transcript`` notification carrying
+    the session, the turn and the reason, so the page can show it as ignored
+    instead of as a confirmed device answer.
+    """
+    for entry in _voice_test_manager.drain_stale_streaming_events(session):
+        try:
+            await websocket.send_json({
+                'type': 'stale_transcript', 'kind': entry['kind'], 'text': entry['text'],
+                'session_id': entry['session_id'], 'turn_id': entry['turn_id'],
+                'reason': entry['reason'], 'evidence_scope': entry['evidence_scope'],
+                'ignored': True, 'note': entry['note']})
+        except Exception:  # noqa: BLE001 - a notification must not break the run
             return
 
 
