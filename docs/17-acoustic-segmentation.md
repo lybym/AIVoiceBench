@@ -17,8 +17,16 @@ marks frames as speech/silence, merges short gaps, filters segments below
 a minimum duration, and outputs segment candidates with timing, confidence,
 uncertainty, and frame statistics.
 
+This implementation is a **batch algorithm**: its threshold depends on the complete file's 10th-percentile noise floor and global peak. It is not causal and must not be used unchanged as the formal Active Measurement streaming processor.
+
 Uses only the Python standard library (`wave`, `array`, `math`). Cloud or
 model-based VAD can implement the same `AcousticSegmenter` Protocol.
+
+## AcousticBoundaryPolicy evolution
+
+PRD-F025 requires the boundary definition to be separated from complete-file execution. A versioned `AcousticBoundaryPolicy` will define frame/hop, rolling noise estimator, start/end thresholds, hysteresis, minimum speech/silence, merge gap and boundary uncertainty. `StreamingAcousticSegmenter` consumes frames causally; Batch replay can feed the same state machine for verification. The two modes need not share a processor instance.
+
+`EnergyVadSegmenter 1.0.0` remains available for Recording Analysis compatibility under its existing `noise_floor_plus_active_range_fraction` policy. Until paired calibration demonstrates otherwise, it has a distinct processor/policy version and no claim of measurement equivalence with the future streaming implementation.
 
 ## What this stage does NOT do
 
