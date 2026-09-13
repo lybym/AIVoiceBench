@@ -907,3 +907,100 @@
   `complete(max_turns)` 并关闭该 Turn，因此第 N 轮回答无法被观测；本次复验用
   `max_turns=4` 观测 3 轮，多余的 T6 以 `closure_reason=max_turns` 关闭。
   这是既有行为，不属于正常关闭兼容修复的范围。
+
+## 2026-09-13 — Free 模式 `max_turns` 轮次语义修复与真实云端复验（Control Evidence，Issue #74）
+
+- **现象。** 自由对话 `max_turns=N` 时，系统在第 N 次平台话术**刚发出播放指令之后就立即**
+  执行 `complete(max_turns)` 并关闭当前 Turn，没有等待也没有处理设备对第 N 个问题的回答。
+  第 N 轮的回答因此无法被观测（音频通道此时会因 Turn 已关闭被拒为 stale），真实复验中
+  为观察 3 个设备回答只能把 `max_turns` 配成 4——与界面「最大轮次」的自然含义不符。
+  （上一条记录把该行为登记为「已知限制，本轮未修」；本条修复它。）
+- **根因。** `_generate_and_send_free_phrase()` 在发出第 N 次 `play` 之后，用
+  `platform_turns >= session.max_turns` 判定结束：把「**已提问数**」当成了
+  「**已完成轮次数**」。轮次的完整定义（提问 → 播放 → 设备观察 → ASR final / 显式失败 →
+  capture 收尾 → Turn 关闭）没有对应的状态，预算在观测之前就被消费掉了。
+- **目标语义（项目所有者给定，已写入 [PRD](PRD.md) 1.3.4 / PRD-F021）。**
+  `max_turns=N` = 完整执行 N 个平台轮次。第 N 个设备回答被观察并关闭**之后**：不再调用 LLM
+  生成下一问、不再调用 TTS、不发第 N+1 次 `play`；会话以 `complete(max_turns)` 结束，
+  `awaiting_turn_id=null`，最后一轮 Platform Turn 与 Device Turn 均关闭，最终 transcript、
+  capture、provider audit 与 execution events 全部保留。**不使用隐藏轮次或 `max_turns=N+1` 规避。**
+- **修复（不重写架构）。**
+  - `_generate_and_send_free_phrase()` **不再**在发完第 N 次 `play` 后结束会话；
+  - 新增 `_continue_free_run()`：在第 N 个回答被消费之后统一决定「问下一题」还是
+    「以 `complete(max_turns)` 结束」——预算用尽时不再调用 Agent 与 TTS；
+  - 最后一轮的回答仍进入执行记录：以本轮的最终 device turn 记录（`device_transcript`），
+    不会因为没有下一问而丢失；
+  - `streaming`（`capture_result`）与显式 `turn_file` 降级（`device_audio_ready`）两条观察
+    路径共用同一轮次语义；`_consume_device_observation()` 返回「运行是否已结束」，控制循环
+    据此停止读取；
+  - 自由模式 VAD 超时 + `on_no_response=continue` 原本会**停住不再继续**（发送
+    `no_response` 后既不结束也不问下一题，浏览器也不会再上报），现按策略生成下一题，
+    预算用尽时明确结束；
+  - `max_turns` 现在是 **1..50 的整数**（与页面输入范围一致），在会话创建时校验（越界/非整数
+    返回 400），不再默许会在运行期炸掉的取值；
+  - 已结束的运行（`completed` / `stopped` / `failed`）不会被迟到的停止、断线或重复消息改写，
+    也不会重复关闭 Turn。
+- **测试（新增 9 项 + 收紧既有浏览器验收）。** `tests/test_voice_streaming.py` 新增
+  `MaxTurnsRoundSemanticsTests`：`max_turns=1` 等待并保存第一个 final 后完成；
+  `max_turns=3` 保存三个回答且**不生成第四问**（脚本 Agent 有 5 句可用，只有服务端预算能让它
+  在第 3 轮停下）；`turn_file` 降级具备相同轮次语义；最后一轮 Provider failure 明确收尾；
+  最后一轮 no-response（continue 策略）以 `complete(max_turns)` 结束而不是挂起；
+  中途 no-response 仍会问下一题；重复 `capture_result` 不产生第二个 Turn；
+  已完成后迟到的停止/断线不改写结果；`max_turns` 边界校验。
+  断言覆盖 `awaiting_turn_id=null`、Platform/Device Turn 全部关闭、以及
+  `provider_calls` 中 **LLM/TTS 调用次数等于平台提问数**（不额外多一次）。
+  浏览器集成验收 `tests/test_voice_integration_acceptance.py` 改为驱动页面自身的
+  「最大轮次」输入（`max_turns=3`），并断言 `status=completed`、`stop_reason=max_turns`、
+  恰好 3 次 TTS、三次 `play` 文本；测试替身不再自带轮次上限，
+  `--free-max-turns` 这一误导性的替身开关已移除。
+- **软件验证。** 全量 `python -m unittest discover -s tests -p "test_*.py"`：
+  **568 tests, OK**（较上一条记录 +9）。候选镜像内
+  `python tests/container_acceptance.py`：**16/16 PASS**
+  （`ACCEPTANCE_SUMMARY {"version": "0.4.0-alpha.4", "total": 16, "passed": 16, "failed": []}`）。
+- **候选镜像。** `aivoicebench:free-final-turn`，`org.opencontainers.image.revision=e1c11f1`
+  （应用源码为提交 `e1c11f1`；其后仅有本文档改动）。构建后逐文件校验容器内应用源码与工作区一致：
+  `aivoicebench/api.py` = `sha256:0813747e6a2c16f3…`、
+  `aivoicebench/voice_test.py` = `sha256:5faf6b90f443bb62…`、
+  `aivoicebench/volcengine_streaming_asr.py` = `sha256:13be98e9622818ba…`、
+  `aivoicebench/version.py` = `sha256:d99a213434530e86…`。未输出、复制或提交任何 Secret。
+- **真实云端复验（火山引擎流式语音识别 2.0，`max_turns=3`）。** 会话
+  `VT-16c0c05a25a1`（free，`resolved_capture_mode=streaming`，`fallback_reason=null`），
+  设备回答先用**真实 TTS** 合成（`VT-a7dd1ca437c4`），再经**真实二进制音频通道**推入。
+  **操作端没有发送 `stop`：会话由轮次预算自行结束。**
+
+  | 轮次 | Turn | LLM 提问 | 识别到的设备回答 | capture | failure | final_basis | 耗时 | 下一消息 |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 1 | T0 | 北京今天天气怎么样？ | 南京明天晴，气温二十六度。 | finished | 无 | provider_endpoint | 1.87 s | `play` (T2) |
+  | 2 | T2 | 上海明天天气怎么样？ | 北京明天多云，最高二十八度。 | finished | 无 | provider_endpoint | 1.30 s | `play` (T4) |
+  | 3 | T4 | 那广州明天天气怎么样？ | 上海明天有雨，记得带伞。 | finished | 无 | provider_endpoint | 1.38 s | **`complete` (max_turns)** |
+
+  - **第 3 个回答被观测后才结束**：第 3 轮的 `next_type=complete`、`next_reason=max_turns`，
+    并且**没有第 4 次 `play`**（`play_issued` 恰好 3 次，问题文本即上表三句）。
+  - 计数：`play_issued` 3、`device_observation` 3、`device_transcript` 3、
+    `capture_started` 3、`capture_finished` 3、`asr_session_closed` 3、`turn_closed` 3、
+    `final_transcript` 3、`speech_ended` 3、`asr_error` 0、`partial_transcript` 15；
+    `streaming_asr_error=null`。
+  - 会话：`status=completed`、`stop_reason=max_turns`、`awaiting_turn_id=null`、
+    `provider_calls={"tts": 3, "llm": 3, "asr": 0}`（LLM/TTS 各 3 次，**没有多调用一次**）。
+  - Turn 链 T0 → D1 → T2 → D3 → T4 → D5 全部 `closed=true`：Platform Turn
+    `status=complete` / `closure_reason=device_transcript`，Device Turn
+    `status=observed` / `observation=speech_end` 并保留最终文本。
+  - 三条 capture 的 `final_basis` 均为 `provider_endpoint`、`evidence_scope=control_evidence`、
+    `frame_ordering` 无 late/duplicate/gap；每次 `asr_session_closed` 仍为
+    `termination_basis=provider_normal_close`、`close_code=1000`、`saw_last_package=false`
+    （即上一条修复在真实云端继续成立）。
+  - 静音握手（真实负例）`VT-86910b3c6aff` / stream `STR-334454f807a04dfa`：1 秒静音 →
+    `status=failed`、`failure=asr_no_final`、`empty_transcript=true`、0.75 s，**无**
+    `stream_disconnected`。
+- **证据边界（不降低 Evidence First）。** ①Streaming ASR 结果仍是 **Control Evidence**；
+  Provider 时间戳依旧不作为 acoustic ground truth；失败不伪装成回答；partial 不触发下一轮；
+  未发明缺失的最终文本（`asr_no_final` 仍记为无可用转写）。②本轮复验的音频是**受控输入**
+  （真实 TTS 输出经真实二进制音频通道送入），**不是**物理设备或浏览器麦克风；页面路径在受控
+  Provider 下的验收以浏览器集成验收为准。③`provider_calls` 是会话级调用审计，
+  通过 `GET /api/voice-test/sessions/{id}` 暴露；它**不在**持久化的
+  `execution-record.json` 文档内（重启后不随记录保留），本轮未改变该契约。
+- **已知限制（按既有策略，未改）。** 最后一轮如果**没有**可用转写且
+  `on_no_response=pause`（默认），会话按既有策略记为 `stopped`
+  （`no_device_transcript…`）而不是 `completed`；这是“无回答按会话策略处置”的既有语义，
+  本轮只保证它明确收尾、不挂起。
+
