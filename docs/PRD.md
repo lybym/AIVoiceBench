@@ -695,7 +695,7 @@ M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程�
 
 ## 附录 A — Issue → PRD 交叉引用
 
-2026-09-11 核对仍有 20 个 Open Issue；以下更新代码缺口，Issue 保持打开不代表尚无实现。主动测试排程以第 8 节为准。Issue 编号沿用不变；不按状态机械新建重复任务。
+2026-09-13 已按当前 main 与本轮产品决策复核；以下更新代码缺口，Issue 保持打开不代表尚无实现。主动测试排程以第 8 节为准。既有 Issue 编号沿用；本轮仅为新的双正式 Measurement Pipeline 文档工作单元建立 #76，不按状态机械新建重复任务。
 
 ### P0 Issues（当前 MVP 阻塞项）
 
@@ -731,10 +731,11 @@ M1 近期顺序（产品 M1 内部工程子阶段 M1.1～M1.5，非产品里程�
 | #5 | Scripted Case runner | PRD-F020 | P1/M2 核心；partial：真实多轮控制未完成；历史 P2 标题待实现任务同步 |
 | #6 | Audio Station / HIL | PRD-F022, F023 | 专业 F022 继续 P3 deferred；基础 F023 为 P1/M2 planned，分别排程 |
 | #9 | Frozen TTS Golden asset | PRD-F016, F019 | P1/M2 核心；planned：旧暂停草稿不算已交付 |
+| [#76](https://github.com/lybym/AIVoiceBench/issues/76) | Establish dual formal measurement pipelines | PRD-F023–F026, PRD-N007 | 本轮仅完成 docs 收敛（PR #77）；全部 Active Measurement 实现与等价性实验仍为 planned / validation_pending |
 
 F021 的最小 Streaming ASR 闭环已由 PR #66 实现；其真实云/实体设备、预算/Coverage 与 Barge-in 后续仍应拆为有界 Issue。F024（M2/M4）在对应阶段建立实现 Issue，不虚构已创建的任务。
 
-F025/F026 由本次授权新增；本轮按用户后续范围约束只完成文档收敛。Active Measurement Audio、Stimulus Alignment、Canonical Live Timeline、正式在线指标和 Measurement Equivalence 只有在后续代码/真实实验证据出现后才能更新状态。
+F025/F026 由本次授权新增并以 #76 追踪；本轮按用户后续范围约束只完成文档收敛。Active Measurement Audio、Stimulus Alignment、Canonical Live Timeline、正式在线指标和 Measurement Equivalence 只有在后续代码/真实实验证据出现后才能更新状态。
 
 ### 已关闭 Issue（需求已归入 PRD）
 
