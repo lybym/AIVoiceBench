@@ -1,35 +1,117 @@
-# Docker / API — 当前使用说明
+# Docker / API — 当前使用说明与远端部署边界
 
-2026-09-13 基线 `v0.4.0`。产品要求见 [PRD](PRD.md)，主链配置见 [Recording Backbone](23-recording-backbone.md)。
+代码实现基线仍为 `v0.4.0`。产品要求见 [PRD](PRD.md)，主链配置见 [Recording Backbone](23-recording-backbone.md)。2026-09-16 已确定正式目标部署为 **Linux Server + Docker Backend + Remote Chrome Browser Station**；当前发布包的 localhost 用法仍是已有实现，不代表长期架构必须把 Docker 跑在 Windows 本机。
 
-## 版本与启动
+## 当前版本与既有启动方式
 
-[v0.4.0](https://github.com/lybym/AIVoiceBench/releases/tag/v0.4.0) 是当前正式发布（Latest）；`v0.4.0-alpha.6` 及更早版本保留为历史候选。按 [v0.4.0 发布说明](releases/0.4.0.md) 下载镜像包、Compose、Windows 启动脚本及 SHA256SUMS，启动后访问 <http://127.0.0.1:8000>；端口占用可用脚本 `-Port 8001`。
+[v0.4.0](https://github.com/lybym/AIVoiceBench/releases/tag/v0.4.0) 是当前正式发布。既有 Windows 辅助启动脚本可以在本机启动 Docker 并访问 `http://127.0.0.1:8000`；这是当前发布的便利入口，不是 Windows Native 产品方向。
 
-启动脚本使用独立容器/数据卷，不迁移或删除既有数据。Docker 自带 FFmpeg/FFprobe，无需从 Windows 挂载可执行文件；不交付 EXE。
+Docker 自带 FFmpeg/FFprobe，无需从 Windows 挂载可执行文件；不交付 EXE。
+
+## 正式目标部署
+
+```text
+Remote Chrome Browser Station
+        │ HTTPS / WSS
+        ▼
+Linux Server
+└─ Docker: AIVoiceBench Backend/Web
+```
+
+Browser Station：
+
+- 获取 microphone permission；
+- 播放 stimulus；
+- `getUserMedia` + `AudioWorklet`；
+- local sample counter / frame sequence；
+- TEN VAD target / RMS fallback；
+- Waveform/Evidence UI。
+
+Linux Server：
+
+- API / WebSocket；
+- Run orchestration；
+- File/Streaming ASR、LLM、TTS；
+- durable Artifact/Evidence；
+- Silero finalized acoustic analysis；
+- Attribution/Fusion/Timeline/Metrics/Report。
+
+正式远端访问需要 TLS/secure context，并应通过反向代理或等效机制提供认证、HTTPS/WSS、连接超时和上传限制。当前 v0.4.0 的 localhost 单用户安全假设不能直接扩展成公网部署安全结论。
 
 ## 接口与边界
 
 | 方法 | 路径 | 当前用途 |
 | --- | --- | --- |
-| GET | /health、/openapi.json、/ | 版本/接口信息与 Web |
-| POST | /api/analyze | multipart 三格式导入，与 CLI 共用 ImportRun；设备资料可选 |
-| GET | /api/runs、/api/runs/{run_id} | 历史/详情：analysis_id、stages、transcript、speaker_segments、diarization_scope、attribution、阶段数据与 report_md |
-| GET | /api/runs/{run_id}/audio | 标准化音频回放 |
-| POST | /api/runs/{run_id}/resume | JSON {"retry_asr": true} 显式重试 ASR；已完成 ASR/report 不重复调用 |
-| GET / POST | /api/models | 脱敏配置读取/版本化更新；保存不调用服务，密钥不回传；保存后语音测试预检与下一轮运行使用新配置 |
-| GET | /api/voice-test/capabilities/{mode} | 按模式返回所需项/缺少项/浏览器需自查项；`connectivity: not_probed`（不发起付费探测），不含凭据、地址或签名 URL |
-| POST | /api/voice-test/sessions/{id}/start | 启动一轮；能力预检不通过时返回 409 并指名缺少项，**不发起任何 LLM/TTS/ASR 调用**（控制 socket 的 `start` 同样返回 `blocked`） |
-| POST | /api/voice-test/sessions/{id}/device-audio | 显式降级路径的整轮录音上传；先解码转换为 canonical 16 kHz mono PCM16 WAV 再调用 File ASR；非法媒体 422、识别失败/空结果 502，均记录明确状态且不推进下一轮 |
-| WebSocket（planned） | /api/voice-test/sessions/{id}/measurement-audio | Fixed/Free 共用的持续 PCM Measurement Capture；独立于 control socket 与每轮 Streaming ASR socket，保存 sample-indexed WAV 与完整性元数据 |
-| GET（planned） | /api/voice-test/sessions/{id}/measurement-audio、`.../metadata` | 下载当前 Active Run 的正式 Measurement Audio Artifact / contract metadata；未最终化或不存在时明确返回状态 |
+| GET | `/health`、`/openapi.json`、`/` | 版本/接口信息与 Web |
+| POST | `/api/analyze` | multipart 三格式导入，与 CLI 共用 ImportRun；设备资料可选 |
+| GET | `/api/runs`、`/api/runs/{run_id}` | 历史/详情与分析产物 |
+| GET | `/api/runs/{run_id}/audio` | 标准化音频回放 |
+| POST | `/api/runs/{run_id}/resume` | 显式 retry ASR；不是通用重分析接口 |
+| GET / POST | `/api/models` | 脱敏模型配置；长期凭据留在 server |
+| GET | `/api/voice-test/capabilities/{mode}` | 能力预检；不默认发起付费探测 |
+| POST | `/api/voice-test/sessions/{id}/start` | 启动会话；能力不足时明确拒绝 |
+| POST | `/api/voice-test/sessions/{id}/device-audio` | 显式 turn-file fallback |
+| WebSocket（existing control path） | session control/audio paths | Fixed/Free Control Plane；具体路径以当前 OpenAPI/代码为准 |
+| WebSocket（planned） | `/api/voice-test/sessions/{id}/measurement-audio` | 跨整次 Run 的持续 PCM Measurement Capture |
+| GET（planned） | `/api/voice-test/sessions/{id}/measurement-audio` / metadata | Measurement Audio Artifact 与 contract metadata |
 
-上传上限 1 GiB、最长 30 分钟为实现限制。云 ASR 需要路由、凭据及音频 PUT/GET/host 配置，不能只填 Key；ASR-native 聚类需绑定 diarization 路由且服务返回标签。普通 Web 无角色编辑入口，缺角色时 turns/timeline/metrics 弃权。
+Active Measurement API 在当前实现基线仍为 planned。现有 Free Streaming ASR 音频 WebSocket 不能被误报为跨整次 Run 的 F025 Measurement Audio。
 
-ImportRun 尚未执行 Judge/Findings，当前报告是阶段状态报告，空发现不代表设备通过。完整结论报告、人工修订和通用重分析 API/UI 未闭环；resume 不是通用重算接口。
+## Remote Browser Station transport rule
 
-Active Measurement API 在本任务文档收敛时仍为 planned。现有 `/audio` WebSocket 只服务 Free 模式每轮 Streaming ASR，不持久保存跨整次 Run 的 Measurement Audio；它不能被误报为 F025 已实现。新增 Measurement 通道不得改变 Fixed 模式“不依赖 Streaming ASR”或 Free 模式现有控制链。
+浏览器发送的 Measurement PCM frame 必须携带现场 sequence/sample-time 信息。服务器接收时间只用于 transport diagnostics：
 
-默认可信单用户 localhost 部署，配置数据库为本地明文，远程访问需认证代理。音频发布 URL 必须为允许主机的 HTTPS、443（或省略端口），PUT/GET 同对象并回读校验；模型管理对本地服务 HTTP 的许可不适用于音频发布。
+```text
+Browser sample index  → formal audio_relative_ms
+WebSocket receive time → network/jitter diagnostics only
+```
 
-依据：[api.py](../aivoicebench/api.py)、[import_pipeline.py](../aivoicebench/import_pipeline.py)、[cloud_transport.py](../aivoicebench/cloud_transport.py)。软件/容器验证见 PRD 第 1 节；真实录音质量验收未完成。
+因此即使 Browser 与 Linux Server 跨 LAN/WAN，正式指标也不能直接使用“server 收到上一包/下一包的时间差”。网络断连、gap、duplicate、stale frame 必须被显式保存到 capture-integrity metadata。
+
+## Browser media settings
+
+Remote Station 必须记录 requested 与 actual media settings，包括：
+
+```text
+echoCancellation
+noiseSuppression
+autoGainControl
+sampleRate
+channelCount
+device metadata
+browser / OS
+```
+
+对 AEC/NS/AGC 的 request 不代表浏览器实际遵守；最终应读取可获得的 `MediaTrackSettings` 并进入 Run provenance。
+
+## Cloud provider and speaker separation
+
+云 ASR 需要服务路由、凭据和对应音频 transport 配置。Recording Analysis 当前优先验证火山 File ASR 原生 speaker separation；ASR-native labels 仍是匿名 speaker clusters，必须进入 Attribution 才能得到 tester/device/unknown。
+
+当前阶段不要求 3D-Speaker。详见 [Recording Backbone](23-recording-backbone.md) 与 [组件策略](26-remote-browser-component-strategy.md)。
+
+## Evidence UI
+
+Web Evidence Workbench 目标使用 wavesurfer.js。音频 Artifact 仍由 Server API 提供，浏览器 Region 坐标来自 Evidence/EventTimeline 的 `audio_relative_ms`，不在前端重新生成 Measurement truth。
+
+## Security and deployment caveats
+
+- 浏览器不持有长期 ASR/LLM/TTS secret；
+- 远端部署使用 HTTPS/WSS；
+- 不把当前 localhost 明文模型配置假设直接搬到公网；
+- 音频上传/发布 URL、对象存储凭据和 Provider key 不写入 Issues、报告、URL query 或前端 bundle；
+- reverse proxy、authentication、rate/size limits 与 server hardening 属于远端正式部署的验收项。
+
+## Validation boundary
+
+软件/容器验证与远端部署验收必须分开记录。正式 Remote Browser acceptance 至少验证：
+
+- Linux Server Docker build/start/restart/persistent volume；
+- Chrome secure-context microphone permission；
+- local sample clock/sequence 连续性；
+- WAN/LAN jitter、断连与 gap 行为；
+- actual media settings capture；
+- upload/history/evidence playback；
+- 真实 Recording Analysis 与实体 AI Device 的端到端运行。
+
+当前代码/发布事实不自动证明上述远端场景已通过。

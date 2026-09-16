@@ -1,122 +1,124 @@
 # M1 — Real Recording Backbone
 
-PRD refs: PRD-F004–F009/F016/F017; Issues #22/#24/#25/#27/#30.
-Audited 2026-09-11 at main c612d36 (published as v0.2.0-alpha.2), then re-checked against main 8d01ef2 (= v0.3.2). Complete M1 and real-recording acceptance remain pending.
+PRD refs: PRD-F004–F009/F014/F016/F017；Issues #22/#24/#25/#27/#30。
+实现基线仍为 `v0.4.0@9632844`。2026-09-16 只更新 Recording Analysis 的技术路线：Silero VAD 作为 server-side acoustic boundary 候选、火山 ASR 原生 speaker separation 作为当前 speaker clustering 主路径、wavesurfer.js 作为 Evidence UI；不因文档更新声明真实录音验收完成。
 
-Recording Analysis is an independent formal Measurement Pipeline over `ART-external-recording`. It shares Canonical Event semantics and the metric engine with Active Measurement, but never consumes the Active pipeline's Live Measurement Audio as a qualification step and never “promotes” an execution control trace. External recordings remain valuable for independent retest, deep offline analysis, audit, human review, regression and Measurement Equivalence.
+Recording Analysis 是独立正式 Measurement Pipeline over `ART-external-recording`。它与 Active Measurement 共享 Canonical Event semantics 和 metric engine，但绝不消费 Active pipeline 的 Live Measurement Audio 作为资格步骤，也不“提升” execution control trace。External recordings 用于独立复测、深度离线分析、审计、人工复核、回归和 Measurement Equivalence。
 
 ## One Run
 
-Web upload and CLI `import` use `import_recording()` and `ImportRun.execute()`.
-Ingestion → normalization → QA → configured ASR → versioned status report share
-one manifest, stage ledger and artifact catalog. Acoustic → ASR-native diarization → attribution → fusion execute; turns/timeline/metrics execute only with role evidence. Without roles they abstain. Judge/findings are not executed by ImportRun; their state envelopes remain explicit. Existing modules and the
-legacy explicit `pipeline` CLI remain available, but are not another Web path.
-Historical `web-analysis` records remain readable and are never rewritten.
+Web upload 和 CLI `import` 使用 `import_recording()` / `ImportRun.execute()`。
 
-`ModelSettings.capture()` returns `(snapshot, RunProviders)` with ASR factory,
-diarization, Judge and TTS slots. ASR and ASR-native diarization are wired into
-ImportRun. Judge configuration can be captured but is not executed by this path;
-TTS stays outside the ImportRun analysis path, where it is used only by the
-Active Voice Test (API-Key V3 SSE, Issue #60). Credential values and signed URLs stay in memory, not snapshots.
-Saving configuration does not make a service call. ASR errors occur inside its
-stage after the original recording has been preserved.
+目标主链：
 
-## Official contract verified 2026-09-10
+```text
+Ingestion
+→ normalization / QA
+→ Acoustic Boundary (Energy legacy / Silero target)
+→ Volcengine File ASR
+     ├─ transcript / timestamps
+     └─ anonymous speaker labels
+→ Attribution
+→ Fusion
+→ Turn / EventTimeline
+→ Canonical Metrics
+→ Judge / Findings / Review / Report
+```
 
-Started at the requested [product updates](https://docs.volcengine.com/docs/6561/2668039?lang=zh),
-then followed API navigation to the current
-[recording flash HTTP contract](https://docs.volcengine.com/docs/6561/2608628?lang=zh)
-(page updated 2026-09-09). Browser verification was necessary because the web fetch
-redirect failed. The current page specifies URL input. A historical page documents
-base64, but this adapter does not assume it in the current contract.
+已有代码能执行 acoustic → ASR-native diarization → attribution → fusion；只有存在角色证据时才继续 turns/timeline/metrics，否则弃权。Judge/Findings 尚未完整接入 ImportRun。历史 `web-analysis` 记录保持可读且不重写。
 
-The implemented synchronous POST uses the configured full endpoint
-`https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash`,
-model `bigmodel`, resource `volc.bigasr.auc_turbo`, new-console `X-Api-Key`,
-UUID request ID and sequence `-1`. It requests utterances, disables ITN and
-semantic smoothing, and retains punctuation. The provider limit is 100 MB / two
-hours; the existing application limit remains 30 minutes with canonical WAV.
-No unverified speaker-separation request flag is sent. Returned labels can be read, but the enabling flag, label semantics and real service availability remain unverified. No automatic tester/device assignment is claimed.
+`ModelSettings.capture()` 返回 model/provider snapshot 与 RunProviders。ASR 与 ASR-native diarization 已可进入 ImportRun；Judge 配置可捕获但主链未完整执行。Credential values 与 signed URLs 保持内存态，不写快照。
 
-These values are a dated adapter contract, not permanent product requirements.
-Unsupported model/endpoint/resource combinations fail explicitly rather than
-silently sending another model. Service model weights/revision are not exposed.
+## 2026-09-16 speaker separation 决策
 
-## Configure locally
+当前阶段 **不接 3D-Speaker**。先把火山 File ASR 的自动说话人分离能力验证并使用完整。
 
-1. In Web model management add protocol `volcengine_asr`, model `bigmodel`, full
-   endpoint above, purpose ASR and a new-console API key (write-only), or reference
-   a credential environment variable available inside the container. Select it
-   for the ASR route. Timeout can be configured up to 300 seconds.
-   For clusters also bind the diarization route to the same enabled ASR profile.
-   It consumes the existing ASR response without another upload/recognition;
-   absent labels yield insufficient_evidence.
-2. Supply `AIVOICEBENCH_AUDIO_PUT_URL`, `AIVOICEBENCH_AUDIO_GET_URL`, and
-   `AIVOICEBENCH_AUDIO_HOST` in a local, ignored `.env`. Compose forwards these.
-   PUT and GET must be expiring HTTPS URLs for the same private object on that
-   host; the operator supplies them using their storage service. Do not put URLs
-   or keys in Issues, reports, source files or command histories.
-3. Import the authorized WAV/MP3/M4A. The publisher PUTs canonical WAV, reads it
-   back and checks SHA256 before giving the URL to ASR. Redirects are rejected.
-   Publication and recognition are serialized to prevent concurrent imports from
-   overwriting the configured object while it is being consumed. Storage URL
-   provisioning, expiry/cleanup and rotation are operator responsibilities; this
-   milestone does not create a bucket, change an ACL or expose localhost audio.
+火山当前产品能力说明已列出“自动说话人分离（中英文）”。AIVoiceBench 的实现要求是：
 
-The signed-URL publisher is replaceable. This configuration is required for cloud
-calls, not for local import or Vosk. No audio is uploaded when ASR is unconfigured.
-Local retry may be necessary after refreshing expired publication credentials.
+1. 根据当前实际使用的 File ASR API 文档核对启用参数，不沿用旧接口字段猜测；
+2. 保存原始 provider response；
+3. 将 provider speaker label 规范化为匿名 `speaker_0 / speaker_1 / ...`；
+4. speaker label 只作为 diarization evidence，不直接变成 tester/device；
+5. Attribution 层继续结合显式 mapping、语义提议、时序上下文和人工复核；
+6. labels 缺失、冲突或质量不足时保持 `unknown` / `needs_review` / `insufficient_evidence`；
+7. 真实 AI 玩具录音上的 coverage/accuracy 达不到要求后，才进入独立 diarization Provider（例如 3D-Speaker/pyannote）评估。
 
-CLI uses the same path with explicit cloud opt-in:
+参考：火山语音识别产品说明 <https://www.volcengine.com/docs/6561/1354871?lang=zh>。
+
+> 旧实现说明中“读取返回 label 但不发送未核对 speaker-separation flag”的安全边界仍有效：在当前实际接口字段核对和测试完成前，不得凭旧 API 的 `with_speaker_info` 等字段直接修改新接口请求。
+
+## Acoustic boundary 路线
+
+现有 `EnergyVadSegmenter` 继续保留用于 fixture、debug 和兼容；Recording Analysis 的下一模型型 Provider 是 Silero VAD。
+
+```text
+External Recording
+ ├─ Silero VAD ───────→ acoustic start/end candidates
+ └─ Volcengine ASR ───→ text/timestamp/speaker labels
+                    ↓
+                  Fusion
+```
+
+VAD 不作为 ASR 的强制前置。两者并行产生 evidence；Silero threshold/post-processing 由版本化 Measurement Policy 管理，不能把第三方默认值直接当正式产品门槛。
+
+## Current Volcengine File ASR contract boundary
+
+当前代码实现过的极速 File ASR path 使用配置化 endpoint/model/resource 与后端凭据，通过 URL/发布机制提交 canonical audio，保留 provider invocation audit。旧审计曾核对 `volc.bigasr.auc_turbo` 极速接口以及 utterance/word timing；具体 endpoint/resource/请求字段属于 dated adapter contract，不是永久产品要求。
+
+2026-09-16 起，speaker separation 接入必须以**当前启用的火山接口文档和真实服务响应**为准，不能仅凭旧文档/旧接口兼容字段推断。服务模型版本、speaker label 语义和准确率都要进入真实验收记录。
+
+## Configure locally / on Linux Server
+
+1. 在 Web model management 配置 `volcengine_asr` profile、实际 endpoint/model/resource 与后端凭据，并选择 ASR route。
+2. 如当前 adapter 使用 signed URL publisher，继续提供相应 PUT/GET/host 配置；secret/URL 不进入 Issues、报告或源码。
+3. speaker separation 与 ASR 尽量复用同一次原生响应，不为同一录音做无必要的第二次云识别。
+4. `diarization` route 指向 ASR-native labels 时，缺少 labels 应返回 `insufficient_evidence`，不静默造 cluster。
+5. Vosk 保留显式 offline fallback，但不冒充火山调用失败后的自动替代。
+
+CLI 仍走相同 ImportRun：
 
 ```text
 python -m aivoicebench import conversation.m4a --model-settings artifacts/.model-settings
 ```
 
-Existing `--asr-provider vosk --model-dir ... --model-version ...` remains an
-explicit offline fallback; it is not silently substituted for a failed cloud call.
-
 ## Evidence, contracts and retry
 
-- `original/` retains input bytes. `analysis/ANALYSIS-*/` contains normalization,
-  native ASR, Transcript, acoustic/speaker/attribution/fusion/turn/timeline/metric envelopes, model snapshot, status outputs and reports.
-  `manifest.json` selects the current revision. Reports are now revision-local;
-  consumers should resolve their paths through the manifest.
-- `provider-calls/CALL-*/start.json` is written before the operation; immutable
-  `result.json` records duration, status, safe failure code and hashed output
-  references. Attempts share an ASR operation ID for the Run. Transport failures
-  are not retried automatically. Raw responses precede normalization, including
-  service rejection. Responses echoing credentials are withheld with digest and
-  reason rather than persisting secrets. HTTP code is not recognition success.
-- Invocation foundation and signed-publication checks are selectively ported
-  from #31/#32. The obsolete async job orchestration is not merged into main.
-- Transcript **1.1.0** extends the existing contract for nullable remote model
-  hash, absent word detail/confidence and overlapping utterances in start order.
-  **1.0.0 remains strict** for legacy Vosk fixtures. Timing is provider-estimated,
-  confidence/clock mapping unknown; numeric speaker IDs are not tester/device roles.
-  Missing utterance times produce gaps; out-of-range times fail normalization.
-- Explicit `POST /api/runs/{id}/resume` with `{"retry_asr": true}` preserves the
-  previous manifest and outputs and creates another AnalysisRevision in that Run.
-  It requires a verified canonical artifact; corrupt originals must be reimported.
-  A completed ASR/report returns unchanged without another cloud request. Retry
-  uses a new configuration snapshot. It is not generic human reanalysis (M1.5 engineering slice).
-  Locks prevent simultaneous import/retry writes and release after process exit.
-  A timed-out cloud attempt may already have been billed; Web labels retry accordingly.
+- `original/` 保留输入 bytes；`analysis/ANALYSIS-*/` 保存 normalization、native ASR、Transcript、acoustic/speaker/attribution/fusion/turn/timeline/metric envelopes、model snapshot、status 和 reports。
+- `provider-calls/CALL-*/start.json` 在外部调用前落盘；result 记录 duration/status/safe failure/hash references。Credential 回显必须被过滤。
+- Transcript contract 保留 provider-estimated timing、nullable confidence/model hash、speaker labels 等信息；numeric speaker IDs 不是 tester/device roles。
+- explicit retry 生成新的 AnalysisRevision，不覆盖旧 manifest/output；completed operation 不重复计费调用。
+- 文件存在不能证明 processor 已执行；stage state 必须显式。
+
+## Evidence Workbench
+
+Recording Analysis 的 Web 证据审阅采用 wavesurfer.js，而不是继续自行堆 waveform renderer。
+
+首期要求：
+
+```text
+Waveform
++ Timeline
++ Regions(acoustic / speaker / event / finding)
++ transcript / role / provenance side panel
+```
+
+Finding、Metric、Event 点击后应定位并高亮相应 Evidence Region。wavesurfer.js 只显示 `audio_relative_ms` 坐标，不生成新的 Event 或 Metric。
 
 ## Verification boundaries
 
-Targeted tests use synthetic audio and injected transport responses. They check
-real codecs, source preservation, route capture, native responses, time bounds,
-secret-safe failures, retry identity, immutable revisions, cross-process lock
-semantics and history reopening. They do not measure Chinese ASR accuracy or
-prove live cloud permission. Docker verification is separate from TestClient
-reopening. Real M1 acceptance still requires authorized 5–20 minute terminal audio,
-usable ASR/storage credentials, a real invocation and Windows-browser inspection.
+Targeted tests 可以使用 synthetic audio / injected provider responses 验证 codec、source preservation、native response normalization、speaker label mapping、time bounds、secret-safe failures、retry、revision 和 lock semantics；它们不能证明中文识别准确率或 speaker separation 真实质量。
+
+M1 真实验收至少需要：
+
+- 授权的 5–20 分钟 AI 终端真实录音；
+- 真实火山 File ASR 调用；
+- speaker separation 实际返回及人工核对；
+- Silero/legacy acoustic boundary 与人工标注比较；
+- Attribution unknown/conflict/人工修订闭环；
+- wavesurfer Evidence UI 逐证据复核。
+
+没有上述证据前，speaker clustering、角色归属、声学边界和完整 M1 均不能写成 real_recording_verified。
 
 ## Stage states and evidence limits
 
-When canonical audio exists, unconfigured ASR and unexecuted Judge/Findings may remain pending. Missing upstream evidence yields insufficient_evidence; operation errors remain failed. Unrun envelopes carry reasons and null data. A file existing on disk does not prove its processor ran.
-
-Default Web/CLI has no role-editing input. Internal explicit mapping is tested with synthetic fixtures; no known roles means no role-dependent timings. Provider-estimated cluster boundaries retain their source; ambiguous overlap does not force an assignment.
-
-write_import_report() creates an import-stage status report with empty conclusions and insufficient device-performance evidence. It does not run render_report()/Judge/Findings. Full semantic reports and human revisions remain product M1 work.
+默认 Web/CLI 没有角色真值。Provider-estimated cluster boundaries 保留来源；ambiguous overlap 不强制分配。语义角色提议可以辅助人工审阅，但不能覆盖显式 evidence。`write_import_report()` 仍只是 import-stage 状态报告；完整 semantic report/findings/human revision 仍属于 M1 收口工作。

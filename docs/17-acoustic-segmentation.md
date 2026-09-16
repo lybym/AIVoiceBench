@@ -2,72 +2,148 @@
 
 > Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
 
-Issue #23. This module produces speech-segment *candidates* from raw audio
-using frame-based energy VAD. Acoustic timing is signal-processor timing,
-distinct from ASR estimated timing, diarization timing, LLM-inferred
-semantic timing, and manual corrected timing. Segments carry no speaker
-role.
+Issue #23. 本模块从原始音频生成 speech-segment / acoustic-boundary **候选证据**。Acoustic timing 与 ASR estimated timing、speaker separation timing、LLM semantic timing、manual corrected timing 分离；segment 本身不带 tester/device 角色。
 
-## What this stage does
+2026-09-16 组件决策：
 
-Reads a canonical WAV (PCM16LE / 16 kHz / mono), splits it into analysis
-frames, computes per-frame RMS energy, estimates a noise floor (10th
-percentile of frame energies), sets an adaptive threshold above that floor,
-marks frames as speech/silence, merges short gaps, filters segments below
-a minimum duration, and outputs segment candidates with timing, confidence,
-uncertainty, and frame statistics.
+- **Silero VAD**：作为 Linux Server 上 Recording Analysis 与 Active Measurement finalized replay 的首个模型型 Acoustic Boundary Provider；
+- **TEN VAD**：作为 Remote Chrome Browser Station 的目标 Control VAD，优先用于低延迟 provisional start/end；
+- **Energy/RMS VAD**：保留 synthetic fixture、debug、兼容和显式 fallback，不再作为长期正式默认算法。
 
-This implementation is a **batch algorithm**: its threshold depends on the complete file's 10th-percentile noise floor and global peak. It is not causal and must not be used unchanged as the formal Active Measurement streaming processor.
+详细分工见 [Remote Browser Station 与开源组件策略](26-remote-browser-component-strategy.md)。
 
-Uses only the Python standard library (`wave`, `array`, `math`). Cloud or
-model-based VAD can implement the same `AcousticSegmenter` Protocol.
+## 1. VAD 在 AIVoiceBench 中的定位
 
-## AcousticBoundaryPolicy evolution
+VAD 不是 ASR 的强制前置。推荐链路是并行 Evidence Producer：
 
-PRD-F025 requires the boundary definition to be separated from complete-file execution. A versioned `AcousticBoundaryPolicy` will define frame/hop, rolling noise estimator, start/end thresholds, hysteresis, minimum speech/silence, merge gap and boundary uncertainty. `StreamingAcousticSegmenter` consumes frames causally; Batch replay can feed the same state machine for verification. The two modes need not share a processor instance.
+```text
+Audio
+ ├─ Acoustic Boundary Provider ─→ speech boundaries
+ ├─ ASR Provider ───────────────→ text / provider timestamps
+ └─ Speaker Separation ─────────→ anonymous speaker clusters
+                         ↓
+                  Attribution / Fusion
+                         ↓
+               Canonical EventTimeline
+```
 
-`EnergyVadSegmenter 1.0.0` remains available for Recording Analysis compatibility under its existing `noise_floor_plus_active_range_fraction` policy. Until paired calibration demonstrates otherwise, it has a distinct processor/policy version and no claim of measurement equivalence with the future streaming implementation.
+因此 Recording Analysis 即使由 File ASR 自己完成内部切句，也仍可使用独立 VAD 来得到与 ASR 解码逻辑解耦的 speech onset/offset evidence；反过来，如果某个任务只需要转写或语义评估，也不要求先跑独立 VAD。
 
-## What this stage does NOT do
+## 2. Provider 边界
 
-- Assign speaker roles (tester / device / unknown). That is diarization.
-- Produce events or a timeline. That is fusion / turns / event detection.
-- Use ASR timestamps. ASR timing is a separate source.
-- Infer semantic boundaries (meaningful response start). That is LLM work.
-- Claim sample-exact speech onset. The uncertainty is the hop resolution.
+现有 `AcousticSegmenter` Protocol 保留为可替换接口，目标实现为：
 
-## Command
+```text
+AcousticSegmenter
+├─ EnergyVadSegmenter        # implemented legacy/fallback
+├─ SileroVadSegmenter        # planned server baseline
+└─ TenVadSegmenter           # planned browser/control or replay adapter
+```
+
+下游只消费统一 AcousticSegments contract，不绑定某一个 VAD 项目。
+
+### 2.1 EnergyVadSegmenter
+
+当前实现读取 canonical WAV（PCM16LE / 16 kHz / mono），按 frame 计算 RMS，使用完整文件的 10th-percentile noise floor 与 global peak 设置自适应阈值，再 merge/filter 成 segment。
+
+该实现是 **batch algorithm**：依赖完整文件统计，不 causal，不允许直接冒充 Active Measurement streaming processor。
+
+### 2.2 SileroVadSegmenter
+
+目标用途：
+
+- Recording Analysis 的默认模型型 boundary candidate；
+- Active Measurement 对 durable Measurement Audio 的 server-side finalized replay；
+- 和现有 Energy VAD / TEN VAD 做 paired validation。
+
+Silero 输出仍必须经过 AIVoiceBench Adapter：
+
+- sample index / milliseconds 统一换算；
+- processor/model/version 固定记录；
+- threshold、min speech/silence、padding/merge 等进入版本化 Measurement Policy；
+- 原始概率或足够的诊断信息应尽可能保留；
+- 不把项目默认 threshold 直接写成产品门槛。
+
+Silero VAD 官方项目提供 PyTorch/ONNX 使用路径，当前仓库许可证为 MIT：<https://github.com/snakers4/silero-vad>。
+
+### 2.3 TenVadSegmenter / Browser TEN VAD
+
+目标用途：
+
+- Remote Chrome Browser Station 的 Control Plane；
+- `speech_suspected_start/end`、轮次推进、timeout 辅助；
+- 事件直接记录现场 `sample_index`，而不是服务器接收时刻；
+- 后续可对持久音频 replay，作为 Silero finalized result 的对照。
+
+TEN VAD 官方仓库提供 Web/WASM 路径：<https://github.com/TEN-framework/ten-vad>。其 LICENSE 在 Apache 2.0 之外包含额外部署限制，因此正式商业/分发接入前必须完成许可证审查。许可证未确认时只允许做 Adapter/Spike，不得把依赖状态写成 production accepted。
+
+## 3. AcousticBoundaryPolicy
+
+PRD-F025 要求 boundary definition 与执行方式解耦。版本化 `AcousticBoundaryPolicy` 至少描述：
+
+```text
+provider / model / version
+sample_rate
+frame / hop
+start threshold
+end threshold
+hysteresis
+min speech
+min silence
+merge gap
+pre/post padding
+boundary uncertainty
+post-processing version
+```
+
+TEN Browser provisional、Silero Server finalized、Energy legacy 可以使用不同 processor，但必须保留 policy provenance；它们发生冲突时保留双方证据，不静默覆盖。
+
+当前 `EnergyVadSegmenter 1.0.0` 继续使用 `noise_floor_plus_active_range_fraction` policy。Silero/TEN 的首个 policy version 需要在实现时建立，不在本文预先伪造具体阈值。
+
+## 4. What this stage does NOT do
+
+- Assign speaker roles（tester / device / unknown）；这是 speaker separation + attribution。
+- Produce final events or timeline；这是 fusion / turn / event detection。
+- Treat ASR timestamps as acoustic boundaries。
+- Infer semantic boundaries（meaningful response start）；这是 Judge/semantic evidence。
+- Claim sample-exact truth；模型边界仍有 uncertainty。
+- Decide that Silero/TEN 的输出天然比人工标注或其他 Provider 更“真实”。
+
+## 5. Current command and legacy parameters
+
+现有 Energy VAD CLI 继续保留：
 
 ```powershell
 & ./.venv/Scripts/python.exe -m aivoicebench acoustic 'C:/recordings/normalized.wav' --output artifacts/acoustic
 ```
 
-Optional parameters:
+现有参数：
 
+```text
+--frame-ms 30
+--hop-ms 10
+--threshold-factor 0.15
+--min-speech-ms 100
+--min-silence-ms 200
+--merge-gap-ms 80
+--pre-roll-ms 0
+--post-roll-ms 0
 ```
---frame-ms 30          # analysis frame size
---hop-ms 10            # hop between frames (also the timing uncertainty)
---threshold-factor 0.15  # fraction of active energy range above noise floor
---min-speech-ms 100    # minimum segment duration
---min-silence-ms 200   # minimum gap to split segments
---merge-gap-ms 80      # merge gaps shorter than this
---pre-roll-ms 0        # extend segment start backward
---post-roll-ms 0       # extend segment end forward
-```
 
-CLI exit code 0 = complete with segments, 2 = insufficient evidence (silent
-or no qualifying segment), 1 = error (missing file, non-canonical format).
+这些参数只描述 Energy VAD legacy algorithm，不应被复用成 Silero/TEN 的隐式默认配置。
 
-## Output schema
+CLI exit code 0 = complete with segments，2 = insufficient evidence，1 = error。
 
-`AcousticSegments 1.0.0` (`schemas/acoustic-segments.schema.json`):
+## 6. Output schema
+
+`AcousticSegments 1.0.0` (`schemas/acoustic-segments.schema.json`) 当前核心形态保持不变：
 
 ```json
 {
   "schema_version": "1.0.0",
   "document_id": "ACOUSTIC-<uuid>",
   "source": { "path", "sha256", "duration_ms", "sample_rate_hz", "channels", "encoding" },
-  "processor": { "method": "energy_vad", "processor_version": "1.0.0", "parameters": { ... } },
+  "processor": { "method": "energy_vad", "processor_version": "1.0.0", "parameters": { } },
   "status": "complete | partial | insufficient_evidence",
   "reason": null,
   "segments": [
@@ -85,43 +161,38 @@ or no qualifying segment), 1 = error (missing file, non-canonical format).
 }
 ```
 
-Validation: `python -m aivoicebench validate doc.json --kind acoustic-segments`
-checks schema validity, segment ordering, non-overlap, audio-bounds, source
-consistency, and status/segments consistency.
+Silero/TEN 接入时优先通过兼容 contract 扩展 `processor.method` / parameters/provenance，不为每个 Provider 创建平行 downstream schema。
 
-## Timing taxonomy
+## 7. Timing taxonomy
 
-The user's product direction requires explicit distinction between:
-
-| Source | Method | This stage? |
+| Source | Example method | This stage? |
 | --- | --- | --- |
-| Acoustic timing | Energy VAD | Yes |
-| ASR estimated timing | Provider timestamps | No (#7/#22) |
-| Diarization timing | Speaker model | No (future #24) |
-| LLM inferred semantic | Structured decisions | No (#10) |
-| Manual corrected | Human annotation | No (#26) |
+| Acoustic timing | Energy / Silero / TEN VAD | Yes |
+| ASR estimated timing | Provider timestamps | No |
+| Speaker separation timing | ASR-native / future diarization model | No |
+| LLM inferred semantic | Structured decisions | No |
+| Manual corrected | Human annotation | No |
 
-Every segment boundary carries `source: "acoustic"` and `uncertainty_ms`
-equal to the hop resolution. The true speech onset could be anywhere within
-one hop of the detected boundary. This is not sample-exact ground truth.
+Active Browser Control event 必须能追溯到本地 sample index。Server receive time 只用于 transport/jitter diagnosis。
 
-## Evidence and validation
+## 8. Evidence and validation
 
-Tests use synthetic PCM16 sine tones with exact silence gaps. They exercise
-actual signal detection, not mock outputs. A fully silent recording yields
-`insufficient_evidence`, not an invented segment. Non-canonical formats
-(stereo, wrong sample rate) raise an explicit error.
+现有 synthetic PCM fixture 继续验证逻辑与 contract；新增 Silero/TEN 后，真实验收必须使用目标 AI 玩具录音人工标注集，至少报告：
 
-This stage is a sibling of #21 (recording import) and #22 (cloud ASR) on the
-fixed `167e5cc` integration baseline. It is independently testable. Future
-integration into the import pipeline calls `EnergyVadSegmenter.segment()`
-from the `acoustic` stage of `import_pipeline.py` after normalization.
+- speech-start absolute error；
+- speech-end absolute error；
+- miss / false alarm；
+- short speech 与长静音表现；
+- background audio / music / room noise 场景；
+- coverage 与 `insufficient_evidence`；
+- 不同 policy version 的回归变化。
 
-## Next stages
+在这些真实数据出现前，不宣称 Silero 或 TEN 是 AIVoiceBench 的 acoustic ground truth。
 
-- #24: fuse acoustic + ASR + diarization segments into unified segments,
-  build turns, detect events (interruption, overlap, response, timeout).
-- #25: expand latency metrics (feedback, meaningful response, barge-in
-  success, false endpoint) consuming the fused timeline.
-- #10: LLM Harness for semantic decisions (intent, meaningful response
-  boundary, conversation quality).
+## 9. Next stages
+
+- Recording Analysis：Silero Adapter → ImportRun acoustic stage → paired labeled validation；
+- Active Control：TEN VAD WASM → Browser Station sample-indexed provisional event；
+- Active Finalization：durable Measurement Audio → Silero replay → Canonical EventTimeline；
+- Speaker separation：先验证火山 ASR-native speaker labels，不在当前阶段接 3D-Speaker；
+- UI：wavesurfer.js 显示 acoustic/speaker/event/finding Evidence Region。

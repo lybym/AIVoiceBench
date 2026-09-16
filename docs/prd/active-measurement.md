@@ -22,20 +22,29 @@
 - 保存版本化目标、策略、允许工具、预算、停止条件、Observation、Decision、实际动作和失败理由；超预算、无 final、服务失败或用户停止须明确处置。
 - File ASR 整轮上传只能作为操作者显式选择且显式标注的 fallback；缺少 Streaming ASR 时 `auto` 不得静默降级。
 
-当前最小实时链路、后端能力预检、显式降级、时域 RMS VAD 判停和失败状态已有有限验证；真实云调用、真实设备、Coverage 与预算闭环仍待验收。
+当前最小实时链路、后端能力预检、显式降级、时域 RMS VAD 判停和失败状态已有有限验证；真实云调用、真实设备、Coverage 与预算闭环仍待验收。近期控制 VAD 的目标实现改为 TEN VAD Browser/WASM Adapter；RMS 仅保留 fallback/debug，不能因文档选型被写成 implemented。
 
 ## PRD-F022 — 专业 HIL / Station
 
-**状态：⏸ deferred；优先级：P3。** 保留专业声卡播放/录制、同步、loopback、SPL 校准、physical HIL 与 Remote Station 扩展。它不阻塞普通电脑的 F023；软件 fixture 不能冒充硬件验收。
+**状态：⏸ deferred；优先级：P3。** 保留专业声卡播放/录制、同步、loopback、SPL 校准、physical HIL 与 Remote Station Agent 扩展。它不阻塞普通电脑的 F023；软件 fixture 不能冒充硬件验收。
 
-## PRD-F023 — 基础本地播放与麦克风采集
+Windows Native/WASAPI 如未来需要，只实现为可选专业 Station Agent；**不要求把 AIVoiceBench Server 从 Linux/Docker 迁移到 Windows。**
 
-**状态：🟡 partial；优先级：P1 / M2。** 普通 Windows 电脑的扬声器播放和浏览器麦克风持续采集同时服务 Control Plane 与 Measurement Plane。
+## PRD-F023 — Remote Browser Station 基础播放与麦克风采集
 
-- Control Plane 可使用连续 PCM、RMS VAD 和 Streaming ASR 进行播放、观察和会话控制。
+**状态：🟡 partial；优先级：P1 / M2。** 正式主架构采用远端 Chrome Browser Station 与 Linux Server + Docker Backend。Browser Station 位于实际测试现场，直接接触电脑扬声器、麦克风和浏览器音频栈。
+
+- Browser Station 负责 `getUserMedia`、播放、`AudioWorklet` 连续 PCM、本地 sample counter、frame sequence、控制 VAD、浏览器权限与音频设置观察。
+- Linux Server 负责 Session/Run 编排、Provider 调用、持久化、最终化分析、Timeline、Metric、Judge、Finding 与 Report。
+- Control Plane 可使用连续 PCM、TEN VAD（目标）/RMS fallback 与 Streaming ASR 进行播放、观察和会话控制。
 - Measurement Plane 必须另行满足 F025 的持久化 Artifact、sample clock、完整性和 Evidence Contract，不能把控制输入自动升级为正式 Measurement Evidence。
-- 设备选择、权限/中断/断开状态、实际格式、丢帧/重复/缺口以及播放/采集时间基准需要可见且可审计。
+- 正式声学时间轴在 Browser Station 现场产生；`server_receive_time`、网络 RTT、WebSocket jitter、ASR/LLM 返回时间不允许成为 PRD-M 声学指标的直接时间基。
+- 设备选择、权限/中断/断开状态、实际格式、丢帧/重复/缺口以及播放/采集时间基需要可见且可审计。
+- 请求与实际 `echoCancellation`、`noiseSuppression`、`autoGainControl` 等媒体设置必须进入 provenance；不能假定浏览器按请求关闭了音频增强。
+- 正式远端部署使用 HTTPS/WSS 以满足浏览器安全上下文与麦克风权限要求；凭据长期保留在后端，浏览器不持有 Provider secret。
 - 边播放边监听、真实声场泄漏与设备归属不确定时必须弃权或停止；外部录音可用于独立等价性验证，但非 Active Result 的前置资格。
+
+核心原则：**计算可以远，音频时间轴必须在现场生成。**
 
 ## PRD-F024 — Execution Run 与独立录音 Analysis Run 关联
 
@@ -49,14 +58,15 @@
 
 **状态：⬜ planned；优先级：P1 / M2。** Active Voice Test 必须能独立从 Live Measurement Audio 形成可信、可审计的 Measurement Result。
 
-- 每次 Active Run 在第一句播放前持续采集至完成、停止或失败，保存不可变 Measurement Audio Artifact、SHA-256、格式、sample count、帧完整性、设备信息和 `measurement_policy_version`。
-- 正式声学时间使用 `sample_index / sample_rate` 的 `audio_relative_ms`；wall/monotonic/receive time 只作审计、控制或诊断。
+- 每次 Active Run 在第一句播放前持续采集至完成、停止或失败，保存不可变 Measurement Audio Artifact、SHA-256、格式、sample count、帧完整性、Browser Station 信息和 `measurement_policy_version`。
+- 正式声学时间使用现场 sample index 构造的 `audio_relative_ms`；wall/client monotonic/server monotonic/receive time 只作审计、控制或诊断。
+- Browser Station 的 TEN VAD 主要生成 provisional/control boundary；最终化时，Linux Server 对 durable Measurement Audio 运行版本化 Acoustic Boundary Provider。第一阶段以 Silero VAD 为 server-side finalized baseline，并允许未来把 TEN replay 作为对照，而不把任一默认阈值直接视为真值。
 - 保存 Stimulus Reference，并通过 reference-assisted alignment 产生 tester 边界；播放 callback 只作对齐先验。
-- streaming-compatible AcousticBoundaryPolicy 生成带 confidence/uncertainty 的 Canonical Events；未知角色或不足证据保持 unknown / insufficient_evidence。
+- Acoustic Boundary Provider 输出带 confidence/uncertainty 的 Canonical Event 候选；未知角色或不足证据保持 unknown / insufficient_evidence。
 - Active Timeline 与 Recording Timeline 使用同一 Canonical Event 语义、唯一 Canonical Metric Engine 与 PRD-M001–M010，不创建实时/离线平行公式。
 - 结果区分 provisional、finalized 与 abstained/invalid；不得重载既有 MetricResult `status`，须通过兼容演进表达 pipeline、policy 与最终化状态。
 
-详细实现设计见 [Active Measurement 设计](../25-active-measurement.md)。本文不将该设计写成已实现状态。
+详细实现设计见 [Active Measurement 设计](../25-active-measurement.md)，组件分工见 [Remote Browser Station 与开源组件策略](../26-remote-browser-component-strategy.md)。本文不将该设计写成已实现状态。
 
 ## PRD-F026 — Measurement Equivalence Validation
 
@@ -69,4 +79,4 @@
 
 ## Barge-in 边界
 
-单麦克风混音下，未具备 stimulus cancellation、AEC/loopback 或 source-aware evidence 时，普通 turn-taking 先闭环；PRD-M005/M006/M007/M009 的高级重叠、停止与语义判断必须弃权，不得以 Control VAD 或播放日志替代正式测量。
+单麦克风混音下，未具备 stimulus cancellation、AEC/loopback 或 source-aware evidence 时，普通 turn-taking 先闭环；PRD-M005/M006/M007/M009 的高级重叠、停止与语义判断必须弃权，不得以 Control VAD、ASR endpoint、播放日志或 server receive time 替代正式测量。
