@@ -2,57 +2,68 @@
 
 > Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
 
-2026-09-11 baseline: main c612d36 / alpha.2. Issue #11.
-
-Web/CLI import calls write_import_report(): report_kind=import_stage_status, empty conclusions, insufficient device-performance evidence. It does not execute Judge/Findings. The modules and commands below are the separate pipeline/findings/report CLI; they are not the default Web path. Full integration and human confirmation remain incomplete.
+实现基线仍为 `v0.4.0`。2026-09-16 增加 Web Evidence Workbench 的组件决策：采用 wavesurfer.js，不自研 waveform renderer；该决策不代表 UI 已实现。
 
 ## Pipeline
 
-```
-LLM Judge Results (#10)
-  + EventTimeline (#24)
-  + Metrics (#25)
+```text
+LLM Judge Results
+  + EventTimeline
+  + Metrics
   ↓
-generate_findings() → Finding 2.0.0 documents
+generate_findings() → Finding documents
   ↓
 render_report() → report.md + report.json
+  ↓
+Web Evidence Workbench → wavesurfer.js
 ```
 
 ## Finding generation
 
-`aivoicebench/findings.py`:
+`aivoicebench/findings.py`：
 
-- Takes judge results with `dimension: finding_candidate` and `status: observed`
-- Converts to Finding 2.0.0 with severity mapping:
-  - critical → P0 defect
-  - high → P1 defect
-  - medium → P2 defect
-  - low → P3 defect
-  - info → observation (no severity)
-- Every finding has:
-  - `evidence_ids` linking to timeline audio time ranges
-  - `event_ids` linking to detected events
-  - `metric_ids` linking to computed metrics
-  - `suspected_layers` with `requires_log_verification: true`
-  - `status: needs_verification` (not confirmed until human review)
-  - `human_review: required` for defects
+- 接收 `finding_candidate` / `observed` Judge result；
+- 映射 severity 到 defect/observation；
+- 每个 Finding 保存 `evidence_ids`、`event_ids`、`metric_ids`、suspected layer 与 review 状态；
+- 缺少证据时不生成确定性结论；
+- defect 默认需要 human review。
 
 ## Report rendering
 
-`aivoicebench/report.py`:
+`aivoicebench/report.py` 输出 `report.md` 和 `report.json`，覆盖：运行摘要、设备信息、音频分段、对话轮次、事件时间线、指标、LLM 语义评估、Findings、Evidence 与 provenance。
 
-Produces `report.md` (human-readable) and `report.json` (structured):
+## Web Evidence Workbench — wavesurfer.js
 
-1. **运行摘要** — run status, counts
-2. **设备信息** — device/hardware/firmware/model/prompt/supplier
-3. **音频分段** — fused segments with speaker role, timing, text
-4. **对话轮次** — turn timeline with interruption/overlap flags
-5. **事件时间线** — all events with type, time range, source, confidence
-6. **指标** — metrics with values, status (observed/insufficient)
-7. **LLM 语义评估** — judge results: intent, meaningful response, feedback, quality
-8. **Findings** — severity, confidence, suspected layer, evidence refs
-9. **证据** — evidence with audio time ranges and source
-10. **溯源** — processor versions, model info, SHA256, invocation records
+Web 端音频证据审阅采用 [wavesurfer.js](https://github.com/katspaugh/wavesurfer.js)。首期使用：
+
+- Waveform core：显示选定的 Original/Normalized/Measurement Audio；
+- Regions：显示 acoustic segment、speaker cluster、turn、event、finding evidence；
+- Timeline：显示统一时间轴；
+- Minimap：长录音可选，用于快速导航。
+
+目标交互：
+
+```text
+Finding / Metric / Event
+        ↓ click
+Evidence ID → audio_relative_ms range
+        ↓
+wavesurfer seek / zoom / highlight Region
+        ↓
+同步 transcript / speaker / confidence / uncertainty / provenance
+```
+
+### 时间与事实边界
+
+wavesurfer.js **不是 Measurement Processor**：
+
+- 不在浏览器重新推导正式 speech boundary；
+- 不在前端计算 PRD-M 指标；
+- Region 坐标来自 AIVoiceBench Artifact/Evidence/EventTimeline；
+- 浏览器 seek/playback time 只用于 UI，不覆盖 `audio_relative_ms`；
+- 人工拖动 Region 如未来允许，必须产生 Human Revision，而不是原地覆盖机器 Evidence。
+
+这样可以把“可看见的波形编辑器”和“正式测量真值”严格分开。
 
 ## Commands
 
@@ -64,37 +75,21 @@ Produces `report.md` (human-readable) and `report.json` (structured):
 & ./.venv/Scripts/python.exe -m aivoicebench report --output artifacts/report --profile artifacts/profile.json --fused artifacts/fusion/fused-segments.json --turns artifacts/fusion/turns.json --timeline artifacts/fusion/timeline.json --metrics artifacts/fusion/metrics.json --judge artifacts/judge/judge-results.json --findings artifacts/findings/findings.json
 ```
 
-## Full pipeline (end-to-end)
-
-```
-acoustic → fusion → metrics → judge → findings → report
-```
-
-Historical synthetic fixture example, not a current Web result or real measurement:
-- 2 segments (tester: "今天天气怎么样？" / device: "嗯……好的，让我看看。南京今天天气晴朗。")
-- 1 turn, 7 events, 3 metrics, 5 judge results, 1 finding
-- Finding: [P2] high_latency (3000ms exceeds 2000ms threshold)
-- Suspected layer: llm, requires log verification
-- Report includes all audio time ranges for traceability
-
 ## Evidence-first
 
-Every finding, metric, and event links back to:
-- Evidence → audio time range → artifact → SHA256
-- Event → evidence_ids → audio snippet
-- Finding → evidence_ids + event_ids + metric_ids
-- LLM result → invocation_id → provider/model/prompt_version
+Every finding, metric, and event links back to：
 
-No conclusion is made without evidence. Insufficient evidence yields
-`insufficient_evidence`, not a guessed result.
+- Evidence → audio time range → artifact → SHA256；
+- Event → evidence_ids → audio snippet；
+- Finding → evidence_ids + event_ids + metric_ids；
+- LLM result → invocation_id → provider/model/prompt_version。
+
+No conclusion is made without evidence. Insufficient evidence yields `insufficient_evidence`, not a guessed result.
 
 ## Current limitations
 
-- Metrics module (#25) doesn't yet feed back LLM judge results to resolve
-  `insufficient_evidence` metrics (feedback_latency, meaningful_response_latency).
-  Both the metrics (insufficient) and judge results (observed) are shown in
-  the report — honest and transparent.
-- Findings are candidates (`needs_verification`), not confirmed. Human review
-  is required for all defects.
-- No Finding lifecycle (candidate → confirmed → regression case) — that
-  needs #26 human revision contract.
+- ImportRun 尚未执行完整 Judge/Findings 主链；
+- Findings 仍是 candidate / needs_verification；
+- Human revision lifecycle 尚未完整闭环；
+- wavesurfer.js Evidence Workbench 为 planned；
+- Active Measurement 的 durable audio/timeline 尚未完成，因此 Active waveform 只能在相应 Artifact 建立后接入。
