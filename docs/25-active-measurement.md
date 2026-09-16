@@ -2,71 +2,142 @@
 
 PRD refs: PRD-F023/F025/F026、PRD-M001–M010、PRD-N002/N003/N007。本文描述目标架构与分阶段实现边界；未标为 implemented 的能力不得按完成报告。
 
+2026-09-16 决策：正式主架构采用 **Linux Server + Docker Backend + Remote Chrome Browser Station**。Browser Station 现场生成音频 sample timebase；服务器可以远端计算，网络 RTT 不进入正式声学指标。VAD 近期分工为 TEN VAD（Browser Control）+ Silero VAD（Server finalized replay）。详见 [组件策略](26-remote-browser-component-strategy.md)。
+
 ## 1. Pipeline boundary
 
 ```text
+Remote Chrome Browser Station
 Browser Microphone
-       ↓ one physical PCM source
- ┌─────┴───────────────────────────────┐
- │ Control Plane                       │ Measurement Plane
- │ RMS VAD / Streaming ASR / Agent     │ durable Measurement Audio
- │ playback / timeout / UI             │ sample clock / integrity
- │ execution-record.json               │ EventTimeline / MetricResult
- └─────────────────────────────────────┘
+       ↓ one physical PCM source + local sample counter
+ ┌─────┴────────────────────────────────────┐
+ │ Control Plane                            │ Measurement Plane
+ │ TEN VAD target / RMS fallback            │ durable Measurement Audio
+ │ Streaming ASR / playback / timeout / UI  │ frame sequence / integrity
+ │ execution-record.json                    │ local sample timebase
+ └──────────────────────────────────────────┘
+                     │ HTTPS / WebSocket
+                     ▼
+             Linux Server + Docker
+                     │
+      ┌──────────────┴──────────────┐
+      │ orchestration / providers   │
+      │ Silero finalized replay     │
+      │ EventTimeline / MetricResult│
+      └─────────────────────────────┘
 ```
 
 Active Measurement 与 Recording Analysis 都是正式 Measurement Pipeline。前者的声学原件固定标识为 `ART-live-measurement-audio-*`，后者为 `ART-external-recording-*`；不得把同一音频绕行 Recording Analysis 后称为 Active Result，也不得把 execution record 改名为 Timeline。
 
-## 2. Measurement Audio contract
+## 2. Remote Browser Station contract
 
-每次 Active Run 在第一句播放前开始持续采集，到完成、用户停止、失败或连接中断为止。基础 Artifact 使用 PCM16LE / 16 kHz / mono WAV，并记录：artifact/run/session identity、source、path、SHA-256、sample rate/channels/encoding/bit depth、sample count、captured sample count、gap-filled sample count、capture start/end、frame size/count、dropped/duplicate/gap/stale frames、浏览器可提供的设备设置、结束原因和 `measurement_policy_version`。
+Browser Station 是现场 audio I/O endpoint，不是业务后端。每次 Session/Run 至少记录：
 
-传输帧使用固定长度 `[4B big-endian sequence][PCM16LE]`。序号必须按“浏览器产生的帧”递增，而不是只按成功发送的帧递增，使背压丢帧在下一已收帧处表现为 gap。服务端拒绝奇数字节、非固定 frame size 和错误格式；duplicate/stale frame 不重复写入。缺口用显式零样本填充以维持 sample clock，并同时记录 gap frame/sample 数；含 gap 的 Artifact 可保存审计，但是否可用于某个指标由 Measurement Policy 决定。
+```text
+station_id
+browser / browser_version
+os
+input device metadata
+output device metadata
+requested media constraints
+actual MediaTrackSettings
+sample_rate / channels / encoding
+AudioContext state
+frame size / sequence
+sample counter
+capture start/end reason
+```
 
-正常完成写 `status=complete`；用户取消、断连或控制失败写 `partial` 并保留已接收样本；无法形成合法 WAV/metadata 写 `invalid`。停止后 Artifact 只读，SHA 和 sample count 必须能从 WAV 复核。
+`echoCancellation`、`noiseSuppression`、`autoGainControl` 等必须同时记录 requested 与 actual；不能假定浏览器一定按请求生效。
 
-## 3. Time bases
+远端正式部署使用 HTTPS/WSS 以满足浏览器 secure-context 与麦克风权限要求。Provider secret 只存在于 Linux Server。
+
+## 3. Measurement Audio contract
+
+每次 Active Run 在第一句播放前开始持续采集，到完成、用户停止、失败或连接中断为止。基础 Artifact 使用 PCM16LE / 16 kHz / mono WAV，并记录 artifact/run/session/station identity、source、path、SHA-256、sample rate/channels/encoding/bit depth、sample count、captured sample count、gap-filled sample count、capture start/end、frame size/count、dropped/duplicate/gap/stale frames、浏览器实际设备设置、结束原因和 `measurement_policy_version`。
+
+传输帧使用固定长度 `[4B big-endian sequence][PCM16LE]`。序号按“浏览器产生的帧”递增，而不是只按成功发送的帧递增，使背压/断网丢帧在下一已收帧处表现为 gap。服务端拒绝奇数字节、非固定 frame size 和错误格式；duplicate/stale frame 不重复写入。缺口用显式零样本填充以维持 sample clock，并同时记录 gap frame/sample 数；含 gap 的 Artifact 可保存审计，但是否可用于某个指标由 Measurement Policy 决定。
+
+网络排队不会改变 `sample_index`。即使服务器晚到数百毫秒收到 frame，正式声学边界仍按 Browser Station 原始 sample timeline 解释。
+
+## 4. Time bases
 
 | Clock | 用途 | 能否直接成为正式声学边界 |
 | --- | --- | --- |
-| audio sample clock | `sample_index / sample_rate`，Event/Evidence 的 `audio_relative_ms` | 是，首选 |
+| browser audio sample clock | `sample_index / sample_rate`，Event/Evidence 的 `audio_relative_ms` | **是，首选** |
 | client monotonic | 浏览器调度、挂起/恢复诊断 | 否 |
 | server monotonic | 会话、处理和 transport latency 诊断 | 否 |
 | wall clock | 审计、跨 Artifact 粗关联 | 否 |
 | WebSocket receive time | transport/jitter 诊断 | 否 |
+| ASR provider timestamp | 文字/语义与 provider timing evidence | 否，不自动成为 acoustic truth |
 
-## 4. Stimulus Reference interface
+核心原则：**计算可以远，音频时间轴必须在现场生成。**
+
+## 5. VAD / Acoustic Boundary 分工
+
+### 5.1 Browser Control — TEN VAD
+
+目标实现使用 TEN VAD Web/WASM 在 Browser Station 产生低延迟 provisional/control observation：
+
+```text
+speech_suspected_start
+speech_suspected_end
+```
+
+每个 observation 必须保存 local sample index、source=`ten_vad`、policy/model version 与必要诊断。现有 RMS VAD 继续显式保留为 fallback/debug；事件 source 不得混淆。
+
+TEN VAD 的正式引入还受其许可证附加条件审查约束；文档选型不等于 production dependency accepted。
+
+### 5.2 Server Finalization — Silero VAD
+
+Linux Server 对 durable Measurement Audio 做 finalized replay，首个模型型 baseline 使用 Silero VAD。它输出正式候选 acoustic boundaries，继续携带 confidence/uncertainty/processor/policy provenance。
+
+TEN provisional 与 Silero finalized 不一致时保留冲突，不静默覆盖。未来可以做 TEN replay 与 Silero 对照，但不创建两套 Metric 公式。
+
+### 5.3 VAD 不是 ASR 前置
+
+VAD 与 Streaming ASR 并行：VAD 提供 acoustic/control boundary evidence，ASR 提供 text/semantic/provider endpoint evidence。ASR 可以处理连续流，不要求先由 VAD 切成文件段。
+
+## 6. Stimulus Reference interface
 
 每个实际播放资产保存 immutable reference：artifact ID、turn/playback identity、相对路径、SHA-256、sample rate、channels、encoding、sample count。`playback_started/ended` 只提供 alignment 搜索窗口先验。
 
 后续 `StimulusAligner` 接口接收 Measurement Audio + Stimulus Reference + search window，输出 match interval、correlation/confidence、uncertainty、processor/policy version 和 evidence refs。弱匹配、多重匹配、截断或 capture gap 覆盖关键区域时弃权；绝不把 callback 时间直接输出成 `tester_speech_start/end`。
 
-## 5. AcousticBoundaryPolicy
-
-策略与执行方式解耦。`AcousticBoundaryPolicy` 至少版本化 frame/hop、rolling noise estimator、start/end threshold、hysteresis、min speech、min silence、merge gap 和 boundary uncertainty。`StreamingAcousticSegmenter` 必须 causal；Batch replay 可驱动同一 state machine 验证。
-
-当前 `EnergyVadSegmenter 1.0.0` 使用完整文件的 10th percentile noise floor 和 global peak，属于 Recording Analysis Batch Algorithm，不能作为严格 Streaming 实现。阶段性保留是兼容选择，不宣称与未来 Streaming policy 完全等价。
-
-## 6. Canonical events and metrics
+## 7. Canonical events and metrics
 
 Online Event Producer 与 Offline Event Producer 都输出现有 Canonical Event 类型。Active 使用已对齐 stimulus 形成 tester evidence，剩余 speech 仅作 device candidate；unknown 不强制分配。每个正式事件引用 Measurement Audio Evidence，并记录 `audio_relative_ms`、confidence、uncertainty、producer 和 policy version。
 
-两个 Pipeline 都调用 `compute_timeline_metrics(...)`；同一 canonical fixture 必须得到相同指标数值。`execution_kind` 继续表达 hardware/imported/synthetic 等执行性质；后续 contract bump 用独立 `measurement_pipeline=active_measurement|imported_recording` 与 `finalization_state` 表达来源和生命周期，避免重载旧字段或破坏 2.0/3.0 历史读取。
+两个 Pipeline 都调用 `compute_timeline_metrics(...)`；同一 canonical fixture 必须得到相同指标数值。`execution_kind` 继续表达 hardware/imported/synthetic 等执行性质；后续 contract bump 用独立 `measurement_pipeline=active_measurement|imported_recording` 与 `finalization_state` 表达来源和生命周期。
 
-现有 Canonical Event source 继续使用 `audio_signal`；Active/Recording 的区别由 owning artifact、measurement pipeline、producer 和 policy provenance 表达，不为了来源不同发明 `live_*` 事件类型或平行 taxonomy。
+## 8. Barge-in boundary
 
-## 7. Barge-in boundary
+普通 turn-taking 是第一闭环。单麦克风混音下，普通 VAD 无法可靠确定 tester 与旧 device response 重叠时的独立 stop boundary。没有 stimulus reference cancellation/AEC/loopback/source-aware evidence 时，PRD-M005/M006/M007/M009 保持 `insufficient_evidence`。已有 Control VAD 可触发打断，但不能证明正式 Barge-in metric。
 
-普通 turn-taking 是第一闭环。单麦克风混音下，Energy VAD 无法可靠确定 tester 与旧 device response 重叠时的独立 stop boundary。没有 stimulus reference cancellation/AEC/loopback/source-aware evidence时，PRD-M005/M006/M007/M009 保持 `insufficient_evidence`。已有 Control VAD 可触发打断，但不能证明正式 Barge-in metric。
+## 9. Windows Native / Audio Station 边界
 
-## 8. Implementation status at design convergence
+当前没有必要把 AIVoiceBench 直接运行在 Windows。原生 Windows/WASAPI 的价值仅在未来出现专业 HIL 需求时：loopback、专用声卡、多通道、低层 driver timestamp、USB/串口等。
+
+未来形态应是：
+
+```text
+Linux AIVoiceBench Server
+        ↕
+Browser Station 或可选 Windows Audio Station Agent
+```
+
+而不是迁移整个 Server。
+
+## 10. Implementation status at design convergence
 
 | Capability | Status |
 | --- | --- |
-| Active Measurement Audio | planned；本轮仅完成 docs，列为下一实现阶段 |
-| Stimulus Reference storage/interface | planned；第一阶段建立基础引用，不做伪 alignment |
+| Remote Browser Station architecture | decided；实现/远端真实部署验收 pending |
+| TEN VAD Browser Adapter | planned；RMS fallback 已有 |
+| Active Measurement Audio | planned |
+| Stimulus Reference storage/interface | planned |
 | Stimulus Alignment | planned |
-| Streaming Acoustic Measurement | planned |
+| Silero finalized Acoustic Provider | planned |
 | Canonical Live EventTimeline | planned |
 | Unified Metric Engine | Recording Analysis implemented/partial；Active wiring planned |
 | Measurement Equivalence | validation_pending |
