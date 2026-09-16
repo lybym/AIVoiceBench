@@ -186,25 +186,56 @@ def _load_run(directory):
             return doc.get('data') or {}
         return doc if isinstance(doc, dict) else {}
     def audio_qa():
-        """QA facts for the canonical artifact, whatever the QA envelope's own status is.
+        """QA facts for the canonical artifact, across the Run's AnalysisRevisions.
 
         A completed QA envelope carries the measurements as its data. An abstaining
         envelope cannot carry data, so the measurements are read from the registered
         canonical metadata document or from the separately published condition
         document. Either way these are measurements and validity conditions, never a
         recognition, accuracy or acceptance verdict.
+
+        Canonical audio QA is measured once per Run and preserved by `resume`, which
+        deliberately keeps the ingestion/normalization/audio_qa stage state while
+        creating a new analysis directory without re-emitting the QA envelope. Reading
+        only the current revision would therefore report "never measured QA" next to a
+        `partial` QA ledger. The current revision's envelope wins when it exists; the
+        manifest's latest registered `audio-qa` artifact is the fallback.
+
+        A Run measured before conditions existed has measurements but no conditions.
+        It is reported as `unassessed` rather than as an empty list, so an absent
+        condition set can never be mistaken for a satisfied one.
         """
-        envelope = _read(root / 'audio-qa.json')
-        if not isinstance(envelope, dict):
-            return {}
-        data = envelope.get('data')
-        if isinstance(data, dict) and data:
+        def view(envelope, measurements):
+            resolved = dict(measurements)
+            if 'conditions' not in resolved:
+                resolved['conditions'] = [{
+                    'condition_id': 'conditions_version', 'status': 'unassessed',
+                    'basis': 'this Run predates recorded Audio QA conditions',
+                    'limitation': 'Absent conditions are not satisfied conditions; re-import to measure them'}]
             return {'status': envelope.get('status'), 'reason': envelope.get('reason'),
-                    'measurements': data}
+                    'measurements': resolved}
         if not unified:
             return {}
         registered = {item['artifact_id']: item for item in manifest.get('artifacts', [])}
-        for ref in envelope.get('artifact_refs', []):
+        current = _read(root / 'audio-qa.json')
+        envelope = current if isinstance(current, dict) and current else None
+        if envelope is None:
+            latest = next((item for item in reversed(manifest.get('artifacts', []))
+                           if item['kind'] == 'audio-qa'), None)
+            if latest is None:
+                return {}
+            candidate = _read(directory / latest['path'])
+            if not isinstance(candidate, dict) or not candidate:
+                return {}
+            # The measurements live in the documents this envelope references, exactly as
+            # they do for the current revision, so follow its own refs.
+            envelope, registered_refs = candidate, list(candidate.get('artifact_refs', []))
+        else:
+            registered_refs = list(envelope.get('artifact_refs', []))
+        data = envelope.get('data')
+        if isinstance(data, dict) and data:
+            return view(envelope, data)
+        for ref in registered_refs:
             artifact = registered.get(ref)
             if artifact is None:
                 continue
@@ -215,8 +246,7 @@ def _load_run(directory):
             measurements = (published.get('measurements') if artifact['kind'] == 'audio_qa_conditions'
                             else published.get('normalized'))
             if isinstance(measurements, dict) and measurements:
-                return {'status': envelope.get('status'), 'reason': envelope.get('reason'),
-                        'measurements': measurements}
+                return view(envelope, measurements)
         return {}
     if unified:
         timeline = timeline.get('data') or {}

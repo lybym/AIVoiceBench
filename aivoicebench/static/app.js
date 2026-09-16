@@ -47,14 +47,18 @@ function diarizationNote(d){
 }
 function audioQaNote(d){
   // Facts measured on the canonical artifact. These are never a recognition,
-  // accuracy or acceptance verdict, so no pass/fail wording is used.
-  const qa=d.audio_qa||{};const m=qa.measurements||{};const conditions=m.conditions||[];const stage=d.stages?.audio_qa||{};
-  if(!m.duration_ms&&!conditions.length)return '';
-  const facts=m.duration_ms?`时长 ${(m.duration_ms/1000).toFixed(1)} s · ${esc(m.encoding||'')} · ${esc(m.channels??'')} 声道 · ${esc(m.sample_rate_hz??'')} Hz`:'';
+  // accuracy or acceptance verdict, so no pass/fail wording is used. The stage
+  // state and reason are rendered even when no measurements are readable, so an
+  // abstention (or a Run whose QA document is missing) is never silently dropped.
+  const qa=d.audio_qa||{};const m=qa.measurements||null;const conditions=(m&&m.conditions)||[];const stage=d.stages?.audio_qa||{};
+  if(!m&&!stage.status&&!stage.reason)return '';
+  const facts=m&&m.duration_ms?`时长 ${(m.duration_ms/1000).toFixed(1)} s · ${esc(m.encoding||'')} · ${esc(m.channels??'')} 声道 · ${esc(m.sample_rate_hz??'')} Hz`:'';
   const rows=conditions.map(c=>`<li>${esc(c.condition_id)}：${esc(c.status)} — ${esc(c.basis||'')}<small>${esc(c.limitation||'')}</small></li>`).join('');
-  return '<h3>音频质量检查</h3><p>'+facts+(facts&&stage.status?' · ':'')+(stage.status?esc(labels[stage.status]||stage.status):'')+'</p>'+
+  const header=[facts,stage.status?esc(labels[stage.status]||stage.status):''].filter(Boolean).join(' · ');
+  return '<h3>音频质量检查</h3><p>'+(header||'未获得音频质量测量')+'</p>'+
     (stage.reason?'<p>'+esc(stage.reason)+'</p>':'')+
     (rows?'<ul>'+rows+'</ul>':'')+
+    (!m?'<p>本记录没有可读取的音频质量测量值。</p>':'')+
     '<p>以上只报告测量事实与有效性条件，不构成识别质量、准确率或验收结论。</p>';
 }
 function tab(name){document.querySelectorAll('[data-tab]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.tab===name)));const d=current;let html='';if(name==='segments'){const segments=d.transcript?.segments?.length?d.transcript.segments:(d.fused_segments.length?d.fused_segments:d.acoustic_segments);const byNative=new Map((d.speaker_segments||[]).map(s=>[String(s.native_speaker_id),s]));const roles=new Map(((d.attribution||{}).attributions||[]).map(a=>[a.speaker_id,a.role]));const clusterOf=s=>byNative.get(String(s.speaker_id));html='<h2>转写与语音片段</h2><p>转写时间是 ASR 估计，非精确声学边界；说话人聚类与角色判定是两件事。</p>'+diarizationNote(d)+attributionNote(d)+segments.map(s=>{const c=clusterOf(s);const role=(c&&roles.get(c.speaker_id))||s.speaker_role||'unknown';const roleInfo=c?roles.get(c.speaker_id):null;const cluster=c?'<small>聚类 '+esc(String(c.speaker_id).split(':').pop())+'（服务原生标签 '+esc(String(c.native_speaker_id))+'）</small>':'';const review=s.role_attribution?.needs_review?' <small>待复核</small>':'';return `<div class="segment"><button data-time="${Number(s.start_ms)/1000}">${(Number(s.start_ms)/1000).toFixed(2)} – ${(Number(s.end_ms)/1000).toFixed(2)} s</button><div><strong>${esc(roleNames[role]||'角色待确认')}</strong>${review}${cluster}${s.text_attribution==='ambiguous_spans_speakers'?'<small>该句跨越多个说话人，未归属给任一角色</small>':''}<p>${esc(s.text||'暂无转写文本')}</p></div></div>`;}).join('');if(!segments.length)html+='<div class="empty">没有可用的语音片段，请查看报告中的处理状态。</div>';}
