@@ -1,8 +1,8 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.5.1
+prd_version: 1.5.2
 status: modularized_for_owner_review
-updated: 2026-09-13
+updated: 2026-09-16
 implementation_baseline: v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd
 main_baseline: 9632844da6ddcef757fd7df20a6bb12e46853cdd
 ---
@@ -53,13 +53,29 @@ Online Event Producer                      Offline Event Producer
 
 1. Evidence First：每个结论可回溯到 Run、Turn、Event、Artifact 区间、Evidence 与处理器/模型版本；证据不足时弃权，不猜测。
 2. Control Evidence、Active Measurement Evidence 与 External Recording Evidence 分层保存；控制成功、播放完成或 ASR final 不等于正式测量通过。
-3. Active 正式声学时间以 `sample_index / sample_rate` 的 `audio_relative_ms` 为准。播放 callback、wall/monotonic clock、接收时间和 provider timestamp 只可作控制、诊断或对齐先验。
+3. Active 正式声学时间以 **Browser Station 现场产生的** `sample_index / sample_rate` 的 `audio_relative_ms` 为准。播放 callback、wall/monotonic clock、服务器接收时间和 provider timestamp 只可作控制、诊断或对齐先验。
 4. 外部 ASR 不等于设备内部 ASR；混音不伪装成独立声道；无法可靠归属或识别边界时输出 unknown、needs_review、insufficient_evidence 或 invalid。
 5. 原件、机器输出和人工修订分层保存；不以人工更正覆盖原始 Artifact。长期凭据只由后端持有。
 
-### 交付与路线边界
+### 交付与部署边界
 
-交付形态是 Docker 后端与 Web UI，经 Windows 浏览器使用。普通电脑扬声器与麦克风是 M2 的基础能力；专业 HIL、同步校准、loopback 和 Remote Station 是 P3 扩展。Recording Analysis 使用 File ASR；Active 控制使用 Streaming ASR。二者的 provider timestamp 都不直接充当正式声学边界。
+正式交付形态确定为：
+
+```text
+Remote Chrome Browser Station
+        ↓ HTTPS / WebSocket
+Linux Server + Docker Backend
+```
+
+- Browser Station 负责现场音频 I/O、AudioWorklet、sample counter、capture integrity、控制 VAD 与 UI。
+- Linux Server 负责 Run 编排、ASR/模型调用、持久化、声学最终化分析、Fusion、Metrics、Judge、Findings 和 Report。
+- **原生 Windows 应用不是当前交付要求。** Windows Native/WASAPI 只作为未来专业 HIL Station Agent 的可选扩展，不要求把整个 AIVoiceBench 后端迁出 Linux/Docker。
+- 网络 RTT 与服务器调度延迟可以影响交互控制，但不得进入正式声学指标；核心原则是：**计算可以远，音频时间轴必须在现场生成。**
+- 当前浏览器主目标仍是 Chrome；正式远端部署必须满足浏览器安全上下文要求并记录实际音频 constraints/settings。
+
+普通电脑扬声器与麦克风是 M2 的基础能力；专业 HIL、同步校准、loopback 和低层声卡接口是 P3 扩展。Recording Analysis 使用 File ASR；Active 控制使用 Streaming ASR。二者的 provider timestamp 都不直接充当正式声学边界。
+
+具体技术选择见 [Remote Browser Station 与开源组件策略](26-remote-browser-component-strategy.md)：近期采用 TEN VAD（浏览器控制）+ Silero VAD（服务器离线/最终化分析），Recording Analysis 优先使用火山 ASR 的 speaker separation，当前不接 3D-Speaker，Evidence UI 采用 wavesurfer.js。这些是实现决策，不改变 Evidence First 与 Provider 可替换原则。
 
 ## 3. 需求目录
 
@@ -73,7 +89,7 @@ Online Event Producer                      Offline Event Producer
 | F018–F019 | Compare 与 Frozen Golden Voice | P2/P1 | ⬜ planned | [Recording Analysis](prd/recording-analysis.md) |
 | F020–F021 | Fixed Runner 与 Free Test Agent | P1 / M2–M3 | 🟡 partial | [Active Measurement](prd/active-measurement.md) |
 | F022 | 专业 HIL / Station | P3 | ⏸ deferred | [Active Measurement](prd/active-measurement.md) |
-| F023 | 基础播放与持续麦克风采集 | P1 / M2 | 🟡 partial | [Active Measurement](prd/active-measurement.md) |
+| F023 | 远端 Browser Station 基础播放与持续麦克风采集 | P1 / M2 | 🟡 partial | [Active Measurement](prd/active-measurement.md) |
 | F024 | Execution/Analysis Run 独立关联 | P1 / M2–M4 | ⬜ planned | [Active Measurement](prd/active-measurement.md) |
 | F025 | Active Measurement Pipeline | P1 / M2 | ⬜ planned | [Active Measurement](prd/active-measurement.md) |
 | F026 | Measurement Equivalence Validation | P1 / M4 | ⬜ planned | [Active Measurement](prd/active-measurement.md) |
@@ -87,7 +103,7 @@ P0/P1 表示开发先后，不表示产品可选性。M1 是 Recording Analysis 
 | 里程碑 | 目标 |
 | --- | --- |
 | M1 | 独立 External Recording 的可信导入、分析、证据和人工验收闭环 |
-| M2 | Fixed Active Test 与独立 Live Measurement Audio 的最小正式结果闭环 |
+| M2 | Remote Browser Station 上的 Fixed Active Test 与独立 Live Measurement Audio 最小正式结果闭环 |
 | M3 | 受控 Free Test Agent、实时控制、预算/Coverage 与真实设备证据 |
 | M4 | 可复核的独立关联与 Measurement Equivalence |
 | M5 | Compare、Regression 与由经复核问题最小化而来的固定 Case |
@@ -111,6 +127,6 @@ P0/P1 表示开发先后，不表示产品可选性。M1 是 Recording Analysis 
 
 ## 5. 当前审计与历史入口
 
-当前实现基线是 `v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd`，也是发布时的 main 提交。该基线收敛 alpha.6 自由对话修复、语义角色提议与模块化 PRD；历史提交、预发布、Issue/PR 和工作日志仍作为审计证据。当前追踪和主要缺口见 [Requirement 追踪与审计结论](prd/traceability.md)，版本演进见 [PRD 变更历史](prd/changelog.md)。
+当前**实现基线**仍是 `v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd`；本次 1.5.2 只收敛部署与组件路线决策，不升级代码实现状态。历史提交、预发布、Issue/PR 和工作日志仍作为审计证据。当前追踪和主要缺口见 [Requirement 追踪与审计结论](prd/traceability.md)，版本演进见 [PRD 变更历史](prd/changelog.md)。
 
-技术专题文件不构成平行 PRD：例如 [Active Measurement 设计](25-active-measurement.md) 说明实现边界，[指标定义](03-metric-definition.md) 说明契约与公式，[Roadmap](04-development-roadmap.md) 说明实施顺序。
+技术专题文件不构成平行 PRD：例如 [Active Measurement 设计](25-active-measurement.md) 说明实现边界，[组件策略](26-remote-browser-component-strategy.md) 记录 2026-09-16 的技术决策，[指标定义](03-metric-definition.md) 说明契约与公式，[Roadmap](04-development-roadmap.md) 说明实施顺序。
