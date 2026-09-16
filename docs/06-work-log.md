@@ -1236,3 +1236,9 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - [Release workflow 34761267354](https://github.com/lybym/AIVoiceBench/actions/runs/34761267354) 全部步骤成功：从精确 main 提交构建、smoke、镜像导出/重载、固定对话 16/16、候选镜像浏览器验收、集成验收、附件校验与 Release 创建。
 - [`v0.4.0`](https://github.com/lybym/AIVoiceBench/releases/tag/v0.4.0) 为非 Draft、非 Pre-release，并已接管 GitHub Latest。镜像归档 `aivoicebench-v0.4.0.tar.gz` 大小 326,478,654 字节，SHA-256 `2622fc6b2fc6717481569aedd925a1bb5ac0edaee07ed4f72d43e87a321f6d32`；Release 的 5 个附件均处于 uploaded 状态。
 - 发布事实不升级真实验收：真实 5–20 分钟录音、真实 File ASR 质量、人工角色复核、实体设备声学测量、Active Measurement Audio 与 Measurement Equivalence 仍保持 pending；未提交 Secret、真实用户录音或个人报告。
+
+## 2026-09-16 — PRD 1.5.2 远端 Browser Station 与组件路线收敛（PR #83）
+
+- **范围与 Requirement ID。** 本次为 docs-only 的产品/架构决策收敛：PRD-F023 明确现场 Remote Chrome Browser Station 与 Linux Server + Docker Backend 的职责分界，并将现场 sample clock 作为正式声学时间基；PRD-F025 明确 Browser TEN VAD 用于 provisional/control boundary、Linux Silero VAD 作为第一阶段最终化分析基线。PRD-F006 优先消费火山 File ASR 的匿名 speaker labels，且不把它们升级为 tester/device 真值；PRD-F014 选择 wavesurfer.js 作为 Evidence Workbench 的波形与区间交互层。Windows Native/WASAPI 仍是未来专业 HIL Station Agent，3D-Speaker 不进入当前阶段。
+- **审阅与文档校验。** 已逐项核对 PRD 入口、F006/F014 Recording Analysis 分册、F023/F025 Active Measurement 分册、架构、方法论、路线图、组件策略与 API/证据专题的交叉链接和 Requirement ID 引用；链接目标均存在，PRD 1.5.2 变更历史与实现基线 `v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd` 一致。引用边界保持：Browser Station 现场 `audio_relative_ms` 是正式声学时间，server receive time、网络 RTT、ASR/LLM 时间戳仅用于控制、诊断或对齐先验；匿名 speaker labels、UI Regions 和 ASR endpoint 不产生角色或声学真值。
+- **验证与限制。** PR #83 的 docs-only CI（`browser-acceptance`、Ubuntu/Windows `contracts`）通过；本次未执行应用组件测试、Docker/Release 测试、TEN VAD/Silero/wavesurfer 集成或许可证验收、火山 speaker separation 真实服务/真实录音验收、实体设备 Browser Station 验收或 Measurement Equivalence 验收。上述组件和真实验证仍为 planned/pending，未因文档决策升级实现或验收状态。
