@@ -399,10 +399,35 @@ def _continue_import(run, source, audio_processor, asr_provider_factory, model_s
         run.manifest['stages']['normalization'].update(status='insufficient_evidence', reason='Original source unavailable')
     if normalized:
         result, artifact_id = normalized
+
         def emit_qa():
-            item = run.envelope('audio-qa', 'complete', 'Measurements only; no acceptance threshold configured',
-                                result.metadata['normalized'], [artifact_id])
-            return [item], result.metadata['normalized'], None
+            qa = result.metadata['normalized']
+            insufficient = [item['condition_id'] for item in qa.get('conditions', [])
+                            if item['status'] == 'insufficient']
+            if insufficient:
+                # The envelope must abstain (an abstaining evidence state cannot carry
+                # measurement data), so the real measurements are published as their own
+                # registered document. Abstention never deletes evidence, and the Run
+                # still points at both documents through the envelope's refs.
+                reason = ('Canonical audio measured, but Audio QA conditions are not satisfied: '
+                          + ', '.join(insufficient))
+                conditions = run.analysis / 'audio-qa-conditions.json'
+                write_json(conditions, {'schema_version': '1.0.0', 'run_id': run.manifest['run_id'],
+                    'analysis_id': run.manifest['analysis_id'], 'recording_sha256': run.manifest['original_sha256'],
+                    'status': 'insufficient_evidence', 'reason': reason, 'measurements': qa})
+                conditions_id = run.register(conditions, 'audio_qa_conditions', [artifact_id],
+                                             'audio_qa:1.0.0')
+                item = run.envelope('audio-qa', 'insufficient_evidence', reason, None,
+                                    [artifact_id, conditions_id])
+            else:
+                reason = ('Measurements only; no acceptance threshold configured and no '
+                          'recognition or measurement accuracy is claimed')
+                item = run.envelope('audio-qa', 'complete', reason, qa, [artifact_id],
+                                    data_artifact_ref=artifact_id)
+            # The envelope carries the precise evidence state; the stage reason is what
+            # makes that state visible in the Run ledger next to the other stages.
+            return [item], qa, (reason if insufficient else None)
+
         run.execute('audio_qa', [artifact_id], emit_qa)
         if asr_provider_factory is not None:
             run.execute('asr', [artifact_id] + _configuration_refs(run), lambda: _asr(run, result.path, artifact_id, asr_provider_factory))

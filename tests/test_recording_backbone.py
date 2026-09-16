@@ -99,6 +99,34 @@ class BackboneTests(unittest.TestCase):
         with TestClient(api.app) as restarted:
             self.assertEqual(restarted.get('/api/runs/'+data['run_id']).json()['transcript'],data['transcript'])
             self.assertEqual(restarted.get(data['audio_url']).status_code,200)
+
+    def test_audio_qa_is_readable_through_the_run_view_after_restart(self):
+        """QA facts and their conditions come from the persisted documents, not memory."""
+        transport=Transport();data,directory,manifest=self.upload(transport)
+        # The synthetic fixture here is a silent tone, so QA must abstain in the
+        # envelope (data: null) while still publishing the real measurements.
+        self.assertEqual(data['stages']['audio_qa']['status'],'partial')
+        stored=json.loads((directory/'analysis'/manifest['analysis_id']/'audio-qa.json')
+                          .read_text(encoding='utf-8'))
+        self.assertEqual(stored['status'],'insufficient_evidence')
+        self.assertIsNone(stored['data'])
+        self.assertIn('nonempty_signal',stored['reason'])
+        qa=data['audio_qa']
+        self.assertEqual(qa['status'],'insufficient_evidence')
+        self.assertEqual(qa['reason'],stored['reason'])
+        self.assertEqual((qa['measurements']['container'],qa['measurements']['encoding'],
+                          qa['measurements']['channels'],qa['measurements']['sample_rate_hz']),
+                         ('wav','PCM_S16LE',1,16000))
+        self.assertTrue(qa['measurements']['all_silent'])
+        self.assertEqual(qa['measurements']['peak'],0)
+        conditions={c['condition_id']:c for c in qa['measurements']['conditions']}
+        self.assertEqual(conditions['decodable_canonical_audio']['status'],'met')
+        self.assertEqual(conditions['nonempty_signal']['status'],'insufficient')
+        self.assertFalse(any(c['status'] in ('pass','fail') for c in qa['measurements']['conditions']))
+        with TestClient(api.app) as restarted:
+            run=restarted.get('/api/runs/'+data['run_id']).json()
+            self.assertEqual(run['audio_qa'],data['audio_qa'])
+            self.assertEqual(run['stages']['audio_qa']['reason'],data['stages']['audio_qa']['reason'])
         readiness=ModelSettings(self.runs/'.model-settings').capture()[0]['readiness']
         # Diarization is now integrated through the same ASR profile: the single
         # recognition response already carries speaker labels, so the route is

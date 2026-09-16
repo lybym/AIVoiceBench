@@ -61,6 +61,8 @@ RecordingRun 1.0 is a new workflow-specific manifest; the preparation RunManifes
 
 Artifacts have unique IDs, relative paths, size/hash, parent IDs and processor labels. A normalized artifact points to the immutable original. Metadata/audit files record converter version and executable hash, exact downmix/resample options, source container/codec/rate/channels/start-time fields and derived duration. `recording_run_errors(manifest, root)` verifies paths, all file hashes, parent ordering and stage references. Failed conversion may retain incomplete files only as diagnostics; they are not registered as normalized audio.
 
+`GET /api/runs/{run_id}` returns the canonical audio QA as `audio_qa`: `{status, reason, measurements}`. `measurements` comes from the `audio-qa` envelope's own data when that stage completed, and otherwise from the registered document the envelope references (`audio-qa-conditions.json`, or the canonical `audio-metadata.json`), so the measured facts stay readable even when QA abstains. It is a read view of persisted documents, not a second QA computation, and `{}` means the Run never produced QA.
+
 Each re-import creates a new Run and Analysis ID while the unchanged source hash ties attempts together. Same normalized bytes are checked for the same local configuration; cloud output equality is not assumed. Explicit ASR resume retains the Run and creates an AnalysisRevision; completed ASR/report does not rerun. Full in-Run reanalysis and manual Annotation application belong to #26; no raw output is overwritten here. The manifest is an atomic progress checkpoint, not an immutable analysis result. Disk/filesystem failure can prevent further checkpoints/reports; existing original artifacts are never deliberately removed.
 
 ## Timing and quality limits
@@ -69,11 +71,15 @@ Conversion uses an explicit stream, PCM16, 16kHz, equal-weight stereo downmix if
 
 Canonical sample time is exact relative to its own decoded waveform. Original codec padding/edit lists and presentation time can affect mapping to the source container. Those start fields and duration differences are retained; source offset and uncertainty remain unknown/needs_review rather than false millisecond precision. None of these sample mappings establishes a speech onset, speaker role or device latency. Peak/RMS/DC/clipping/silence are measurements, not an invented quality gate.
 
+Audio QA publishes those measurements together with explicit validity conditions in the `audio-qa` envelope, in `audio-metadata.json` (`normalized.conditions`) and, when QA abstains, in `audio-qa-conditions.json`. Each condition states its basis and its limitation: `decodable_canonical_audio` is `met` when FFmpeg produced canonical samples, and `nonempty_signal` is `unassessed` while no energy threshold is configured, or `insufficient` when the canonical waveform has zero energy. A recording whose only unmet condition is `nonempty_signal` keeps `audio-qa` as `insufficient_evidence` with `data: null`, while the same measurements are published in the registered condition document, so abstention never deletes evidence. No condition is ever reported as pass/fail, and none of them claims recognition quality, ASR accuracy or measurement accuracy.
+
 The existing ASR provider limit remains 10 minutes by default for compatibility; the import caller explicitly allows up to 30 minutes. Vosk results remain external ASR with provider-estimated timestamps and unknown timing confidence/role. Unscripted ASR does not become device ASR truth.
 
 ## Validation and remaining acceptance
 
 Tests use synthetic tones to exercise actual WAV/MP3/AAC-in-M4A decoding, 44.1kHz stereo → 16kHz mono, canonical sample preservation, 20-minute conversion/ASR preparation, source tampering/truncation, profile/ref validation, missing tools, failed ASR, repeat import isolation and secret-safe failure logs. Generated Chinese speech also exercises actual Vosk transcription inside an imported Run. Neither is a real tester/device conversation acceptance.
+
+Ingestion refusals are covered as durable states rather than silent gaps: a corrupt, truncated, empty or unmappable recording (for example a multichannel WAV or an unsupported `.txt` container) keeps its Run, records the refusal reason in `manifest.json`, leaves `original_sha256` null and registers no `original_recording`, and still writes a report. `test_import.py` also re-reads a completed Run from disk alone and re-hashes every registered artifact, proving that reading a Run needs no in-memory process state; the CI `Recording backbone container` workflow performs the equivalent check across a `docker restart`.
 
 Remaining: real ASR/speaker-label verification, automatic role/semantic association, Judge/Findings/full report integration, human revisions and full Windows-browser/real-recording acceptance. No Windows executable or professional HIL is a prerequisite.
 

@@ -86,6 +86,10 @@ class AnalysisResponse(BaseModel):
     speaker_segments: list = []
     diarization_scope: dict = {}
     attribution: dict = {}
+    # Audio QA for the canonical artifact: measurements plus validity conditions and
+    # the envelope's own evidence status. It never carries a recognition, accuracy or
+    # acceptance claim. Empty when the Run never produced QA.
+    audio_qa: dict = {}
 
 
 @app.get("/health")
@@ -181,6 +185,39 @@ def _load_run(directory):
         if isinstance(doc, dict) and unified:
             return doc.get('data') or {}
         return doc if isinstance(doc, dict) else {}
+    def audio_qa():
+        """QA facts for the canonical artifact, whatever the QA envelope's own status is.
+
+        A completed QA envelope carries the measurements as its data. An abstaining
+        envelope cannot carry data, so the measurements are read from the registered
+        canonical metadata document or from the separately published condition
+        document. Either way these are measurements and validity conditions, never a
+        recognition, accuracy or acceptance verdict.
+        """
+        envelope = _read(root / 'audio-qa.json')
+        if not isinstance(envelope, dict):
+            return {}
+        data = envelope.get('data')
+        if isinstance(data, dict) and data:
+            return {'status': envelope.get('status'), 'reason': envelope.get('reason'),
+                    'measurements': data}
+        if not unified:
+            return {}
+        registered = {item['artifact_id']: item for item in manifest.get('artifacts', [])}
+        for ref in envelope.get('artifact_refs', []):
+            artifact = registered.get(ref)
+            if artifact is None:
+                continue
+            path = directory / artifact['path']
+            if not path.is_file() or artifact['kind'] not in ('audio_qa_conditions', 'audio_metadata'):
+                continue
+            published = _read(path)
+            measurements = (published.get('measurements') if artifact['kind'] == 'audio_qa_conditions'
+                            else published.get('normalized'))
+            if isinstance(measurements, dict) and measurements:
+                return {'status': envelope.get('status'), 'reason': envelope.get('reason'),
+                        'measurements': measurements}
+        return {}
     if unified:
         timeline = timeline.get('data') or {}
     diarization_doc = document('speaker-assignments')
@@ -194,6 +231,7 @@ def _load_run(directory):
         speaker_segments=diarization_doc.get('speaker_segments', []),
         diarization_scope=diarization_doc.get('scope', {}),
         attribution=document('attribution'),
+        audio_qa=audio_qa(),
         turns=items('turns', 'turns', 'turns'), events=timeline.get('events', []),
         timeline=timeline, metrics=items('metrics', 'metrics', 'metrics'),
         judge_results=items('judge-results', 'results', 'judge_results'),
