@@ -4,10 +4,13 @@ PRD refs: PRD-F023/F025/F026、PRD-M001–M010、PRD-N002/N003/N007。本文描�
 
 2026-09-16 决策：正式主架构采用 **Linux Server + Docker Backend + Remote Chrome Browser Station**。Browser Station 现场生成音频 sample timebase；服务器可以远端计算，网络 RTT 不进入正式声学指标。VAD 近期分工为 TEN VAD（Browser Control）+ Silero VAD（Server finalized replay）。详见 [组件策略](26-remote-browser-component-strategy.md)。
 
+2026-09-17 补充实现决策：Browser Station 当前仍是 HTML/CSS/Vanilla JS，目标实现语言改为 **TypeScript**，迁移由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪。该迁移只强化浏览器侧音频帧、sample timebase、WebSocket、Control VAD、capture integrity 与状态机的类型约束，不改变本文件定义的 Measurement semantics，也不要求 React/Vue 等框架重写。
+
 ## 1. Pipeline boundary
 
 ```text
 Remote Chrome Browser Station
+(TypeScript target / current Vanilla JS)
 Browser Microphone
        ↓ one physical PCM source + local sample counter
  ┌─────┴────────────────────────────────────┐
@@ -31,7 +34,11 @@ Active Measurement 与 Recording Analysis 都是正式 Measurement Pipeline。�
 
 ## 2. Remote Browser Station contract
 
-Browser Station 是现场 audio I/O endpoint，不是业务后端。每次 Session/Run 至少记录：
+Browser Station 是现场 audio I/O endpoint，不是业务后端。当前浏览器源码位于 `aivoicebench/static/`，手写 JS 入口包括 `app.js`、`models.js`、`voice_test.js` 和 `pcm_capture_worklet.js`；这些入口迁移到 TypeScript 后，编译产物仍须由现有 FastAPI/Docker 静态交付链服务，浏览器运行时仍执行普通 JavaScript。
+
+TypeScript 迁移必须保持当前 HTTP/WebSocket contract、PCM framing、Run/Turn identity、控制语义和 `sample_index / sample_rate` 时间基兼容。迁移完成前当前 Vanilla JS 仍是实现事实；类型语言决策不能自动升级任何 Active Measurement capability 状态。
+
+每次 Session/Run 至少记录：
 
 ```text
 station_id
@@ -51,6 +58,8 @@ capture start/end reason
 `echoCancellation`、`noiseSuppression`、`autoGainControl` 等必须同时记录 requested 与 actual；不能假定浏览器一定按请求生效。
 
 远端正式部署使用 HTTPS/WSS 以满足浏览器 secure-context 与麦克风权限要求。Provider secret 只存在于 Linux Server。
+
+浏览器侧高风险对象应在 TypeScript 中具有显式类型，包括 audio frame/sequence/sample index、AudioWorklet message、VAD/control observation、capture integrity、MediaTrackSettings、WebSocket lifecycle 与 Fixed/Free Run state；类型约束不得成为新的事实来源，正式 Evidence 与时间语义仍由既有契约决定。
 
 ## 3. Measurement Audio contract
 
@@ -133,6 +142,7 @@ Browser Station 或可选 Windows Audio Station Agent
 | Capability | Status |
 | --- | --- |
 | Remote Browser Station architecture | decided；实现/远端真实部署验收 pending |
+| Browser Station TypeScript migration | planned；当前 Vanilla JS；Issue #84 |
 | TEN VAD Browser Adapter | planned；RMS fallback 已有 |
 | Active Measurement Audio | planned |
 | Stimulus Reference storage/interface | planned |

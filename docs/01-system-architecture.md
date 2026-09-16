@@ -3,6 +3,8 @@
 > 本文约束 AIVoiceBench 的长期技术形态；产品范围、优先级、验收条件和实现状态以 [PRD](PRD.md) 为准，执行顺序见 [Roadmap](04-development-roadmap.md)。目标设计不等于已实现。
 >
 > 2026-09-16 架构决策：**Linux Server + Docker Backend + Remote Chrome Browser Station 是正式主架构，而不是权宜方案。** 原生 Windows 只作为未来专业 HIL/Audio Station Agent 的可选扩展。近期组件分工为 TEN VAD（Browser Control）、Silero VAD（Server finalized acoustic analysis）、火山 ASR 原生 speaker separation（Recording Analysis 当前 speaker clustering 主路径）和 wavesurfer.js（Evidence UI）。代码实现与真实设备验收状态不因本轮文档更新自动升级。
+>
+> 2026-09-17 实现语言决策：**Browser Station 的目标实现语言从当前 Vanilla JS 收敛为 TypeScript。** 这是 Browser Measurement Agent 的静态类型工程化，不是 React/Vue 等框架重写，也不改变 Python/FastAPI 后端、Docker/Chrome 交付拓扑、协议或 Measurement semantics。当前 JS 实现仍是代码事实，迁移由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪，验证完成前保持 planned。
 
 ## 1. 项目定位
 
@@ -32,6 +34,7 @@ AIVoiceBench 的业务逻辑不以极低对话 RTT 为首要目标，因此可�
 ```text
 ┌──────────────── Remote Test Site ────────────────┐
 │ Remote Chrome Browser Station                    │
+│ TypeScript target / current Vanilla JS           │
 │                                                  │
 │  Speaker ← stimulus playback                     │
 │  Microphone → getUserMedia → AudioWorklet        │
@@ -68,7 +71,7 @@ Browser Station 与 Server 之间的网络 RTT、WebSocket queue、server schedu
 | Backend deployment | Linux Server + Docker |
 | Backend | Python 3.12 + FastAPI + Uvicorn |
 | Remote client | Chrome Browser Station |
-| Frontend | 当前 HTML/CSS/Vanilla JS；框架升级非关键路径 |
+| Frontend | 当前 HTML/CSS/Vanilla JS；目标 TypeScript 源码 + 编译后浏览器 JS；不要求框架重写 |
 | Browser audio | `getUserMedia` + `AudioWorklet` + Web Audio |
 | Control transport | WebSocket / HTTPS |
 | Control VAD | 当前 RMS；目标 TEN VAD Browser/WASM；RMS 保留 fallback |
@@ -81,7 +84,7 @@ Browser Station 与 Server 之间的网络 RTT、WebSocket queue、server schedu
 | Formal measurement | Active Measurement + Recording Analysis → Canonical EventTimeline → unique Metric Engine |
 | Native Windows | 非当前正式交付；未来可选专业 HIL Station Agent |
 
-当前实现基线仍以 PRD 的 `v0.4.0` 为准。文档中的 TEN/Silero/wavesurfer/远端部署决策属于 planned architecture，只有代码、测试和真实证据完成后才能升级状态。
+当前实现基线仍以 PRD 的 `v0.4.0` 为准。文档中的 TypeScript、TEN/Silero/wavesurfer/远端部署决策属于 planned architecture，只有代码、测试和相应浏览器/容器/真实证据完成后才能升级状态。
 
 ## 4. Browser Station 与 Linux Server 职责
 
@@ -102,6 +105,8 @@ Browser Station 是现场执行端，负责：
 Browser 不保存长期 Provider Credential，不运行正式 Metric 公式，不以 `Date.now()` 或 server response 生成声学真值。
 
 远端正式部署使用 HTTPS/WSS。requested 与 actual `echoCancellation`、`noiseSuppression`、`autoGainControl` 必须进入 provenance。
+
+Browser Station 当前实现位于 `aivoicebench/static/`，主要手写 JS 入口为 `app.js`、`models.js`、`voice_test.js` 和 `pcm_capture_worklet.js`。目标是按 #84 等价迁移到 TypeScript，使 audio frame、AudioWorklet message、sample index/sequence、VAD/control observation、capture integrity、media settings、WebSocket lifecycle 与 Fixed/Free Run state 具有显式类型。迁移后的 TypeScript 编译为普通浏览器 JavaScript，继续由现有 FastAPI/Docker 静态交付；不得借迁移改变 HTTP/WebSocket contract、PCM framing、Run/Turn identity 或正式时间基。
 
 ### 4.2 Linux Server
 
@@ -382,13 +387,15 @@ Windows native full application
 RTC as mandatory foundation
 ```
 
-原因不是这些技术没有价值，而是当前更重要的是：真实 Recording Analysis、Browser Station timebase、durable Measurement Audio、可信边界、Evidence UI 和真实设备验证。
+TypeScript 迁移不属于这里的“React rewrite”：它保持当前浏览器 DOM/CSS 与交付形态，目标是给 Measurement Agent 的状态、音频帧和控制链增加静态类型约束，而不是更换 UI 框架。
+
+原因不是这些技术没有价值，而是当前更重要的是：真实 Recording Analysis、Browser Station TypeScript/timebase、durable Measurement Audio、可信边界、Evidence UI 和真实设备验证。
 
 ## 16. 最终目标架构
 
 ```mermaid
 flowchart TD
-  BS[Remote Chrome Browser Station] -->|sample-indexed PCM| LS[Linux Server + Docker]
+  BS[Remote Chrome Browser Station<br/>TypeScript target] -->|sample-indexed PCM| LS[Linux Server + Docker]
   BS --> TEN[TEN VAD Control]
   TEN --> CO[Control Observations]
   LS --> LMA[Live Measurement Audio]
@@ -423,17 +430,19 @@ flowchart TD
         ↓
 2. Silero VAD Adapter：server acoustic boundary baseline
         ↓
-3. Browser Station：sample clock / station metadata / capture integrity
+3. Browser Station：Vanilla JS → TypeScript 等价迁移（#84）
         ↓
-4. TEN VAD WASM：Control VAD，RMS fallback
+4. Browser Station：sample clock / station metadata / capture integrity
         ↓
-5. wavesurfer.js：Evidence Workbench
+5. TEN VAD WASM：Control VAD，RMS fallback
         ↓
-6. Active durable Measurement Audio + finalized replay
+6. wavesurfer.js：Evidence Workbench
         ↓
-7. Stimulus Alignment → Canonical Active Timeline → Unified Metrics
+7. Active durable Measurement Audio + finalized replay
         ↓
-8. 真实设备 / Measurement Equivalence
+8. Stimulus Alignment → Canonical Active Timeline → Unified Metrics
+        ↓
+9. 真实设备 / Measurement Equivalence
 ```
 
 ## 18. 核心架构原则
@@ -441,6 +450,8 @@ flowchart TD
 > **Harness 层不能与某一个 Provider 绑定。**
 
 > **Linux Server + Remote Browser Station 是正式主架构，不是权宜方案。**
+
+> **Browser Station 目标源码语言为 TypeScript；类型系统约束工程实现，但不创造 Measurement truth。**
 
 > **计算可以远，音频时间轴必须在现场生成。**
 

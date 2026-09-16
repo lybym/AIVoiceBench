@@ -13,6 +13,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 近期组件决策见 [Remote Browser Station 与开源组件策略](26-remote-browser-component-strategy.md)：
 
+- Browser Station 实现语言：当前 HTML/CSS/Vanilla JS，目标迁移到 **TypeScript**；只做等价迁移和静态类型工程化，不要求 React/Vue 等框架重写；由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪；
 - Browser Control VAD：TEN VAD（WASM）为目标实现；现有 RMS 保留 fallback/debug；
 - Server Acoustic Boundary：Silero VAD 为首个正式候选 baseline；
 - Speaker separation：优先使用火山 ASR 原生 speaker labels，当前不接 3D-Speaker；
@@ -21,11 +22,12 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 ## 2. 当前基线
 
-代码实现基线仍是 `v0.4.0@9632844`；2026-09-16 的组件/部署决策只更新路线，不自动升级实现状态。
+代码实现基线仍是 `v0.4.0@9632844`；2026-09-16/17 的组件、部署和 Browser Station TypeScript 决策只更新路线，不自动升级实现状态。
 
 | 范围 | 当前事实 | 明确缺口 |
 | --- | --- | --- |
 | Recording Analysis | 导入、标准化、云 File ASR、聚类/归属、融合，以及有角色证据时的 Turn/Event/Metric 主链已有 | 真实火山 speaker separation 请求/响应验收、Judge/Findings 主链、人工修订、wavesurfer Evidence UI、完整报告和真实录音验收未闭环 |
+| Browser Station implementation | 当前 `aivoicebench/static/` 使用 HTML/CSS/Vanilla JS，核心 JS 入口为 `app.js`、`models.js`、`voice_test.js`、`pcm_capture_worklet.js` | TypeScript toolchain、等价迁移、typecheck/build、Docker 静态交付与 browser/container 回归尚未完成（#84） |
 | Fixed Voice Test | 浏览器播放、麦克风、Control RMS VAD、WebSocket 控制、Turn ID、超时、停止和迟到事件防护已有 | TEN VAD Browser Adapter、Frozen Golden Voice、Measurement Audio、条件 Barge-in、设备设置快照和实体设备验收未闭环 |
 | Free Voice Test | AudioWorklet 在设备回答阶段把 PCM 送入 Streaming ASR；partial/final、Agent 下一轮和显式 File ASR fallback 已有 | 不是跨整次 Run 的 durable Measurement Audio；真实云/设备、预算、Coverage、Barge-in 与 Streaming TTS 未完成 |
 | Canonical metrics | `compute_timeline_metrics(...)` 输出 MetricResult 3.0.0 | 只由 Recording Timeline 调用；Active Measurement 尚无 Canonical Timeline，不得另建平行公式 |
@@ -53,15 +55,18 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 阶段出口：Silero 能对同一 Artifact deterministic replay，输出带 processor/policy/confidence/uncertainty 的 Acoustic Evidence。
 
-### R3 — Browser Station 与 TEN VAD
+### R3 — Browser Station TypeScript Foundation 与 TEN VAD
 
-1. 明确 Browser Station metadata contract：browser/OS、input/output device、requested/actual media settings、sample rate；
-2. `AudioWorklet` sample counter 与 sequence 成为现场时间轴；
-3. 接入 TEN VAD WASM 作为 Browser Control VAD；
-4. RMS VAD 保留显式 fallback，所有 event 记录 source；
-5. 断网、暂停、后台、权限变化、设备切换和 gap/duplicate/stale frame 都产生明确状态。
+1. 按 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 将现有 `app.js`、`models.js`、`voice_test.js`、`pcm_capture_worklet.js` 等价迁移到 TypeScript，建立 deterministic build/typecheck；不借迁移引入 React/Vue 或改变现有协议/Measurement semantics；
+2. 为 audio frame、AudioWorklet message、sample index/sequence、VAD/control observation、capture integrity、media settings、WebSocket lifecycle 与 Run state 建立显式 TypeScript 类型；
+3. 保持编译后 JavaScript 由现有 FastAPI/Docker 静态链交付，并用现有 browser/container tests 证明 Fixed/Free 行为未回退；
+4. 明确 Browser Station metadata contract：browser/OS、input/output device、requested/actual media settings、sample rate；
+5. `AudioWorklet` sample counter 与 sequence 成为现场时间轴；
+6. 接入 TEN VAD WASM 作为 Browser Control VAD；
+7. RMS VAD 保留显式 fallback，所有 event 记录 source；
+8. 断网、暂停、后台、权限变化、设备切换和 gap/duplicate/stale frame 都产生明确状态。
 
-阶段出口：控制链可以在不依赖 server receive timestamp 的情况下产生 sample-indexed provisional speech events。
+阶段出口：Browser Station 以 TypeScript 作为主要手写源码语言，typecheck/build 与现有浏览器行为验证通过；控制链可以在不依赖 server receive timestamp 的情况下产生 sample-indexed provisional speech events。
 
 ### R4 — wavesurfer.js Evidence Workbench
 
@@ -77,7 +82,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 | 阶段 | 当前状态 | 关键交付 | PRD refs | 阶段出口 |
 | --- | --- | --- | --- | --- |
-| A — Remote Browser Measurement Foundation | ⬜ 下一实现阶段 | continuous browser PCM、local sample counter、durable `ART-live-measurement-audio`、capture integrity、Browser Station metadata、Execution Run 引用 | F023/F025、N002/N003/N007 | WAV/hash/sample count 一致；网络 RTT/receive time 不进入 acoustic metric；连续/重复/缺口/stale/stop/cancel/断连有测试 |
+| A — Remote Browser Measurement Foundation | ⬜ 下一实现阶段 | Browser Station TypeScript foundation（#84）、continuous browser PCM、local sample counter、durable `ART-live-measurement-audio`、capture integrity、Browser Station metadata、Execution Run 引用 | F023/F025、N002/N003/N007 | TypeScript typecheck/build + 既有 browser/container 回归通过；WAV/hash/sample count 一致；网络 RTT/receive time 不进入 acoustic metric；连续/重复/缺口/stale/stop/cancel/断连有测试 |
 | B — Browser Control VAD | ⬜ planned | TEN VAD WASM Adapter、RMS fallback、sample-indexed provisional boundaries | F020/F021/F023 | Control VAD source 可追溯；断网不改变已生成的本地音频时间 |
 | C — Server Finalized Acoustic Measurement | ⬜ planned | Silero VAD Adapter、Measurement Policy、durable audio replay、boundary uncertainty | F025、N007 | 同一 Measurement Audio 可 deterministic replay；Silero/TEN/RMS 不静默覆盖彼此 |
 | D — Stimulus Measurement | ⬜ planned | 保存 stimulus reference/identity/sample info；Measurement Audio alignment；tester speech start/end | F019/F020/F025、M002/M004 | tester boundary 来自声学 alignment 而非 playback callback；弱/多重匹配弃权 |
@@ -89,7 +94,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 ## 5. 与既有产品里程碑的映射
 
 - **M1 Recording Analysis**：R1、R2、R4 优先收口真实录音证据链。
-- **M2 Fixed Voice Test**：A、B、C、D 完成普通 turn-taking 最小闭环。
+- **M2 Fixed Voice Test**：A、B、C、D 完成普通 turn-taking 最小闭环；Browser Station TypeScript 等价迁移属于 A 的工程基础，不新增产品能力。
 - **M3 Free Voice Test Agent**：复用相同 Browser Station/Measurement Plane，完成 E、F 的实时展示/最终化。
 - **M4 关联与验证**：完成 G；外部录音关联服务于复测/方法验证，不承担 Active Result 转正。
 - **M5 Compare / Regression**：只比较兼容 case/asset/metric/policy 版本；H 在证据与硬件条件成熟后进入。
@@ -100,7 +105,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 1. **Contract verified**：schema、身份、sample timebase、完整性、错误与兼容行为有针对性测试。
 2. **Software verified**：受控 PCM/fixture 下的状态机、处理器、失败隔离和审计通过。
-3. **Browser verified**：远端 Chrome 的权限、持续音频生命周期、MediaTrackSettings、停止/断连和多轮操作通过。
+3. **Browser verified**：远端 Chrome 的权限、持续音频生命周期、MediaTrackSettings、停止/断连和多轮操作通过；Browser Station TypeScript 迁移后还必须通过 typecheck/build，且不能用编译成功替代行为验证。
 4. **Container/server verified**：Linux Docker 运行、持久卷、重启读取、API 下载和远端 WebSocket 通过。
 5. **Physical-device verified**：真实扬声器、麦克风和实体设备完成执行；记录环境和失败。
 6. **Measurement-equivalence verified**：独立双录音配对、误差/偏差/一致性达到批准策略。
@@ -111,7 +116,8 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 - Recording Analysis、File ASR/Streaming ASR 生命周期、Fixed 无 ASR 基础控制、Free Mic→Streaming ASR→Agent、stop 行为和 provider call accounting 必须回归。
 - `execution-record.json` 保留 Control Trace 价值；新 Measurement artifacts 通过引用并存，历史 artifacts/schema 尽量可读。
+- Browser Station TypeScript 迁移是源码工程化，不改变正式 Measurement semantics；编译后的浏览器 JavaScript 继续由现有 Docker/FastAPI 交付。
 - VAD 是并行 Evidence Producer，不是 File/Streaming ASR 的强制前置。
 - 第一阶段可以只保存 Stimulus Reference/interface，不输出伪造 tester acoustic boundary。
-- RTC、S2S、Hybrid、React 重写、数据库/集群、Windows Native 全量迁移、3D-Speaker、专业 SPL/loopback Station 不进入近期基础切片关键路径。
+- RTC、S2S、Hybrid、React/Vue/Svelte 框架重写、数据库/集群、Windows Native 全量迁移、3D-Speaker、专业 SPL/loopback Station 不进入近期基础切片关键路径。
 - TEN VAD 正式商业/分发接入前需要完成其附加许可证条件审查；许可证未确认不能视为依赖验收完成。

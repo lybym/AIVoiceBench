@@ -1,6 +1,6 @@
 # Remote Browser Station 与开源组件策略
 
-> Owner decision / architecture decision，2026-09-16。本文是技术专题，不创建新的产品 Requirement ID；产品边界仍以 [PRD](PRD.md) 为准。
+> Owner decision / architecture decision，2026-09-16；2026-09-17 补充 Browser Station TypeScript 实现语言决策。本文是技术专题，不创建新的产品 Requirement ID；产品边界仍以 [PRD](PRD.md) 为准。
 
 ## 1. 决策摘要
 
@@ -8,6 +8,7 @@ AIVoiceBench 的正式主架构确定为：
 
 ```text
 Remote Chrome Browser Station
+├─ TypeScript target / current Vanilla JS implementation
 ├─ local audio playback / microphone capture
 ├─ AudioWorklet / local sample counter
 ├─ provisional control VAD
@@ -58,6 +59,30 @@ Browser Station 负责：
 Browser Station 不保存长期 Provider Credential，不负责 Judge、Metric 公式或最终报告。
 
 远端访问必须满足浏览器安全上下文要求；正式部署应使用 HTTPS/WSS。AEC、Noise Suppression、AGC 等浏览器音频增强的 requested/actual setting 必须进入 Run provenance，不能默认为“关闭成功”。
+
+### 2.1 Browser Station 实现语言：TypeScript
+
+当前代码基线仍是 `aivoicebench/static/` 下的 HTML/CSS/Vanilla JS，主要手写浏览器入口包括 `app.js`、`models.js`、`voice_test.js` 和 `pcm_capture_worklet.js`。2026-09-17 决定将 Browser Station 的**目标实现语言**收敛为 TypeScript；实现由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪，完成前不得把文档决策写成 implemented。
+
+这项迁移的目的不是更换 UI 框架，而是让 Browser Station 作为 Measurement Agent 时的高风险状态具有静态类型约束，重点包括：
+
+- audio frame：`sequence`、`sampleIndex`、`sampleRate`、`channelCount` 与 payload；
+- AudioWorklet 主线程/处理线程消息；
+- VAD/control observation 的 type、source 与 sample index；
+- capture integrity 的 gap、duplicate、stale、dropped 计数与状态；
+- requested media constraints 与实际 `MediaTrackSettings`；
+- WebSocket/control lifecycle；
+- Fixed/Free Voice Test 的 Run/Turn 与停止、超时、断连状态。
+
+迁移约束：
+
+1. **行为等价优先。** TypeScript 迁移不得顺带改变 HTTP/WebSocket contract、PCM framing、Run/Turn identity、Measurement semantics 或 `sample_index / sample_rate` 时间基。
+2. **仍交付普通浏览器 JavaScript。** TypeScript 只作为源码与构建/类型检查层，编译产物继续由现有 FastAPI/Docker 静态交付链服务，目标浏览器仍是 Chrome。
+3. **不要求框架重写。** 本决策不引入 React、Vue、Svelte 等 UI 框架要求；可以保持当前 DOM/CSS 结构并完成渐进式迁移。
+4. **避免双源。** 迁移完成后不得长期同时维护同一业务逻辑的手写 `.js` 与 `.ts` 两套源码。
+5. **类型检查进入验证门禁。** Browser Station 后续变更至少应通过 deterministic build/typecheck，并继续通过既有 browser/container 行为测试。
+
+因此 TypeScript 是 Browser Station 的工程实现约束，不是新的 Measurement truth，也不改变 PRD requirement 语义。
 
 ## 3. Linux Server 责任
 
@@ -173,7 +198,7 @@ External Recording
 ### Active Measurement
 
 ```text
-Browser Station
+Browser Station (TypeScript target)
 Mic → AudioWorklet → sample-indexed PCM
        ├─ TEN VAD → provisional control events
        └─ WebSocket → Linux Server → durable Measurement Audio
@@ -192,18 +217,22 @@ Mic → AudioWorklet → sample-indexed PCM
 当前迭代不做：
 
 - 把整个 AIVoiceBench 迁到 Windows Native；
+- React/Vue/Svelte 等前端框架重写；
 - 3D-Speaker 集成；
 - 自研 waveform renderer；
 - 让 ASR endpoint 或 server receive time 直接成为正式 acoustic boundary；
 - 为了追求低对话时延引入 RTC 作为唯一底座；
 - 在没有真实目标录音标注集前宣称 Silero/TEN 谁是“测量真值”。
 
+TypeScript 迁移本身不是 UI 框架升级，也不扩大 Browser Station 的产品职责。
+
 ## 9. 验收顺序
 
-1. Browser Station sample clock / frame integrity 稳定；
-2. TEN VAD Browser Adapter 与 RMS fallback 并存并可观测；
-3. Silero VAD Server Adapter 接入 Recording Analysis，并能对 Measurement Audio replay；
-4. 火山 speaker separation 请求/响应契约完成真实服务验证；
-5. wavesurfer.js Evidence UI 可由 Finding/Event/Metric 定位音频；
-6. 使用目标 AI 玩具真实录音建立人工标注集，比较 boundary error、speaker coverage/abstention 和最终指标稳定性；
-7. 达不到门槛时再引入额外 diarization/source-separation 组件。
+1. 完成 Browser Station Vanilla JS → TypeScript 等价迁移：typecheck/build 可重复，AudioWorklet、WebSocket、Fixed/Free 现有行为和 Docker 静态交付不回退；
+2. Browser Station sample clock / frame integrity 稳定；
+3. TEN VAD Browser Adapter 与 RMS fallback 并存并可观测；
+4. Silero VAD Server Adapter 接入 Recording Analysis，并能对 Measurement Audio replay；
+5. 火山 speaker separation 请求/响应契约完成真实服务验证；
+6. wavesurfer.js Evidence UI 可由 Finding/Event/Metric 定位音频；
+7. 使用目标 AI 玩具真实录音建立人工标注集，比较 boundary error、speaker coverage/abstention 和最终指标稳定性；
+8. 达不到门槛时再引入额外 diarization/source-separation 组件。
