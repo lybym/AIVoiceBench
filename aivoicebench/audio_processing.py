@@ -63,6 +63,26 @@ def _command(argv, directory, name, timeout):
     return stdout
 
 
+def qa_conditions(all_silent):
+    """Report validity conditions derived from real measurements, without inventing a threshold.
+
+    Every condition states only what was measured and what it does *not* prove. No
+    acceptance threshold is configured for this milestone, so no condition may be
+    reported as pass/fail and no condition may claim recognition quality, ASR
+    accuracy or measurement accuracy. A condition that cannot support downstream
+    analysis is `insufficient`, never silently `met`.
+    """
+    return [
+        {'condition_id': 'decodable_canonical_audio', 'status': 'met',
+         'basis': 'ffmpeg decode produced canonical WAV PCM16LE 16000 Hz mono samples',
+         'limitation': 'Decoding success does not prove the recording contains speech'},
+        {'condition_id': 'nonempty_signal', 'status': 'insufficient' if all_silent else 'unassessed',
+         'basis': 'peak/rms over the decoded canonical samples' if all_silent
+                  else 'no energy threshold is configured, so signal sufficiency is not assessed',
+         'limitation': 'Signal presence is a measurement; it is not a quality, accuracy or acceptance result'},
+    ]
+
+
 def canonical_qa(path, max_duration_ms=MAX_RECORDING_MS):
     """Streaming measurements: no whole-recording buffer or perceptual pass claim."""
     with wave.open(str(path), 'rb') as audio:
@@ -89,7 +109,8 @@ def canonical_qa(path, max_duration_ms=MAX_RECORDING_MS):
             'sample_count': frames, 'duration_ms': frames / 16, 'peak': peak / 32768,
             'rms': math.sqrt(squared / frames) / 32768, 'dc_offset': total / frames / 32768,
             'clipped_samples': clipped, 'all_silent': squared == 0,
-            'quality_gate': 'not_configured', 'timing_basis': 'canonical_audio_samples'}
+            'conditions': qa_conditions(squared == 0),
+            'timing_basis': 'canonical_audio_samples'}
 
 
 class FFmpegAudioProcessor:

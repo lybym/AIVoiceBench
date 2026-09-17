@@ -89,6 +89,23 @@ python -m aivoicebench import conversation.m4a --model-settings artifacts/.model
 - explicit retry 生成新的 AnalysisRevision，不覆盖旧 manifest/output；completed operation 不重复计费调用。
 - 文件存在不能证明 processor 已执行；stage state 必须显式。
 
+## Ingestion gate（Issue #21 范围）
+
+Ingestion gate 只负责让每个被拒绝的输入都留下可复核状态，不改变下游语义：
+
+- 支持的扩展名（WAV/MP3/M4A）之外的输入、缺失文件、超过 1 GiB 的输入：`ingestion` stage `failed`，Run 仍生成 manifest 与 report，`original_sha256` 保持 null，不注册 `original_recording`。
+- 损坏、截断、空音频、无法映射的声道布局（例如多声道 WAV）：原始文件按字节保留，`normalization` stage `failed`，reason 与本地 diagnostic 一并落盘。
+- 三种格式的真实 codec 执行测试仍以 `AIVOICEBENCH_REQUIRE_MEDIA_TESTS=1` 在 CI 强制运行。
+
+Audio QA 只报告 canonical artifact 上的测量事实与有效性条件（`audio-qa` envelope，必要时另有 `audio-qa-conditions` 文档）：
+
+- `decodable_canonical_audio`：decode 成功即 `met`；声明“decode 成功不代表含语音”。
+- `nonempty_signal`：未配置能量门槛时为 `unassessed`；canonical 波形零能量时为 `insufficient`；非零但不可闻仍为 `unassessed`（零能量边界是有意为之，不发明门槛）。
+- 出现 `insufficient` 时 envelope 为 `insufficient_evidence` 且 `data: null`，测量值改以独立注册文档保留（该文档同时进入 `stages.audio_qa.output_artifact_ids`）；不允许把沉默录音呈现为可用录音，也不允许发明 pass/fail 门槛。
+- 完成态 envelope 的 `data_artifact_ref` 指向承载 `data` 的 `audio-metadata.json`，不是 WAV；`normalized_audio` 仅作为 stage 输入与父引用保留。
+- QA 不声明识别质量、ASR 准确率或测量准确率。
+- `GET /api/runs/{run_id}.audio_qa` 跨 AnalysisRevision 解析：canonical QA 每 Run 只测一次，`resume` 不重发 envelope，故视图先读当前 revision，缺失时回退 manifest 中最新注册的 `audio-qa`；旧 Run 无 `conditions` 时返回显式 `conditions_version: unassessed`。
+
 ## Evidence Workbench
 
 Recording Analysis 的 Web 证据审阅采用 wavesurfer.js，而不是继续自行堆 waveform renderer。

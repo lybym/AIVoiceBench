@@ -25,6 +25,24 @@ class WebReleaseTests(unittest.TestCase):
         self.assertIn('startSynthesisProgress', script)
         self.assertIn('/api/voice-test/sessions/${sessionId}', script)
         self.assertIn('setFixedGenerationBusy(true)', script)
+    def test_audio_qa_note_renders_stage_state_without_measurements(self):
+        """The report must not silently drop QA: the stage state renders on its own.
+
+        A Run reads its canonical QA across AnalysisRevisions, so a resumed Run can
+        legitimately have a QA ledger entry while the measurements are unavailable to
+        the reader. The UI must show that state instead of rendering nothing. This is a
+        source-level contract check: a full browser run of `audioQaNote` needs a driver
+        this environment does not provide.
+        """
+        script = self.client.get('/static/app.js').text
+        self.assertIn('audioQaNote(d)', script, 'the report tab must render the QA note')
+        self.assertIn('const qa=d.audio_qa||{}', script)
+        # Absent measurements must not short-circuit the whole section.
+        self.assertIn('if(!m&&!stage.status&&!stage.reason)return', script)
+        self.assertIn('未获得音频质量测量', script)
+        self.assertIn('本记录没有可读取的音频质量测量值', script)
+        self.assertNotIn('if(!m.duration_ms&&!conditions.length)return', script)
+
     def test_legacy_report_without_timeline(self):
         d=self.root/'RUN-legacy';d.mkdir()
         (d/'report.json').write_text(json.dumps({'run_summary':{'status':'partial'},'metrics':{'metrics':[]}}))

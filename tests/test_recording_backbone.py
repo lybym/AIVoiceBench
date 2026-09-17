@@ -99,6 +99,105 @@ class BackboneTests(unittest.TestCase):
         with TestClient(api.app) as restarted:
             self.assertEqual(restarted.get('/api/runs/'+data['run_id']).json()['transcript'],data['transcript'])
             self.assertEqual(restarted.get(data['audio_url']).status_code,200)
+
+    def test_audio_qa_is_readable_through_the_run_view_after_restart(self):
+        """QA facts and their conditions come from the persisted documents, not memory."""
+        transport=Transport();data,directory,manifest=self.upload(transport)
+        # The synthetic fixture here is a silent tone, so QA must abstain in the
+        # envelope (data: null) while still publishing the real measurements.
+        self.assertEqual(data['stages']['audio_qa']['status'],'partial')
+        stored=json.loads((directory/'analysis'/manifest['analysis_id']/'audio-qa.json')
+                          .read_text(encoding='utf-8'))
+        self.assertEqual(stored['status'],'insufficient_evidence')
+        self.assertIsNone(stored['data'])
+        self.assertIn('nonempty_signal',stored['reason'])
+        qa=data['audio_qa']
+        self.assertEqual(qa['status'],'insufficient_evidence')
+        self.assertEqual(qa['reason'],stored['reason'])
+        self.assertEqual((qa['measurements']['container'],qa['measurements']['encoding'],
+                          qa['measurements']['channels'],qa['measurements']['sample_rate_hz']),
+                         ('wav','PCM_S16LE',1,16000))
+        self.assertTrue(qa['measurements']['all_silent'])
+        self.assertEqual(qa['measurements']['peak'],0)
+        conditions={c['condition_id']:c for c in qa['measurements']['conditions']}
+        self.assertEqual(conditions['decodable_canonical_audio']['status'],'met')
+        self.assertEqual(conditions['nonempty_signal']['status'],'insufficient')
+        self.assertFalse(any(c['status'] in ('pass','fail') for c in qa['measurements']['conditions']))
+        # A completed QA envelope's canonical reference is its JSON measurement document.
+        metadata=next(a for a in manifest['artifacts'] if a['kind']=='audio_metadata')
+        conditions_artifact=next(a for a in manifest['artifacts'] if a['kind']=='audio_qa_conditions')
+        self.assertIn(conditions_artifact['artifact_id'],
+                      data['stages']['audio_qa']['output_artifact_ids'])
+        self.assertTrue((directory/metadata['path']).is_file())
+        with TestClient(api.app) as restarted:
+            run=restarted.get('/api/runs/'+data['run_id']).json()
+            self.assertEqual(run['audio_qa'],data['audio_qa'])
+            self.assertEqual(run['stages']['audio_qa']['reason'],data['stages']['audio_qa']['reason'])
+
+    def test_audio_qa_survives_a_resumed_analysis_revision(self):
+        """`/resume` preserves canonical QA, so the Run view must not report `{}` after it.
+
+        Canonical audio QA is measured once per Run; `resume` keeps the ingestion/
+        normalization/audio_qa ledger state and creates a new analysis directory without
+        re-emitting the QA envelope. The response must not simultaneously say "QA
+        measured, conditions not satisfied" and "this Run never produced QA".
+        """
+        transport=Transport();data,directory,manifest=self.upload(transport)
+        self.assertEqual(data['stages']['audio_qa']['status'],'partial')
+        self.assertEqual(data['stages']['asr']['status'],'complete')
+        self.assertTrue(data['audio_qa'].get('measurements'))
+        before=json.dumps(data['audio_qa'],sort_keys=True,ensure_ascii=False)
+        manifest['stages']['report'].update(status='running',finished_at=None)
+        (directory/'manifest.json').write_text(json.dumps(manifest),encoding='utf-8')
+        # Completed ASR is restored from the preserved native response: no re-upload,
+        # no second recognition, no repeat billing.
+        with patch('aivoicebench.cloud_transport.HTTPTransport.request',
+                   side_effect=AssertionError('No repeat ASR on resume')):
+            response=self.client.post('/api/runs/'+data['run_id']+'/resume',json={'retry_asr':True})
+        self.assertEqual(response.status_code,200,response.text)
+        latest=response.json()
+        self.assertNotEqual(latest['analysis_id'],data['analysis_id'])
+        self.assertEqual(latest['stages']['audio_qa']['status'],'partial')
+        self.assertEqual(json.dumps(latest['audio_qa'],sort_keys=True,ensure_ascii=False),before)
+        self.assertTrue(latest['audio_qa']['measurements']['all_silent'])
+        self.assertEqual(latest['stages']['audio_qa']['reason'],data['stages']['audio_qa']['reason'])
+        current=json.loads((directory/'manifest.json').read_text(encoding='utf-8'))
+        self.assertEqual(recording_run_errors(current,directory),[])
+
+    def test_legacy_run_view_reports_absent_conditions_as_unassessed(self):
+        """A Run measured before conditions existed must not look like a satisfied one."""
+        transport=Transport();data,directory,manifest=self.upload(transport)
+        settings_name=manifest['analysis_id']
+        # Rebuild the persisted evidence as a pre-PR Run: a complete envelope carrying
+        # inline measurements with no `conditions`, in an older analysis revision.
+        metadata=next(a for a in manifest['artifacts'] if a['kind']=='audio_metadata')
+        metadata_path=directory/metadata['path']
+        document=json.loads(metadata_path.read_text(encoding='utf-8'))
+        document['normalized'].pop('conditions',None)
+        metadata_path.write_text(json.dumps(document),encoding='utf-8')
+        for item in manifest['artifacts']:
+            if item['artifact_id']==metadata['artifact_id']:
+                item['sha256']=digest(metadata_path);item['size_bytes']=metadata_path.stat().st_size
+        legacy=directory/'analysis'/manifest['analysis_id']
+        (legacy/'audio-qa.json').write_text(json.dumps({'schema_version':'1.0.0',
+            'run_id':manifest['run_id'],'analysis_id':manifest['analysis_id'],'kind':'audio-qa',
+            'status':'complete','reason':'Measurements only','data':document['normalized'],
+            'artifact_refs':[metadata['artifact_id']],'data_artifact_ref':metadata['artifact_id']}),
+            encoding='utf-8')
+        # Move the Run to a newer revision that never re-emitted the QA envelope, which is
+        # what reading a resumed legacy Run actually looks like.
+        newer=directory/'analysis'/('ANALYSIS-'+'0'*32);newer.mkdir()
+        manifest['analysis_id']=newer.name
+        (directory/'manifest.json').write_text(json.dumps(manifest),encoding='utf-8')
+        view=self.client.get('/api/runs/'+data['run_id']).json()
+        qa=view['audio_qa']
+        self.assertTrue(qa, 'a legacy Run with a registered QA envelope must still resolve')
+        self.assertEqual(qa['status'],'complete')
+        rows={c['condition_id']:c for c in qa['measurements']['conditions']}
+        self.assertIn('conditions_version',rows)
+        self.assertEqual(rows['conditions_version']['status'],'unassessed')
+        self.assertNotIn('conditions',document['normalized'])
+        self.assertNotEqual(settings_name,newer.name)
         readiness=ModelSettings(self.runs/'.model-settings').capture()[0]['readiness']
         # Diarization is now integrated through the same ASR profile: the single
         # recognition response already carries speaker labels, so the route is

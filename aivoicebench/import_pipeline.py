@@ -17,12 +17,18 @@ def _normalize(run, source, parent, processor):
     output_ids = []
     normalized_id = run.register(result.path, 'normalized_audio', [parent], 'audio_normalization:1.0.0')
     output_ids.append(normalized_id)
+    metadata_id = None
     for path in result.artifacts:
         if path.resolve() != result.path.resolve():
-            output_ids.append(run.register(path, 'audio_metadata' if path.name == 'audio-metadata.json' else 'processor_audit',
-                                           [parent, normalized_id], 'audio_normalization:1.0.0'))
+            artifact_id = run.register(path, 'audio_metadata' if path.name == 'audio-metadata.json' else 'processor_audit',
+                                       [parent, normalized_id], 'audio_normalization:1.0.0')
+            output_ids.append(artifact_id)
+            if path.name == 'audio-metadata.json':
+                metadata_id = artifact_id
     run.manifest['stages']['normalization']['processor'] = result.processor
-    return output_ids, (result, normalized_id), None
+    # The canonical metadata document is the JSON artifact that carries the measured
+    # facts, so stages that report on those facts need its id, not just the WAV id.
+    return output_ids, (result, normalized_id, metadata_id), None
 
 
 def _asr(run, normalized, parent, provider_factory):
@@ -398,11 +404,41 @@ def _continue_import(run, source, audio_processor, asr_provider_factory, model_s
         run.manifest['status'] = 'failed'
         run.manifest['stages']['normalization'].update(status='insufficient_evidence', reason='Original source unavailable')
     if normalized:
-        result, artifact_id = normalized
+        result, artifact_id, metadata_id = normalized
+
         def emit_qa():
-            item = run.envelope('audio-qa', 'complete', 'Measurements only; no acceptance threshold configured',
-                                result.metadata['normalized'], [artifact_id])
-            return [item], result.metadata['normalized'], None
+            qa = result.metadata['normalized']
+            insufficient = [item['condition_id'] for item in qa.get('conditions', [])
+                            if item['status'] == 'insufficient']
+            if insufficient:
+                # The envelope must abstain (an abstaining evidence state cannot carry
+                # measurement data), so the real measurements are published as their own
+                # registered document. Abstention never deletes evidence, and the Run
+                # still points at every related document through the envelope's refs.
+                reason = ('Canonical audio measured, but Audio QA conditions are not satisfied: '
+                          + ', '.join(insufficient))
+                conditions = run.analysis / 'audio-qa-conditions.json'
+                write_json(conditions, {'schema_version': '1.0.0', 'run_id': run.manifest['run_id'],
+                    'analysis_id': run.manifest['analysis_id'], 'recording_sha256': run.manifest['original_sha256'],
+                    'status': 'insufficient_evidence', 'reason': reason, 'measurements': qa})
+                conditions_id = run.register(conditions, 'audio_qa_conditions', [artifact_id, metadata_id],
+                                             'audio_qa:1.0.0')
+                refs = [artifact_id, metadata_id, conditions_id]
+                item = run.envelope('audio-qa', 'insufficient_evidence', reason, None, refs)
+                # Every artifact this stage produced belongs in its own ledger entry, or a
+                # machine consumer enumerating stage outputs misses the published measurements.
+                return [item, conditions_id], qa, reason
+            reason = ('Measurements only; no acceptance threshold configured and no '
+                      'recognition or measurement accuracy is claimed')
+            # `data` is the measurements member of the canonical metadata document, so the
+            # "Canonical document" reference must be that JSON artifact - never the WAV,
+            # which a consumer following the reference cannot parse for the envelope's data.
+            item = run.envelope('audio-qa', 'complete', reason, qa, [artifact_id, metadata_id],
+                                data_artifact_ref=metadata_id)
+            # The envelope carries the precise evidence state; the stage reason is what
+            # makes that state visible in the Run ledger next to the other stages.
+            return [item], qa, None
+
         run.execute('audio_qa', [artifact_id], emit_qa)
         if asr_provider_factory is not None:
             run.execute('asr', [artifact_id] + _configuration_refs(run), lambda: _asr(run, result.path, artifact_id, asr_provider_factory))
@@ -431,7 +467,7 @@ def _run_evidence_chain(run, normalized, asr_available, providers=None):
     Each stage is independent: failure in one does not prevent the report stage.
     Uses lazy imports so missing modules don't crash the import pipeline.
     """
-    result, norm_art_id = normalized
+    result, norm_art_id, _metadata_id = normalized
     norm_path = result.path
 
     # Acoustic segmentation — parent: normalized_audio
@@ -554,7 +590,7 @@ def _run_evidence_chain_resume(run, directory, normalized_artifact, norm_art_id,
     class _Result:
         def __init__(self, path):
             self.path = path
-    normalized = (_Result(norm_path), norm_art_id)
+    normalized = (_Result(norm_path), norm_art_id, None)
     _run_evidence_chain(run, normalized, run.manifest['stages']['asr']['status'] == 'complete', providers)
 
 

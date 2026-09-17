@@ -109,6 +109,55 @@ class ImportFailureAndContracts(unittest.TestCase):
         run.manifest['artifacts'][0]['parent_artifact_ids'] = [run.manifest['artifacts'][0]['artifact_id']]
         self.assertTrue(recording_run_errors(run.manifest, run.directory))
 
+    def test_run_view_reports_no_qa_for_a_run_that_never_measured_audio(self):
+        """A Run without QA must say so instead of implying zero measurements."""
+        from fastapi.testclient import TestClient
+        from aivoicebench import api
+        root = self.root / 'api-runs'
+        source = self.root / 'missing.wav'  # ingestion fails before any canonical audio exists
+        directory, manifest = import_recording(source, root)
+        with patch.object(api, 'OUTPUT_ROOT', root):
+            with TestClient(api.app) as client:
+                view = client.get('/api/runs/' + manifest['run_id']).json()
+        self.assertEqual(manifest['stages']['audio_qa']['status'], 'insufficient_evidence')
+        self.assertEqual(view['audio_qa'], {})
+        self.assertTrue((directory / 'analysis' / manifest['analysis_id'] / 'audio-qa.json').is_file())
+
+    def test_empty_media_is_a_durable_failed_run_not_a_missing_run(self):
+        """A zero-byte recording keeps its Run and names the refusal reason."""
+        for suffix in ('.wav', '.mp3', '.m4a'):
+            with self.subTest(suffix=suffix):
+                source = self.root / ('empty' + suffix)
+                source.write_bytes(b'')
+                directory, manifest = import_recording(source, self.root / ('runs' + suffix), synthetic=True)
+                self.assertTrue(directory.is_dir(), 'the refused import must still produce a Run')
+                self.assertEqual(manifest['status'], 'failed')
+                self.assertEqual(manifest['stages']['ingestion']['status'], 'failed')
+                self.assertIn('nonempty', manifest['stages']['ingestion']['reason'])
+                self.assertIsNone(manifest['original_sha256'])
+                self.assertEqual([a for a in manifest['artifacts'] if a['kind'] == 'original_recording'], [])
+                self.assertEqual(manifest['stages']['audio_qa']['status'], 'insufficient_evidence')
+                # The reason and the report survive on disk, so a restart can read them.
+                stored = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+                self.assertIn('nonempty', stored['stages']['ingestion']['reason'])
+                self.assertTrue((directory / 'analysis' / manifest['analysis_id'] / 'report.md').is_file())
+                self.assertEqual(recording_run_errors(manifest, directory), [])
+
+    def test_unsupported_extension_is_named_before_any_original_is_retained(self):
+        """An unsupported container must be named in the Run, not become an empty success."""
+        unsupported = self.root / 'notes.txt'
+        unsupported.write_text('not audio')
+        directory, manifest = import_recording(unsupported, self.root / 'unsupported-runs')
+        self.assertEqual(manifest['status'], 'failed')
+        self.assertEqual(manifest['stages']['ingestion']['status'], 'failed')
+        self.assertIn('WAV, MP3 and M4A', manifest['stages']['ingestion']['reason'])
+        self.assertIsNone(manifest['original_sha256'])
+        self.assertEqual([a for a in manifest['artifacts'] if a['kind'] == 'original_recording'], [])
+        stored = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertIn('WAV, MP3 and M4A', stored['stages']['ingestion']['reason'])
+        self.assertTrue((directory / 'analysis' / manifest['analysis_id'] / 'report.md').is_file())
+        self.assertEqual(recording_run_errors(manifest, directory), [])
+
 
 class ActualCodecImport(unittest.TestCase):
     @classmethod
@@ -126,8 +175,8 @@ class ActualCodecImport(unittest.TestCase):
         self.source = self.root / '测试 & source.wav'
         tone(self.source)
 
-    def _import(self, source=None, **kwargs):
-        return import_recording(source or self.source, self.root / 'runs', synthetic=True, **kwargs)
+    def _import(self, source=None, output=None, **kwargs):
+        return import_recording(source or self.source, output or (self.root / 'runs'), synthetic=True, **kwargs)
 
     def _encode(self, suffix):
         target = self.root / ('codec' + suffix)
@@ -248,6 +297,158 @@ class ActualCodecImport(unittest.TestCase):
         self.assertTrue(recording_run_errors(manifest, directory))
         original['path'] = '../outside.wav'
         self.assertTrue(recording_run_errors(manifest, directory))
+
+    def test_unsupported_channel_layout_with_a_supported_extension_is_a_persisted_failure(self):
+        """Media the import cannot map must fail inside the Run, not disappear."""
+        target = self.root / 'multichannel.wav'
+        with wave.open(str(target), 'wb') as output:
+            output.setparams((6, 2, 16000, 0, 'NONE', 'not compressed'))
+            output.writeframes(b'\x10\x00' * 16000 * 6)
+        directory, manifest = self._import(target)
+        self.assertEqual(manifest['stages']['ingestion']['status'], 'complete')
+        self.assertEqual(manifest['stages']['normalization']['status'], 'failed')
+        self.assertIn('mono/stereo', manifest['stages']['normalization']['reason'])
+        # The original stays byte-identical and the verdict is readable after a restart.
+        self.assertEqual((directory / 'original/source.wav').read_bytes(), target.read_bytes())
+        stored = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertEqual(stored['stages']['normalization']['reason'],
+                         manifest['stages']['normalization']['reason'])
+        self.assertEqual(manifest['stages']['report']['status'], 'complete')
+        self.assertEqual(recording_run_errors(manifest, directory), [])
+
+    def _silence(self, seconds=2, rate=16000, channels=1):
+        path = self.root / 'silence.wav'
+        with wave.open(str(path), 'wb') as output:
+            output.setparams((channels, 2, rate, 0, 'NONE', 'not compressed'))
+            for _ in range(seconds):
+                output.writeframes(b'\x00\x00' * rate * channels)
+        return path
+
+    def _qa(self, directory, manifest, kind='audio-qa'):
+        artifact = next(x for x in manifest['artifacts'] if x['kind'] == kind)
+        return load_document(directory / artifact['path'])
+
+    def test_audio_qa_reports_conditions_without_claiming_accuracy(self):
+        directory, manifest = self._import()
+        envelope = self._qa(directory, manifest)
+        self.assertEqual(schema_errors(envelope, 'analysis-output'), [])
+        self.assertEqual(envelope['status'], 'complete')
+        self.assertIn('no acceptance threshold configured', envelope['reason'])
+        self.assertIn('no recognition or measurement accuracy is claimed', envelope['reason'])
+        data = envelope['data']
+        conditions = {item['condition_id']: item for item in data['conditions']}
+        self.assertEqual(conditions['decodable_canonical_audio']['status'], 'met')
+        self.assertEqual(conditions['nonempty_signal']['status'], 'unassessed')
+        self.assertIn('not a quality, accuracy or acceptance result',
+                      conditions['nonempty_signal']['limitation'])
+        self.assertFalse(any(item['status'] == 'pass' for item in data['conditions']))
+        # Format/duration/channel/sample-rate facts are present and are not a verdict.
+        self.assertEqual((data['container'], data['encoding'], data['channels'], data['sample_rate_hz']),
+                         ('wav', 'PCM_S16LE', 1, 16000))
+        self.assertGreater(data['duration_ms'], 0)
+        self.assertFalse(data['all_silent'])
+        # The envelope's "canonical document" reference must be the JSON document that
+        # actually holds the reported data — never the WAV, which a consumer following
+        # the reference could not parse for `data`.
+        normalized = next(x for x in manifest['artifacts'] if x['kind'] == 'normalized_audio')
+        metadata = next(x for x in manifest['artifacts'] if x['kind'] == 'audio_metadata')
+        self.assertEqual(envelope['data_artifact_ref'], metadata['artifact_id'])
+        for ref in (normalized['artifact_id'], metadata['artifact_id']):
+            self.assertIn(ref, envelope['artifact_refs'])
+        referenced = directory / metadata['path']
+        self.assertTrue(referenced.is_file())
+        self.assertEqual(json.loads(referenced.read_text(encoding='utf-8'))['normalized'], data)
+        # The stage ledger lists every artifact the QA stage produced, so a machine
+        # consumer enumerating stage outputs also sees the QA envelope itself.
+        self.assertEqual(manifest['stages']['audio_qa']['output_artifact_ids'],
+                         [next(x['artifact_id'] for x in manifest['artifacts'] if x['kind'] == 'audio-qa')])
+
+    def test_near_silent_audio_is_unassessed_not_insufficient(self):
+        """The `insufficient` boundary is exactly zero energy, and that boundary is intentional."""
+        path = self.root / 'near-silent.wav'
+        samples = array('h', (1 if index % 2 else -1 for index in range(16000)))
+        if sys.byteorder != 'little':
+            samples.byteswap()
+        with wave.open(str(path), 'wb') as output:
+            output.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
+            output.writeframes(samples.tobytes())
+        directory, manifest = self._import(path)
+        envelope = self._qa(directory, manifest)
+        self.assertEqual(envelope['status'], 'complete')
+        data = envelope['data']
+        self.assertFalse(data['all_silent'])
+        self.assertGreater(data['peak'], 0)
+        conditions = {item['condition_id']: item for item in data['conditions']}
+        # Inaudible but non-zero energy is not declared insufficient: no threshold exists
+        # yet, so the condition stays explicitly unassessed rather than silently passing.
+        self.assertEqual(conditions['nonempty_signal']['status'], 'unassessed')
+        self.assertEqual(manifest['stages']['audio_qa']['status'], 'complete')
+        self.assertEqual(recording_run_errors(manifest, directory), [])
+
+    def test_silent_recording_abstains_in_qa_and_keeps_its_measurements(self):
+        directory, manifest = self._import(self._silence())
+        stage = manifest['stages']['audio_qa']
+        self.assertIn('nonempty_signal', stage['reason'])
+        envelope = self._qa(directory, manifest)
+        # The abstaining envelope is itself a contract document; assert it here as
+        # defence in depth rather than relying only on the writer's internal check.
+        self.assertEqual(schema_errors(envelope, 'analysis-output'), [])
+        self.assertEqual(envelope['status'], 'insufficient_evidence')
+        self.assertIsNone(envelope['data'], 'abstaining QA must not present measurements as a result')
+        self.assertIsNone(envelope['data_artifact_ref'])
+        # The measurements are still published as their own registered document, and the
+        # stage ledger lists it so a machine consumer enumerating outputs finds it.
+        conditions_artifact = next(x for x in manifest['artifacts'] if x['kind'] == 'audio_qa_conditions')
+        self.assertIn(conditions_artifact['artifact_id'], envelope['artifact_refs'])
+        self.assertIn(conditions_artifact['artifact_id'], stage['output_artifact_ids'])
+        metadata_artifact = next(x for x in manifest['artifacts'] if x['kind'] == 'audio_metadata')
+        self.assertIn(metadata_artifact['artifact_id'], envelope['artifact_refs'])
+        self.assertTrue((directory / metadata_artifact['path']).is_file())
+        published = load_document(directory / conditions_artifact['path'])
+        self.assertEqual(published['status'], 'insufficient_evidence')
+        self.assertEqual(published['reason'], envelope['reason'])
+        self.assertEqual(published['recording_sha256'], manifest['original_sha256'])
+        self.assertTrue(published['measurements']['all_silent'])
+        self.assertEqual(published['measurements']['peak'], 0)
+        self.assertEqual(published['measurements']['rms'], 0)
+        self.assertEqual(published['measurements']['conditions'], self._measurements(
+            directory, manifest)['conditions'])
+        # Silence is not a crash: ingestion, the report and the Run integrity all survive.
+        self.assertEqual(manifest['status'], 'partial')
+        self.assertEqual(manifest['stages']['ingestion']['status'], 'complete')
+        self.assertEqual(manifest['stages']['report']['status'], 'complete')
+        self.assertTrue((directory / 'analysis' / manifest['analysis_id'] / 'report.md').is_file())
+        self.assertEqual(recording_run_errors(manifest, directory), [])
+
+    def _measurements(self, directory, manifest):
+        metadata = next(x for x in manifest['artifacts'] if x['kind'] == 'audio_metadata')
+        return load_document(directory / metadata['path'])['normalized']
+
+    def test_registered_artifacts_stay_self_describing_on_disk(self):
+        """Reading a Run needs only its files: manifest, hashes and envelopes are self-sufficient.
+
+        This is the on-disk half of restart readability. The cross-process half (`docker
+        restart` plus whole-response equality) is proved by the CI `Recording backbone
+        container` workflow, not by this in-process test.
+        """
+        runs = self.root / 'restart-runs'
+        directory, manifest = self._import(output=runs)
+        del directory, manifest  # keep nothing but the files on disk
+        directories = sorted(path for path in runs.iterdir() if path.name.startswith('RUN-'))
+        self.assertEqual(len(directories), 1)
+        stored = json.loads((directories[0] / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertEqual(recording_run_errors(stored, directories[0]), [])
+        self.assertEqual(stored['stages']['audio_qa']['status'], 'complete')
+        for kind in ('audio-qa', 'audio_metadata', 'normalized_audio', 'original_recording',
+                     'report_json', 'report_markdown'):
+            artifact = next(x for x in stored['artifacts'] if x['kind'] == kind)
+            path = directories[0] / artifact['path']
+            self.assertTrue(path.is_file(), f'{kind} must still exist on disk')
+            self.assertEqual(digest(path), artifact['sha256'])
+        qa = load_document(directories[0] / next(x['path'] for x in stored['artifacts']
+                                                 if x['kind'] == 'audio-qa'))
+        self.assertEqual(qa['run_id'], stored['run_id'])
+        self.assertEqual(qa['analysis_id'], stored['analysis_id'])
 
     def test_cli_partial_exit_is_two(self):
         result = subprocess.run([sys.executable, '-m', 'aivoicebench', 'import', str(self.source),
