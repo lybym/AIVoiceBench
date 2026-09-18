@@ -6,7 +6,7 @@
 
 2026-09-18 配置与 File ASR transport 收敛：目标把 LLM/ASR/TTS Provider 与对象存储非敏感参数分别外置为服务器侧 `providers.yaml` / `storage.yaml`，长期 secret 只通过 env/secret reference 解析。Recording Analysis P0 继续使用火山 File ASR 极速版 HTTP：小文件 inline Base64，大文件私有 TOS + 短期 Presigned GET；对象存储不是 Streaming ASR 或所有 File ASR 的强制依赖。实现由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 跟踪。
 
-2026-09-18 Active TTS 路线进一步收敛：Fixed 目标使用火山 V3 WebSocket 单向流式接口生成并冻结 Stimulus Artifact，Free 目标使用 V3 WebSocket 双向流式接口承接 Streaming LLM 并向 Browser 流式播放；新增 `streaming_tts` 生命周期/route，与 Fixed 的 `tts` asset synthesis 分离。音色、采样率、编码、语速以及协议实际支持的音量/音调等参数按官方 V3 字段外置配置。该迁移由 [Issue #98](https://github.com/lybym/AIVoiceBench/issues/98) 跟踪，当前 HTTP SSE 实现状态不因此升级。
+2026-09-18 Active TTS 路线进一步收敛：Fixed 目标使用火山 V3 WebSocket 单向流式接口生成并冻结 **MP3 Stimulus Artifact**，Free 目标使用 V3 WebSocket 双向流式接口承接 Streaming LLM 并向 Browser 流式播放 **MP3**；新增 `streaming_tts` 生命周期/route，与 Fixed 的 `tts` asset synthesis 分离。**TTS format/encoding 固定为 MP3，不作为可配置项**；音色、采样率、语速以及协议实际支持的音量/音调等必要参数按官方 V3 字段外置配置。该迁移由 [Issue #98](https://github.com/lybym/AIVoiceBench/issues/98) 跟踪，当前 HTTP SSE 实现状态不因此升级。
 
 - **[产品需求 PRD](PRD.md)**：唯一产品入口，维护边界、全局原则、需求目录和正式里程碑；详细功能/指标/验收/追踪/历史见 [PRD 分册导航](prd/README.md)。
 - **[Remote Browser Station 与开源组件策略](26-remote-browser-component-strategy.md)**：2026-09-16/17 的部署、Browser Station TypeScript 目标、VAD、speaker separation、wavesurfer.js 与 Windows Native 边界决策。
