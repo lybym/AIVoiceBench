@@ -94,7 +94,9 @@ class SemanticAttributionEndToEnd(unittest.TestCase):
 
     def run_import(self):
         providers = RunProviders(
-            asr=lambda root: VolcengineASRProvider(root, 'synthetic-key'),
+            asr=lambda root: VolcengineASRProvider(root, 'synthetic-key',
+                transport_config={'audio_transport': 'object_storage',
+                                   'inline_max_bytes': 15728640}),
             diarization=lambda root: ASRNativeDiarizationProvider(),
             judge=self.role_provider)
         with patch('aivoicebench.cloud_transport.HTTPTransport.request',
