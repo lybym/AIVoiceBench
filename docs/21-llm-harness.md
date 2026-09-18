@@ -6,7 +6,7 @@
 
 `LLMJudge` 调用 `LLMProvider.complete(system_prompt, user_prompt, dimension, context)`，返回结构结果与 `LLMInvocation`。默认 `UnavailableLLMProvider`，`MockLLMProvider` 仅为显式软件 fixture/CLI 测试；不能把 Mock 结果称为真实模型评估。
 
-`llm_provider.py` 已有兼容 Chat Completions 的 OpenAI/Volcengine Provider，失败、非法 JSON、无有效引用和模型编造时间会被拒绝。它不是完整的 schema-constrained tool loop：上下文/语义锚点、统一原生调用审计和更多产品维度仍需接通。
+`llm_provider.py` 已有兼容 Chat Completions 的 OpenAI/Volcengine Provider，失败、非法 JSON、无有效引用和模型编造时间会被拒绝。它不是完整的 schema-constrained tool loop：上下文/语义锚点、统一原生调用审计和更多产品维度仍需接通。2026-09-18 的目标配置把 Judge/LLM 的 endpoint、model、temperature、max_tokens、timeout 与 route 统一移入服务器侧外置 `providers.yaml`；YAML 只保存 `credential_env` 引用，不保存真实 API Key。当前 SQLite model settings 仍是实现事实，迁移由 #87 跟踪。
 
 模型管理与快照已在 main；但 ImportRun 尚未执行 Judge/Findings，仅发布状态封装。现有 LLMJudge 位于独立 pipeline/CLI，不能代表 Web 上传已完成语义评估。ASR/原生聚类已接主链；TTS 已按 API-Key V3 SSE 接入主动语音测试链路（Issue #60），但不属于 ImportRun 分析链，且真实录音/设备验收未完成；语义角色 PR #54 未合并。
 
