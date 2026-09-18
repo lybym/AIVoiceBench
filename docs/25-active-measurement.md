@@ -70,7 +70,9 @@ Streaming ASR final Observation
 
 ### Configuration and evidence boundary
 
-两类 TTS 都从 server-owned `providers.yaml` 获取 non-secret 参数。speaker/voice、encoding/format、sample rate、speech rate，以及所选协议/音色官方实际支持的 loudness/pitch 等配置必须逐项遵循当前火山 V3 文档；unsupported 组合显式失败，不静默忽略。Credential 只在 Backend 解析，Browser 不直连 Provider。
+两类 TTS 都从 server-owned `providers.yaml` 获取 non-secret 参数。speaker/voice、encoding/format、sample rate、speech rate，以及所选协议/音色官方实际支持的 loudness/pitch 等配置必须逐项遵循当前火山 V3 文档；unsupported 组合显式失败，不静默忽略。2026-09-18 的官方单向 V3 文档仍标注音高调节暂不支持，因此 Fixed 单向 profile 不得默认宣称 pitch capability；若官方后续改变，validator、capability matrix 与本文必须同步更新。Credential 只在 Backend 解析，Browser 不直连 Provider。
+
+协议依据：[V3 单向 WebSocket](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-websocket?lang=zh)；[V3 双向 WebSocket](https://docs.volcengine.com/docs/DoubaoVoice/bidirectional-streaming-text-to-speech-websocket?lang=zh)。
 
 LLM chunk 时间、TTS provider event、audio chunk arrival、Browser playback callback 都可记录为 Control/Provider diagnostics；它们不能替代本文件定义的 Browser sample clock、Stimulus Alignment 或正式 Measurement Audio boundary。
 
