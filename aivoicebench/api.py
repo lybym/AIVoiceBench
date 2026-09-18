@@ -97,6 +97,10 @@ class AnalysisResponse(BaseModel):
     # the envelope's own evidence status. It never carries a recognition, accuracy or
     # acceptance claim. Empty when the Run never produced QA.
     audio_qa: dict = {}
+    # Manual speaker-role review gate: the anonymous clusters, the evidence needed to
+    # decide each one, the saved human revision and the revision diff. Role-dependent
+    # stages stay blocked until every cluster has an explicit user decision.
+    role_review: dict = {}
 
 
 @app.get("/health")
@@ -277,6 +281,26 @@ def _load_run(directory):
     from .alignment import explain_metric_gap
     metrics_gap = explain_metric_gap(
         {'segments': fused_segments}, timeline, {'metrics': metrics_items}, alignment_doc)
+
+    def role_review():
+        """The manual role gate for this Run's current AnalysisRevision.
+
+        The revision's own published document is authoritative because it records the
+        gate state that revision was produced under. A Run analysed before the gate
+        existed has no such document, so an equivalent surface is built from its own
+        preserved speaker clusters rather than reported as missing.
+        """
+        document_payload = _read(root / 'role-review.json')
+        if isinstance(document_payload, dict) and document_payload:
+            return document_payload
+        if not unified:
+            return {}
+        from .role_review import build_role_review
+        try:
+            return build_role_review(directory)
+        except (OSError, ValueError):
+            return {}
+
     result = dict(transcript=(_read(root / 'transcript.json').get('data') or {}) if unified else {},
         stages=manifest.get('stages', {}), analysis_id=manifest.get('analysis_id', ''),
         invocation_refs=[a for a in manifest.get('artifacts', []) if a['kind']=='provider_invocation'],
@@ -293,6 +317,7 @@ def _load_run(directory):
                    'processor': alignment_doc.get('processor'),
                    'diagnostics': alignment_doc.get('diagnostics')} if alignment_doc else {},
         metrics_gap=metrics_gap,
+        role_review=role_review(),
         audio_qa=audio_qa(),
         turns=items('turns', 'turns', 'turns'), events=timeline.get('events', []),
         timeline=timeline, metrics=metrics_items,
@@ -337,6 +362,69 @@ async def resume_run(run_id: str, request: Request):
         await run_in_threadpool(retry)
     except Exception:
         raise HTTPException(409, '无法重试：请检查 ASR 配置、证据完整性或是否已有分析正在执行') from None
+    return AnalysisResponse(**_load_run(directory))
+
+
+@app.get('/api/runs/{run_id}/role-review')
+def get_role_review(run_id: str):
+    """Speaker clusters, the evidence needed to decide them, and the gate state."""
+    directory = _run_dir(run_id)
+    view = _load_run(directory).get('role_review') or {}
+    if not view:
+        raise HTTPException(404, '该记录没有可复核的说话人聚类')
+    return view
+
+
+@app.post('/api/runs/{run_id}/role-review', response_model=AnalysisResponse)
+async def save_role_review(run_id: str, request: Request):
+    """Save one explicit human decision per cluster and rerun role-dependent stages.
+
+    Every cluster must be decided, including a deliberate `unknown`. Saving creates a
+    new immutable AnalysisRevision; the previous revision's artifacts are untouched.
+    """
+    from urllib.parse import urlsplit
+    origin = request.headers.get('origin')
+    if origin and (urlsplit(origin).netloc != request.url.netloc
+                   or urlsplit(origin).scheme != request.url.scheme):
+        raise HTTPException(403, '请从当前服务页面提交人工角色确认')
+    if len(await request.body()) > 64 * 1024:
+        raise HTTPException(413, '角色确认请求过大')
+    directory = _run_dir(run_id)
+    if (directory / 'web-analysis').exists():
+        raise HTTPException(409, '旧版分析请重新导入；原记录保持不变')
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(400, '请求内容无效') from None
+    if not isinstance(payload, dict):
+        raise HTTPException(400, '请求内容无效')
+    mapping = payload.get('mapping')
+    reviewer = payload.get('reviewer')
+    reason = payload.get('reason') or ''
+    if not isinstance(mapping, dict) or not mapping:
+        raise HTTPException(400, '请为每个说话人聚类提交明确角色（tester/device/unknown）')
+    if not isinstance(reviewer, str) or not reviewer.strip():
+        raise HTTPException(400, '请填写复核人身份')
+    if not isinstance(reason, str):
+        raise HTTPException(400, '复核说明必须是文本')
+    snapshot, _providers = _model_settings().capture()
+    from .import_pipeline import apply_role_mapping
+    from .role_review import RoleReviewError
+    from .run_lock import run_lock
+
+    def apply():
+        with run_lock(directory):
+            apply_role_mapping(directory, mapping, reviewer, reason=reason, model_snapshot=snapshot)
+
+    try:
+        await run_in_threadpool(apply)
+    except RoleReviewError as error:
+        # Input problems state the real reason; they never echo credentials.
+        raise HTTPException(400, str(error)) from None
+    except ValueError:
+        raise HTTPException(409, '无法应用角色确认：该记录的可用证据不足，请先完成转写与说话人聚类') from None
+    except Exception:
+        raise HTTPException(409, '无法应用角色确认：请检查证据完整性或是否已有分析正在执行') from None
     return AnalysisResponse(**_load_run(directory))
 
 

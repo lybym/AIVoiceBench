@@ -51,3 +51,9 @@ jobs:
       # being reported by the UI only.
       - name: Integration acceptance (per-capability profiles, real page)
         run: python -m unittest tests.test_voice_integration_acceptance -v
+      # The manual speaker-role gate is a Web/API contract: the review surface, the
+      # refusal of an incomplete decision and the reanalysis all have to work through
+      # the real page. It is listed explicitly so a skipped module can never be
+      # reported as a passed gate.
+      - name: Manual speaker-role gate (real page, real API)
+        run: python -m unittest tests.test_role_review_browser -v

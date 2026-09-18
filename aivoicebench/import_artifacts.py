@@ -23,6 +23,7 @@ RECORDING_ARTIFACT_KINDS = frozenset({
     'audio-qa', 'audio_qa_conditions',
     'transcript', 'asr_native', 'provider_invocation',
     'acoustic-segments', 'speaker-assignments', 'speaker-alignment', 'attribution',
+    'speaker-role-review', 'speaker-role-mapping',
     'fused-segments',
     'turns', 'timeline', 'metrics', 'judge-results', 'findings',
     'retained_diagnostic', 'model_configuration', 'analysis_checkpoint',

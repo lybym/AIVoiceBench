@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/role-review.schema.json",
+  "title": "SpeakerRoleReview 1.0.0",
+  "description": "The manual speaker-role review surface and gate state. ASR clusters stay anonymous; a human assigns tester/device/unknown per cluster. `unknown` is an explicit decision and is never conflated with 'not yet reviewed'. No language model participates in role assignment.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "review_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+    "run_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+    "analysis_id": { "type": ["string", "null"] },
+    "processor": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "llm_role_inference": { "const": false }
+      },
+      "required": ["name", "version", "llm_role_inference"],
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "audio_sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+        "diarization_document_id": { "type": ["string", "null"] },
+        "invocation_id": { "type": ["string", "null"] }
+      },
+      "required": ["audio_sha256", "diarization_document_id", "invocation_id"],
+      "additionalProperties": false
+    },
+    "status": { "enum": ["awaiting_role_review", "incomplete_review", "complete_review"] },
+    "reason": { "type": "string", "minLength": 1 },
+    "roles": { "type": "array", "items": { "enum": ["tester", "device", "unknown"] } },
+    "awaiting_decision_for": { "type": "array", "items": { "type": "string" } },
+    "unknown_clusters": { "type": "array", "items": { "type": "string" } },
+    "clusters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "speaker_id": { "type": "string", "minLength": 1 },
+          "native_speaker_id": { "type": ["string", "null"] },
+          "segment_count": { "type": "integer", "minimum": 0 },
+          "speech_ms": { "type": "number", "minimum": 0 },
+          "span_start_ms": { "type": "number", "minimum": 0 },
+          "span_end_ms": { "type": "number", "minimum": 0 },
+          "representative_intervals": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "segment_id": { "type": ["string", "null"] },
+                "start_ms": { "type": "number", "minimum": 0 },
+                "end_ms": { "type": "number", "minimum": 0 },
+                "duration_ms": { "type": "number", "minimum": 0 },
+                "timestamp_source": { "type": "string", "minLength": 1 }
+              },
+              "required": ["segment_id", "start_ms", "end_ms", "duration_ms", "timestamp_source"],
+              "additionalProperties": false
+            }
+          },
+          "playback": {
+            "type": ["object", "null"],
+            "properties": {
+              "start_ms": { "type": "number", "minimum": 0 },
+              "end_ms": { "type": "number", "minimum": 0 }
+            },
+            "required": ["start_ms", "end_ms"],
+            "additionalProperties": false
+          },
+          "transcript_snippets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "asr_segment_id": { "type": ["string", "null"] },
+                "start_ms": { "type": "number", "minimum": 0 },
+                "end_ms": { "type": "number", "minimum": 0 },
+                "text": { "type": "string", "minLength": 1 }
+              },
+              "required": ["asr_segment_id", "start_ms", "end_ms", "text"],
+              "additionalProperties": false
+            }
+          },
+          "decision": { "enum": ["tester", "device", "unknown", null] },
+          "decision_basis": { "enum": ["user_review", null] },
+          "revision_ref": { "type": ["string", "null"] }
+        },
+        "required": ["speaker_id", "native_speaker_id", "segment_count", "speech_ms",
+                     "span_start_ms", "span_end_ms", "representative_intervals", "playback",
+                     "transcript_snippets", "decision", "decision_basis", "revision_ref"],
+        "additionalProperties": false
+      }
+    },
+    "revision": {
+      "type": ["object", "null"],
+      "properties": {
+        "revision_id": { "type": "string", "minLength": 1 },
+        "revision_index": { "type": "integer", "minimum": 1 },
+        "reviewer": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "mapping_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "decisions": { "type": "object" },
+        "analysis_id": { "type": ["string", "null"] }
+      },
+      "required": ["revision_id", "revision_index", "reviewer", "reason", "created_at",
+                   "mapping_sha256", "decisions", "analysis_id"],
+      "additionalProperties": false
+    },
+    "history": {
+      "type": "array",
+      "items": { "type": ["object", "null"] }
+    },
+    "diff": {
+      "type": "object",
+      "properties": {
+        "changed": { "type": "array" },
+        "added": { "type": "array" },
+        "removed": { "type": "array" },
+        "unchanged": { "type": "array" }
+      },
+      "required": ["changed", "added", "removed", "unchanged"],
+      "additionalProperties": false
+    },
+    "gate": {
+      "type": "object",
+      "properties": {
+        "role_dependent_stages_blocked": { "type": "boolean" },
+        "note": { "type": "string", "minLength": 1 }
+      },
+      "required": ["role_dependent_stages_blocked", "note"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["schema_version", "review_id", "run_id", "analysis_id", "processor", "scope",
+               "status", "reason", "roles", "awaiting_decision_for", "unknown_clusters",
+               "clusters", "revision", "history", "diff", "gate"],
+  "additionalProperties": false
+}

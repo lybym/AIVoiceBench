@@ -538,11 +538,27 @@ def _run_evidence_chain(run, normalized, asr_available, providers=None):
 
     # Source attribution — parent: diarization output
     # Role assignment is user-owned. The current explicit mapping seam is used by
-    # fixtures and future persisted manual revisions; no LLM is consulted here.
+    # fixtures and by the persisted manual revisions; no LLM is consulted here.
     explicit_mapping = None
     if hasattr(run, '_explicit_speaker_mapping'):
         explicit_mapping = run._explicit_speaker_mapping
 
+    _run_role_dependent_chain(run, acoustic_result, transcript_doc, diarization_result,
+                              acoustic_art_id=acoustic_art_id, diar_art_id=diar_art_id,
+                              asr_art_id=asr_art_id, norm_art_id=norm_art_id,
+                              explicit_mapping=explicit_mapping)
+
+
+def _run_role_dependent_chain(run, acoustic_result, transcript_doc, diarization_result, *,
+                              acoustic_art_id=None, diar_art_id=None, asr_art_id=None,
+                              norm_art_id=None, explicit_mapping=None):
+    """Run attribution → fusion → turns → timeline → metrics.
+
+    Split out of `_run_evidence_chain` so a saved human role mapping can rerun
+    exactly this suffix in a new AnalysisRevision without recomputing recognition or
+    clustering. Role assignment is user-owned: an unknown cluster stays unknown and
+    the role-dependent stages abstain rather than guessing.
+    """
     attr_parents = [diar_art_id] if diar_art_id else [acoustic_art_id or norm_art_id]
     attribution_result = run.execute('attribution', attr_parents,
         lambda: _attribute(run, diarization_result, diar_art_id or (acoustic_art_id or norm_art_id),
@@ -594,16 +610,61 @@ def _run_evidence_chain(run, normalized, asr_available, providers=None):
                         run.execute('metrics', [timeline_art_id],
                             lambda: _metrics(run, timeline_doc, [timeline_art_id]))
             else:
-                insuf_parent = fusion_art_id or norm_art_id
-                for stage_name in ('turns', 'timeline', 'metrics'):
-                    stage = run.manifest['stages'][stage_name]
-                    stage['status'] = 'insufficient_evidence'
-                    stage['reason'] = 'No known speaker roles; attribution did not produce tester/device'
-                    stage['input_artifact_ids'] = [insuf_parent]
-                    output = run.envelope(
-                        {'turns': 'turns', 'timeline': 'timeline', 'metrics': 'metrics'}[stage_name],
-                        'insufficient_evidence', stage['reason'], refs=[insuf_parent])
-                    stage['output_artifact_ids'].append(output)
+                _abstain_role_dependent_stages(run, fusion_art_id or norm_art_id,
+                                               _role_gate_reason(run, diarization_result))
+    # Every revision publishes its own gate state and review surface, so a reader can
+    # see which decisions that exact revision was produced from.
+    _publish_role_review(run, diarization_result, transcript_doc)
+    return attribution_result
+
+
+def _publish_role_review(run, diarization_doc, transcript_doc):
+    """Register the role-review surface and gate state as chain evidence."""
+    from .role_review import REVIEW_KIND, build_role_review
+    from .validation import schema_errors
+    document = build_role_review(run.directory, diarization_doc, transcript_doc)
+    errors = schema_errors(document, 'role-review')
+    if errors:
+        raise ValueError('Invalid role review document: ' + '\n'.join(errors))
+    path = run.analysis / 'role-review.json'
+    write_json(path, document)
+    artifact_id = run.register(path, REVIEW_KIND, processor='role_review:1.0.0')
+    run.manifest['stages']['attribution']['output_artifact_ids'].append(artifact_id)
+    return document
+
+
+def _role_gate_reason(run, diarization_doc):
+    """Name the exact gate that blocks role-dependent stages.
+
+    An anonymous cluster waiting for a human decision is a different state from a
+    Run that produced no clusters at all, and from a complete mapping in which the
+    user deliberately chose `unknown` for everything.
+    """
+    from .role_review import load_revisions, review_status
+    cluster_ids = list(dict.fromkeys(segment['speaker_id']
+                                     for segment in (diarization_doc or {}).get('speaker_segments') or []))
+    revisions = load_revisions(run.directory)
+    decisions = revisions[-1]['decisions'] if revisions else {}
+    status, detail = review_status(cluster_ids, decisions)
+    if not cluster_ids:
+        return 'No speaker roles are known: ' + detail
+    if status == 'complete_review':
+        return ('All speaker clusters have a user decision, but none is tester/device; '
+                'role-dependent stages cannot run from an all-unknown mapping')
+    return f'{status}: {detail}'
+
+
+def _abstain_role_dependent_stages(run, parent, reason):
+    """Publish an explicit insufficient_evidence envelope for each blocked stage."""
+    for stage_name in ('turns', 'timeline', 'metrics'):
+        stage = run.manifest['stages'][stage_name]
+        stage['status'] = 'insufficient_evidence'
+        stage['reason'] = reason
+        stage['input_artifact_ids'] = [parent]
+        output = run.envelope(
+            {'turns': 'turns', 'timeline': 'timeline', 'metrics': 'metrics'}[stage_name],
+            'insufficient_evidence', stage['reason'], refs=[parent])
+        stage['output_artifact_ids'].append(output)
 
 
 def _configuration_refs(run):
@@ -627,7 +688,6 @@ def _save_configuration(run, snapshot):
         write_json(path, snapshot)
         run.register(path, 'model_configuration', processor='model_settings:1.1.0')
         run.checkpoint()
-
 
 def resume_recording(directory, *, providers=None, model_snapshot=None):
     """Explicit ASR retry in the same Run; preserve every earlier analysis artifact.
@@ -691,3 +751,112 @@ def resume_recording(directory, *, providers=None, model_snapshot=None):
     if recording_run_errors(run.manifest, directory):
         raise ValueError('Resumed Run evidence failed validation')
     return directory, run.manifest
+
+
+def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snapshot=None,
+                       evidence_refs=()):
+    """Create a new AnalysisRevision from one saved human role decision set.
+
+    Caller must hold the Run lock. Recognition and speaker clustering are original
+    machine evidence, so both are **restored** from the current revision instead of
+    being recomputed: no second recognition request, no changed clustering, and no
+    provider configuration is required to reanalyze. Only attribution and the stages
+    downstream of it are recomputed, from the human mapping.
+
+    The previous revision's artifacts are never modified. Returns
+    ``(directory, manifest, review_document)``.
+    """
+    import copy
+    import uuid
+
+    from .role_review import (REVISION_KIND, RoleReviewError, build_role_review,
+                              save_revision, validate_decisions)
+
+    directory = Path(directory).resolve()
+    manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+    if recording_run_errors(manifest, directory):
+        raise ValueError('Run evidence failed integrity validation')
+    current = directory / 'analysis' / manifest['analysis_id']
+
+    diarization_envelope = json.loads((current / 'speaker-assignments.json').read_text(encoding='utf-8'))
+    diarization_doc = diarization_envelope.get('data') or {}
+    cluster_ids = list(dict.fromkeys(segment['speaker_id']
+                                     for segment in diarization_doc.get('speaker_segments') or []))
+    if not cluster_ids:
+        raise RoleReviewError('This Run produced no speaker clusters; a role decision cannot be applied')
+    resolved = validate_decisions(decisions, cluster_ids)
+
+    asr_stage = manifest['stages']['asr']
+    if asr_stage['status'] not in ('complete', 'partial') or not (current / 'transcript.json').is_file():
+        raise RoleReviewError('A preserved timestamped transcript is required before roles can be applied')
+    transcript_envelope = json.loads((current / 'transcript.json').read_text(encoding='utf-8'))
+    acoustic_envelope = json.loads((current / 'acoustic-segments.json').read_text(encoding='utf-8'))
+    acoustic_doc = acoustic_envelope.get('data') or {}
+
+    # One immutable revision file per save; the index is derived from what exists.
+    revision_path, revision = save_revision(
+        directory, resolved, reviewer, reason=reason,
+        analysis_id=manifest['analysis_id'],
+        recording_sha256=manifest.get('original_sha256'),
+        diarization_document_id=diarization_doc.get('document_id'),
+        evidence_refs=evidence_refs)
+
+    run = ImportRun.__new__(ImportRun)
+    run.directory, run.manifest = directory, copy.deepcopy(manifest)
+    checkpoint = current / 'manifest-snapshot.json'
+    if checkpoint.exists():
+        if json.loads(checkpoint.read_text(encoding='utf-8')) != manifest:
+            raise ValueError('Conflicting analysis checkpoint')
+    else:
+        write_json(checkpoint, manifest)
+    run.register(checkpoint, 'analysis_checkpoint', processor='role_review:1.0.0')
+    revision_ref = run.register(revision_path, REVISION_KIND, processor=f'role_review:{revision["revision_index"]}')
+    run.manifest['analysis_id'] = 'ANALYSIS-' + uuid.uuid4().hex
+    run.analysis = directory / 'analysis' / run.manifest['analysis_id']
+    run.analysis.mkdir()
+    for name, stage in run.manifest['stages'].items():
+        if name not in ('ingestion', 'normalization', 'audio_qa'):
+            stage.update(status='pending', started_at=None, finished_at=None, latency_ms=None,
+                         input_artifact_ids=[], output_artifact_ids=[], reason='Processor not run in this revision')
+    run.manifest['status'] = 'partial'
+    _save_configuration(run, model_snapshot)
+    run.checkpoint()
+
+    def restore(kind, envelope, parents):
+        """Re-publish preserved evidence into this revision without recomputing it.
+
+        The envelope's own artifact refs are carried over because they are already
+        registered in this Run; `data_artifact_ref` must stay one of them or the
+        canonical document reference would dangle.
+        """
+        refs = [ref for ref in (list(envelope.get('artifact_refs') or []) + list(parents))]
+        item = run.envelope(kind, envelope['status'], envelope['reason'], envelope['data'],
+                            refs, envelope.get('data_artifact_ref'))
+        return [item], envelope.get('data'), None
+
+    preserved_parents = [revision_ref] + _configuration_refs(run)
+    run.execute('asr', preserved_parents, lambda: restore('transcript', transcript_envelope, preserved_parents))
+    run.manifest['stages']['asr']['processor'] = asr_stage['processor']
+    asr_art_id = run.manifest['stages']['asr']['output_artifact_ids'][-1]
+
+    run.execute('acoustic', [asr_art_id], lambda: restore('acoustic-segments', acoustic_envelope, [asr_art_id]))
+    run.manifest['stages']['acoustic']['processor'] = manifest['stages']['acoustic']['processor']
+    acoustic_art_id = run.manifest['stages']['acoustic']['output_artifact_ids'][-1]
+
+    run.execute('diarization', [acoustic_art_id], lambda: restore('speaker-assignments', diarization_envelope, [acoustic_art_id]))
+    run.manifest['stages']['diarization']['processor'] = manifest['stages']['diarization']['processor']
+    diar_art_id = run.manifest['stages']['diarization']['output_artifact_ids'][-1]
+
+    run._explicit_speaker_mapping = resolved
+    _run_role_dependent_chain(run, acoustic_doc, transcript_envelope.get('data'), diarization_doc,
+                              acoustic_art_id=acoustic_art_id, diar_art_id=diar_art_id,
+                              asr_art_id=asr_art_id, norm_art_id=revision_ref,
+                              explicit_mapping=resolved)
+    _resolve_unrun_stages(run, True)
+    _retain_failures(run)
+    run.execute('report', [a['artifact_id'] for a in run.manifest['artifacts']],
+                lambda: write_import_report(run))
+    run.checkpoint()
+    if recording_run_errors(run.manifest, directory):
+        raise ValueError('Role reanalysis produced invalid Run evidence')
+    return directory, run.manifest, build_role_review(directory)

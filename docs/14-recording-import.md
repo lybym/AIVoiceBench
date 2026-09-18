@@ -49,6 +49,8 @@ RUN-<uuid>/
     acoustic-segments.json
     speaker-assignments.json
     attribution.json
+    role-review.json
+    alignment.json
     fused-segments.json
     turns.json
     timeline.json
@@ -57,6 +59,9 @@ RUN-<uuid>/
     findings.json
     report.json
     report.md
+  role-review/
+    role-mapping-REV-0001.json       # immutable human decision sets (append-only)
+    role-mapping-REV-0002.json
 ```
 
 RecordingRun 1.0 is a new workflow-specific manifest; the preparation RunManifest 1.0 is unchanged. An AnalysisOutput envelope binds domain output to Run/Analysis and status. Pending/failed/insufficient outputs have `data: null`, not invented canonical events or zero metrics. `data_artifact_ref` identifies the stored canonical document that carries the envelope's own `data` — the Transcript document for `transcript`, the canonical `audio-metadata.json` for a completed `audio-qa` — and its local relative paths resolve against that document's folder. It is never the binary audio artifact. The envelope supplies unscripted Run identity without putting a fake case_id into Transcript 1.0. Cloud Transcript 1.1.0 and imported MetricResult 3.0.0 are implemented, with legacy version validation retained.
@@ -87,8 +92,16 @@ Tests use synthetic tones to exercise actual WAV/MP3/AAC-in-M4A decoding, 44.1kH
 
 Ingestion refusals are covered as durable states rather than silent gaps: a corrupt, truncated, empty or unmappable recording (for example a multichannel WAV or an unsupported `.txt` container) keeps its Run, records the refusal reason in `manifest.json`, leaves `original_sha256` null and registers no `original_recording`, and still writes a report. `test_import.py` also re-reads a completed Run from disk alone and re-hashes every registered artifact, proving that reading a Run needs no in-memory process state; the CI `Recording backbone container` workflow performs the equivalent check across a `docker restart`.
 
-Remaining: real ASR/speaker-label verification, automatic role/semantic association, Judge/Findings/full report integration, human revisions and full Windows-browser/real-recording acceptance. No Windows executable or professional HIL is a prerequisite.
+Remaining: real ASR/speaker-label verification, Judge/Findings/full report integration and full Windows-browser/real-recording acceptance. No Windows executable or professional HIL is a prerequisite.
 
 2026-09-18 的单份授权诊断录音已经观察到真实 Seed standard transcript 和 5 个匿名 speaker clusters，但 acoustic segments 未获得 speaker 对齐，且没有用户保存的角色 mapping，Timeline/metrics 因证据不足而弃权。诊断时曾执行的 LLM 角色提议现只作为历史故障证据，不进入产品结果。见 [诊断记录](27-real-recording-diagnostic.md)、[#94](https://github.com/lybym/AIVoiceBench/issues/94) 与人工确认 Gate [#95](https://github.com/lybym/AIVoiceBench/issues/95)。
+
+## 人工角色确认 Gate（#95）
+
+匿名 cluster 出现时，Run 在 `awaiting_role_review` 暂停：role-dependent Turns、Timeline、Metrics 与正式测试报告都不运行，只展示明确标注为导入/诊断的临时状态。该状态由每个 revision 自己发布的 `role-review.json`（kind `speaker-role-review`，`role-review` schema）记录，`GET /api/runs/{run_id}` 的 `role_review` 与 Web 片段页的人工确认面板读取同一份证据。
+
+复核面按聚类给出：原生标签、段数与语音时长、可点击试听的代表性区间、对应 utterance 的转写片段与 `playback` 范围。`POST /api/runs/{run_id}/role-review` 接受 `{mapping, reviewer, reason}`，要求每个聚类都有明确决定；`unknown` 是有效决定，"未确认"与"确认后判为未知"是两种不同状态（`awaiting_role_review` / `incomplete_review` / `complete_review`）。
+
+保存会写入一份不可变 `role-review/role-mapping-REV-NNNN.json`，并创建新的 AnalysisRevision。识别与聚类是原始机器证据，因此从当前 revision **恢复**（不重新调用 Provider、不重新聚类、不需要 Provider 配置），只从 Attribution 向下重跑；旧 revision 的 artifact 字节不变，修改 mapping 会再生成一份 revision 并在 `diff` 中显示变化。真实录音与人工标注验收仍属 [#85](https://github.com/lybym/AIVoiceBench/issues/85)。
 
 Official media references: [FFmpeg stream selection/conversion](https://ffmpeg.org/ffmpeg.html), [FFprobe structured metadata](https://ffmpeg.org/ffprobe.html), [resampler options](https://ffmpeg.org/ffmpeg-resampler.html). Local CLI needs installed FFmpeg/FFprobe; Docker already includes them.
