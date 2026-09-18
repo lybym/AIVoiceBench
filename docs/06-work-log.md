@@ -1290,3 +1290,14 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **build Release / container smoke（本地受限）。** `docker build -t aivoicebench:v0.5.0-alpha.1 .` 失败：Docker Desktop 无法访问 `registry-1.docker.io`（无 HTTPS proxy，IPv6 `2a03:2880:…:443` 连接超时），base image `python:3.12-slim` 未本地缓存。本环境无法完成镜像构建与 `docker_smoke.py` 容器 smoke；container/server 验证由 PR CI `backbone-smoke`（`docker build` → `docker_smoke.py` → `test_recording_backbone.py` → restart → verify-history）在 GitHub runner 上执行，结果以 PR CI 为准。版本一致性已由 `test_web_release`（`/health`==VERSION）与 `test_release_packaging` 在软件层证明。
 - **证据边界与限制。** 本次只声明 software_verified；M1 尚未通过（`acceptance-status.md` 明示），#90 真实 TOS / container-server 路径未在 main push 验证（backbone-smoke 此前只在 PR 分支跑），#21 仍 Open、真实录音最终验收由 #85 承担。不创建 stable tag、不发布 Stable Release、不构建/发布镜像归档；正式镜像与附件由合并后手动 `release.yml` dispatch 构建。预览版不接管 `Latest`，`v0.4.0` 仍是稳定版。
 
+
+
+## 2026-09-18 — Active TTS V3 WebSocket 路线收敛（Issue #98）
+
+- **用户授权决策。** Active Voice Test 的火山 TTS 从当前 V3 HTTP SSE one-shot adapter 演进为两类明确生命周期：Fixed Case Runner 使用 V3 WebSocket 单向流式（完整文本一次提交、音频流式返回），Free Test Agent 使用 V3 WebSocket 双向流式（Streaming LLM text 输入、streaming audio 输出）。实现工作单元为 [Issue #98](https://github.com/lybym/AIVoiceBench/issues/98)。
+- **Fixed 边界。** 单向 WebSocket 只负责准备 stimulus：完整 Case 文本合成后收齐/校验 provider audio，规范化并冻结为不可变 Stimulus Artifact；正式 Run 只播放冻结资产并引用 SHA-256、sample metadata、speaker/resource/model 与 non-secret config snapshot，不因运行开始重新合成同一 Case。Provider wire format 与最终 WAV Artifact 解耦，避免把旧 SSE 的 `format=wav` 假设搬到流式 WS。
+- **Free 边界。** 目标链为 Streaming ASR final Observation → Streaming LLM → ordered speakable text chunks → V3 bidirectional TTS → Browser streaming playback。TTS session 与 Run/Turn 绑定；Stop/cancel/stale Turn/断连后的迟到音频不得串入下一轮；失败不得静默降级到旧 SSE 或单向 WS。
+- **配置模型。** 目标 route 区分 `tts`（complete-text / asset synthesis）与新增 `streaming_tts`（streaming-text / streaming-audio session）。speaker/voice、encoding/format、sample rate、speech rate，以及当前协议/音色官方支持时的 loudness/pitch 等必须逐项遵循火山 V3 官方字段与合法值，unsupported 组合显式失败。2026-09-18 官方单向 V3 文档仍标注音高调节暂不支持，因此 Fixed profile 不默认宣称 pitch capability。
+- **官方契约。** 实现前必须重新核对：[V3 单向 WebSocket](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-websocket?lang=zh) 与 [V3 双向 WebSocket](https://docs.volcengine.com/docs/DoubaoVoice/bidirectional-streaming-text-to-speech-websocket?lang=zh)。本轮文档依据官方 API 列表确认 endpoint 及“单向=完整文本输入/流式音频输出、双向=实时文本输入/流式音频输出”的选型边界；不以旧 V1、第三方示例或当前 SSE adapter 作为 wire-contract。
+- **同步范围。** 根 `README.md`、`docs/PRD.md`（1.5.4）、Active PRD 分册、System Architecture、Development Roadmap、Model Management、Active Measurement 技术设计、文档导航、traceability 与 PRD changelog 已同步。实现状态保持 partial/planned；没有修改应用代码、schema 或配置 example，也未声称 WebSocket TTS 已实现。
+- **验证边界。** 文档更新直接落在 `main`，本轮只做文档一致性/来源检查：PRD-F020/F021、M2/M3、#98、`tts`/`streaming_tts`、两条官方 URL 与两个目标 endpoint 在对应文档中可追踪。未运行软件/browser/container/真实云/实体设备测试，因为本轮没有实现代码；这些验证属于 #98 acceptance。
