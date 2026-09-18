@@ -13,6 +13,21 @@ STAGES = ('ingestion', 'normalization', 'audio_qa', 'asr', 'acoustic', 'diarizat
           'attribution', 'fusion', 'turns', 'timeline', 'metrics', 'judge', 'findings', 'report')
 PROFILE_KEYS = ('device', 'hardware', 'firmware', 'model', 'prompt', 'supplier', 'environment', 'notes')
 
+# Every artifact a Recording Analysis Run may legitimately register. The chain must
+# stay isolated from Active Measurement evidence (live measurement audio, stimulus,
+# control/execution evidence, etc.): a kind outside this set means an unrelated
+# artifact entered the recording chain, so the Run is no longer a trustworthy
+# recording import. Adding a kind is a deliberate change to what the chain may hold.
+RECORDING_ARTIFACT_KINDS = frozenset({
+    'original_recording', 'normalized_audio', 'audio_metadata', 'processor_audit',
+    'audio-qa', 'audio_qa_conditions',
+    'transcript', 'asr_native', 'provider_invocation',
+    'acoustic-segments', 'speaker-assignments', 'attribution', 'fused-segments',
+    'turns', 'timeline', 'metrics', 'judge-results', 'findings',
+    'retained_diagnostic', 'model_configuration', 'analysis_checkpoint',
+    'report_json', 'report_markdown',
+})
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
@@ -155,6 +170,8 @@ def recording_run_errors(manifest, root=None):
         if (PureWindowsPath(relative).drive or PureWindowsPath(relative).root or PurePosixPath(relative).is_absolute()
                 or '..' in relative.replace('\\', '/').split('/') or ':' in relative):
             errors.append('Artifact path must stay inside its Run')
+        if item['kind'] not in RECORDING_ARTIFACT_KINDS:
+            errors.append('Artifact kind is not part of the recording pipeline chain: ' + item['kind'])
         if set(item['parent_artifact_ids']) - seen:
             errors.append('Artifact parents must reference earlier artifacts; cycles/dangling refs forbidden')
         seen.add(item['artifact_id'])

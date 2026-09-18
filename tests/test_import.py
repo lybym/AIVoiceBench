@@ -277,6 +277,94 @@ class ActualCodecImport(unittest.TestCase):
         self.assertNotEqual(a['analysis_id'], b['analysis_id'])
         self.assertEqual((first / 'manifest.json').read_bytes(), old)
 
+    def test_derived_artifacts_carry_converter_and_config_provenance(self):
+        """Every registered artifact declares a processor and a verifiable hash, and the
+        normalization-derived artifacts carry parent refs plus the converter executable
+        hash/version and exact normalization config — provenance, not just file existence
+        (PRD-F002). Abstention envelopes (a stage that did not run) legitimately carry no
+        parent; they are evidence-state markers, not derived artifacts."""
+        tone(self.source, rate=44100, channels=2)
+        directory, manifest = self._import()
+        self.assertEqual(recording_run_errors(manifest, directory), [])
+        original = next(x for x in manifest['artifacts'] if x['kind'] == 'original_recording')
+        # Every artifact carries a processor label and a hash that re-resolves on disk.
+        for item in manifest['artifacts']:
+            self.assertIsNotNone(item['processor'], f'{item["kind"]} must declare a processor')
+            self.assertRegex(item['sha256'], r'^[a-f0-9]{64}$')
+            self.assertTrue((directory / item['path']).is_file())
+        # The normalization-derived artifacts reach back to the immutable original.
+        normalized = next(x for x in manifest['artifacts'] if x['kind'] == 'normalized_audio')
+        self.assertEqual(normalized['parent_artifact_ids'], [original['artifact_id']])
+        metadata = next(x for x in manifest['artifacts'] if x['kind'] == 'audio_metadata')
+        self.assertIn(normalized['artifact_id'], metadata['parent_artifact_ids'])
+        self.assertIn(original['artifact_id'], metadata['parent_artifact_ids'])
+        # Converter provenance: executable hash + version are recorded, not just a name.
+        metadata_doc = load_document(directory / metadata['path'])
+        tools = metadata_doc['processor']['tools']
+        for name in ('ffmpeg', 'ffprobe'):
+            self.assertTrue(tools[name]['executable'])
+            self.assertRegex(tools[name]['sha256'], r'^[a-f0-9]{64}$',
+                             f'{name} executable hash must be recorded for provenance')
+            self.assertTrue(tools[name]['version'], f'{name} version must be recorded')
+        config = metadata_doc['processor']['config']
+        self.assertEqual(config['target_format'], 'WAV_PCM16LE_16000_mono')
+        self.assertFalse(config['gain_normalization'])
+        self.assertFalse(config['silence_trimming'])
+        self.assertFalse(config['network_protocols_enabled'])
+
+    def test_recording_chain_excludes_active_measurement_artifacts(self):
+        """The recording Artifact chain holds only recording-pipeline artifacts; an
+        unrelated Active Measurement artifact is rejected by integrity validation
+        instead of being silently retained (PRD-F002 / N002, Issue #21)."""
+        from aivoicebench.import_artifacts import RECORDING_ARTIFACT_KINDS
+        directory, manifest = self._import()
+        # A normal completed Run stays clean: every kind is a recording-pipeline kind.
+        kinds = {item['kind'] for item in manifest['artifacts']}
+        self.assertEqual(recording_run_errors(manifest, directory), [])
+        self.assertTrue(kinds <= RECORDING_ARTIFACT_KINDS, kinds - RECORDING_ARTIFACT_KINDS)
+        # An Active Measurement artifact forced into the chain is a validation failure,
+        # so it can never be presented as part of a recording Run.
+        injected = dict(manifest['artifacts'][0])
+        injected['artifact_id'] = 'ART-active0000000000000000000000000000000'
+        injected['kind'] = 'live_measurement_audio'
+        injected['parent_artifact_ids'] = []
+        manifest['artifacts'].append(injected)
+        errors = recording_run_errors(manifest, directory)
+        self.assertTrue(any('not part of the recording pipeline chain' in e for e in errors), errors)
+
+    def test_five_minute_recording_is_self_describing_on_disk(self):
+        """A recording in the 5–20 minute acceptance band completes import →
+        normalization → QA and stays readable from disk alone: no in-memory state,
+        every registered artifact re-hashes and the manifest validates.
+
+        This is the on-disk half of restart readability at acceptance-band duration;
+        the cross-process `docker restart` half is the CI Recording backbone
+        container job. Real-recording acceptance itself remains the #85 gate.
+        """
+        runs = self.root / 'restart-runs'
+        tone(self.source, seconds=300)  # 5 minutes: inside the 5–20 minute band
+        directory, manifest = self._import(output=runs)
+        del directory, manifest  # keep nothing but the files on disk
+        directories = sorted(path for path in runs.iterdir() if path.name.startswith('RUN-'))
+        self.assertEqual(len(directories), 1)
+        stored = json.loads((directories[0] / 'manifest.json').read_text(encoding='utf-8'))
+        # Reading a Run needs only its files: manifest validates and every hash matches.
+        self.assertEqual(recording_run_errors(stored, directories[0]), [])
+        self.assertEqual(stored['stages']['ingestion']['status'], 'complete')
+        self.assertEqual(stored['stages']['normalization']['status'], 'complete')
+        self.assertEqual(stored['stages']['audio_qa']['status'], 'complete')
+        qa = load_document(directories[0] / next(x['path'] for x in stored['artifacts']
+                                                 if x['kind'] == 'audio-qa'))
+        # Duration is in the acceptance band (≈5 min) and the canonical sample count agrees.
+        self.assertGreaterEqual(qa['data']['duration_ms'], 5 * 60 * 1000 - 1000)
+        metadata = next(x for x in stored['artifacts'] if x['kind'] == 'audio_metadata')
+        self.assertEqual(load_document(directories[0] / metadata['path'])['normalized']['sample_count'],
+                         qa['data']['sample_count'])
+        for item in stored['artifacts']:
+            self.assertEqual(digest(directories[0] / item['path']), item['sha256'])
+        self.assertEqual(qa['run_id'], stored['run_id'])
+        self.assertEqual(qa['analysis_id'], stored['analysis_id'])
+
     def test_no_asr_does_not_claim_empty_success_or_findings(self):
         directory, manifest = self._import(profile={'device': 'A|<script>alert(1)</script>', 'supplier': '测试供应商'})
         self.assertEqual(manifest['status'], 'partial')

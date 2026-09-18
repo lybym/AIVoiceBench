@@ -1271,3 +1271,13 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **外部契约核对。** 本轮沿用并复核火山官方录音文件识别极速版/标准版/闲时版文档入口与 TOS Presigned URL 机制；实现时仍须按 AGENTS 重新在线核对当前 Provider API，不把 dated endpoint/resource 当永久产品常量。
 - **验证。** PR #88 当前只修改 18 个文档/example-config 文件，无应用运行时代码；新增/修改 Markdown 中本轮新增的 8 个本地链接均解析到当前分支已有文件，新增 diff 无字面量 `\\n` 转义残留；三份 YAML example 仅含占位符/credential env reference，不含真实 secret。未执行真实 Volcengine/TOS 调用、应用/browser/container 测试，也未声称 software/container/browser/real-recording 状态升级。
 
+## 2026-09-18 — Issue #21 录入闸门硬化：派生 provenance 与 Artifact 链隔离（非真实验收）
+
+- **范围与基线。** 先 `git fetch` 并把本地 `main` 快进到 `origin/main`（`4d75eba`，含 PR #86 + #88）后建 `issue-21-ingestion-hardening` 分支。审计确认 Import/归一化/不可变 Artifact/Audio QA 条件化/失败保留/重导入隔离/重启可读性在 main 上已实现并有测试（PR #86 已声明 `software_verified` + CI `container_verified`）。本次不重复实现管线，只补 Issue #21 仍可软件验证的两处 provenance/隔离缺口。PRD refs：PRD-F002、PRD-N002、PRD-N004。
+- **Artifact 链隔离（PRD-N002 / Issue #21 最后一条验收）。** `import_artifacts.py` 新增 `RECORDING_ARTIFACT_KINDS`（23 个录制管线合法 kind），`recording_run_errors` 现在拒绝任何不在此集合的 artifact kind。这把“录制 Artifact 链不得混入 Active Measurement 证据（live measurement audio / stimulus / control 证据等）”从架构约定升级为可校验的不变量：一个 Active Measurement artifact 被强行塞入链时校验失败，因而无法被当作录制 Run 的一部分呈现。
+- **派生 provenance 测试（PRD-F002）。** `tests/test_import.py` 新增 `test_derived_artifacts_carry_converter_and_config_provenance`：断言每个注册 artifact 带 processor label 与 64-hex 哈希、`normalized_audio` 父引用为不可变原件、`audio_metadata` 父引用含原件与 normalized、且 canonical metadata 记录 ffmpeg/ffprobe 可执行文件 SHA256 + 版本 + 精确归一化 config（无 gain/trim、网络协议关闭）。此前“转换器版本与可执行文件哈希”仅写在 metadata 中，没有测试断言其存在。
+- **链隔离测试。** 新增 `test_recording_chain_excludes_active_measurement_artifacts`：正常完成 Run 的所有 kind ⊆ `RECORDING_ARTIFACT_KINDS`；注入 `live_measurement_audio` 后 `recording_run_errors` 返回链隔离错误。
+- **验收带重启可读性（Issue #21 第一条软件半）。** 新增 `test_five_minute_recording_is_self_describing_on_disk`：用 5 分钟（5–20 分钟验收带内）合成录音跑完整 import→normalization→QA→report，随后仅凭磁盘目录重读 manifest、逐 artifact 重哈希并校验通过、QA 完成且 duration/sample_count 在带内。这是“completes import→normalization→QA and remains readable”在验收带时长上的磁盘半证据；跨进程 `docker restart` 半仍由 CI `Recording backbone container` job 承担。
+- **软件验证。** `python -m unittest discover -s tests`（`AIVOICEBENCH_REQUIRE_MEDIA_TESTS=1`）→ **600 tests, OK（skipped=2）**，较 `4d75eba` 基线 597 增加 3 项新测试，无回归、无新增 warning（仅 pre-existing Starlette deprecation）。`git diff --check` 通过。
+- **证据分级与未完成项（不得相互替代）。** 本次可声明 `software_verified`。本机 Docker engine 不可用，未执行 `docker restart`；容器重启可读性沿用 PR #86 已记录的 CI `Recording backbone container` run。**授权真实 5–20 分钟 External Recording 的真实导入验收仍未完成**：仓库无真实录音，AGENTS.md 禁止提交真实私人录音，故 `real_recording_verified` 保持未声明并归 #85 真实证据 Gate。未关闭 Issue #21，未合并 PR。
+
