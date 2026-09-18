@@ -6,6 +6,8 @@ PRD refs: PRD-F023/F025/F026、PRD-M001–M010、PRD-N002/N003/N007。本文描�
 
 2026-09-17 补充实现决策：Browser Station 当前仍是 HTML/CSS/Vanilla JS，目标实现语言改为 **TypeScript**，迁移由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪。该迁移只强化浏览器侧音频帧、sample timebase、WebSocket、Control VAD、capture integrity 与状态机的类型约束，不改变本文件定义的 Measurement semantics，也不要求 React/Vue 等框架重写。
 
+2026-09-18 补充 Active TTS 决策：Fixed 使用火山 V3 WebSocket **单向流式**完成完整话术的 asset synthesis，并在正式 Run 前冻结 Stimulus；Free 使用火山 V3 WebSocket **双向流式**承接 Streaming LLM text 并向 Browser 流式输出音频。实现由 [Issue #98](https://github.com/lybym/AIVoiceBench/issues/98) 跟踪；当前 V3 HTTP SSE adapter 仍是实现事实，文档目标不得被误写成已完成。
+
 ## 1. Pipeline boundary
 
 ```text
@@ -31,6 +33,46 @@ Browser Microphone
 ```
 
 Active Measurement 与 Recording Analysis 都是正式 Measurement Pipeline。前者的声学原件固定标识为 `ART-live-measurement-audio-*`，后者为 `ART-external-recording-*`；不得把同一音频绕行 Recording Analysis 后称为 Active Result，也不得把 execution record 改名为 Timeline。
+
+## 1.1 Active TTS transport contract
+
+TTS 是 Active Control/Stimulus Plane 的 Provider，不是正式声学时间源。
+
+### Fixed / asset synthesis
+
+```text
+complete fixed text
+→ backend `tts` route
+→ Volcengine V3 unidirectional WebSocket
+→ provider audio chunks
+→ validate + normalize
+→ immutable Stimulus Artifact
+→ formal Browser playback
+```
+
+固定用例的 WebSocket 合成发生在准备阶段。正式 Run 必须引用已经冻结的 stimulus identity、SHA-256、sample rate/channels/encoding/sample count 和 non-secret provider/config snapshot。重新执行同一 Case 不得因为启动 Run 而静默重新合成或替换该资产。
+
+Provider wire encoding 与最终 Stimulus Artifact encoding 解耦。流式接口不应被建模为“必须直接返回 WAV”；服务端可把官方支持的 provider stream 规范化为项目需要的冻结 WAV，转换过程和结果元数据进入 provenance。
+
+### Free / streaming synthesis
+
+```text
+Streaming ASR final Observation
+→ Streaming LLM
+→ ordered speakable text chunks
+→ backend `streaming_tts` route
+→ Volcengine V3 bidirectional WebSocket
+→ audio chunks
+→ Browser streaming playback
+```
+
+双向 TTS session 绑定一个 Run/Turn；text/audio chunk 顺序、finish/cancel/close 与 stale ownership 必须明确。用户 Stop、Turn 改变、provider failure 或未来 Barge-in cancel 之后，迟到音频只能作为诊断被丢弃，不能继续播放或进入下一 Turn。
+
+### Configuration and evidence boundary
+
+两类 TTS 都从 server-owned `providers.yaml` 获取 non-secret 参数。speaker/voice、encoding/format、sample rate、speech rate，以及所选协议/音色官方实际支持的 loudness/pitch 等配置必须逐项遵循当前火山 V3 文档；unsupported 组合显式失败，不静默忽略。Credential 只在 Backend 解析，Browser 不直连 Provider。
+
+LLM chunk 时间、TTS provider event、audio chunk arrival、Browser playback callback 都可记录为 Control/Provider diagnostics；它们不能替代本文件定义的 Browser sample clock、Stimulus Alignment 或正式 Measurement Audio boundary。
 
 ## 2. Remote Browser Station contract
 
@@ -143,6 +185,8 @@ Browser Station 或可选 Windows Audio Station Agent
 | --- | --- |
 | Remote Browser Station architecture | decided；实现/远端真实部署验收 pending |
 | Browser Station TypeScript migration | planned；当前 Vanilla JS；Issue #84 |
+| Fixed V3 unidirectional WS TTS + frozen stimulus | planned；当前 V3 HTTP SSE；Issue #98 |
+| Free Streaming LLM → V3 bidirectional WS TTS → streaming playback | planned；Issue #98 |
 | TEN VAD Browser Adapter | planned；RMS fallback 已有 |
 | Active Measurement Audio | planned |
 | Stimulus Reference storage/interface | planned |
