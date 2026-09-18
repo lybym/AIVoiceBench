@@ -78,8 +78,8 @@ Browser Station 与 Server 之间的网络 RTT、WebSocket queue、server schedu
 | Server acoustic boundary | 当前 Energy VAD legacy；目标 Silero VAD baseline |
 | Recording ASR | File ASR Provider，P0 默认火山极速版 HTTP；小文件 inline Base64，大文件对象存储 URL |
 | Active ASR | StreamingASRProvider，近期优先火山 |
-| Fixed TTS target | 火山 V3 WebSocket 单向流式；完整文本输入 → 流式音频 → 冻结 Stimulus Artifact（#98） |
-| Free TTS target | 火山 V3 WebSocket 双向流式；Streaming LLM text → streaming audio/playback（#98） |
+| Fixed TTS target | 火山 V3 WebSocket 单向流式；完整文本输入 → **MP3 流** → 冻结 MP3 Stimulus Artifact（#98） |
+| Free TTS target | 火山 V3 WebSocket 双向流式；Streaming LLM text → **MP3 流** → streaming playback（#98） |
 | Speaker separation | 当前优先使用火山 ASR-native anonymous speaker labels；3D-Speaker deferred |
 | Waveform/Evidence UI | wavesurfer.js planned |
 | Provider config | 目标：外置只读 `providers.yaml`；LLM/ASR/TTS 非敏感配置 source of truth |
@@ -293,8 +293,8 @@ Active Measurement 已知平台播放 stimulus，必须保存 immutable stimulus
 ```text
 Test Case complete text
 → V3 Unidirectional WebSocket TTS
-→ streaming provider audio
-→ normalize / freeze Stimulus Artifact + SHA-256/sample metadata
+→ streaming MP3 audio
+→ validate / freeze MP3 Stimulus Artifact + SHA-256/sample metadata
 → Browser playback of frozen asset
 → Device Response
 → TEN VAD target / RMS fallback
@@ -311,7 +311,7 @@ Device
 → final Observation
 → Streaming LLM Decision/Text
 → V3 Bidirectional WebSocket TTS
-→ streaming audio delivery/playback
+→ streaming MP3 audio delivery/playback
 → Device
 ```
 
