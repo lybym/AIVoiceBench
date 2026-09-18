@@ -44,15 +44,15 @@ TTS 是 Active Control/Stimulus Plane 的 Provider，不是正式声学时间源
 complete fixed text
 → backend `tts` route
 → Volcengine V3 unidirectional WebSocket
-→ provider audio chunks
-→ validate + normalize
-→ immutable Stimulus Artifact
+→ MP3 audio chunks
+→ validate
+→ immutable MP3 Stimulus Artifact
 → formal Browser playback
 ```
 
 固定用例的 WebSocket 合成发生在准备阶段。正式 Run 必须引用已经冻结的 stimulus identity、SHA-256、sample rate/channels/encoding/sample count 和 non-secret provider/config snapshot。重新执行同一 Case 不得因为启动 Run 而静默重新合成或替换该资产。
 
-Provider wire encoding 与最终 Stimulus Artifact encoding 解耦。流式接口不应被建模为“必须直接返回 WAV”；服务端可把官方支持的 provider stream 规范化为项目需要的冻结 WAV，转换过程和结果元数据进入 provenance。
+Active TTS 媒体格式统一固定为 **MP3**。Fixed 直接校验并冻结 Provider 返回的 MP3，不再引入 PCM/WAV 封装或转码层；`providers.yaml` 也不提供 TTS format/encoding 配置项。
 
 ### Free / streaming synthesis
 
@@ -62,7 +62,7 @@ Streaming ASR final Observation
 → ordered speakable text chunks
 → backend `streaming_tts` route
 → Volcengine V3 bidirectional WebSocket
-→ audio chunks
+→ MP3 audio chunks
 → Browser streaming playback
 ```
 
@@ -70,7 +70,7 @@ Streaming ASR final Observation
 
 ### Configuration and evidence boundary
 
-两类 TTS 都从 server-owned `providers.yaml` 获取 non-secret 参数。speaker/voice、encoding/format、sample rate、speech rate，以及所选协议/音色官方实际支持的 loudness/pitch 等配置必须逐项遵循当前火山 V3 文档；unsupported 组合显式失败，不静默忽略。2026-09-18 的官方单向 V3 文档仍标注音高调节暂不支持，因此 Fixed 单向 profile 不得默认宣称 pitch capability；若官方后续改变，validator、capability matrix 与本文必须同步更新。Credential 只在 Backend 解析，Browser 不直连 Provider。
+两类 TTS 都从 server-owned `providers.yaml` 获取 non-secret 参数，但**format/encoding 固定为 MP3，不允许配置**。仅保留 speaker/voice、sample rate、speech rate，以及所选协议/音色官方实际支持的 loudness/pitch 等必要调整项。unsupported 组合显式失败，不静默忽略。2026-09-18 的官方单向 V3 文档仍标注音高调节暂不支持，因此 Fixed 单向 profile 不得默认宣称 pitch capability；若官方后续改变，validator、capability matrix 与本文必须同步更新。Credential 只在 Backend 解析，Browser 不直连 Provider。
 
 协议依据：[V3 单向 WebSocket](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-websocket?lang=zh)；[V3 双向 WebSocket](https://docs.volcengine.com/docs/DoubaoVoice/bidirectional-streaming-text-to-speech-websocket?lang=zh)。
 
