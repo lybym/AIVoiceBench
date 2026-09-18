@@ -39,11 +39,23 @@ REPLY = {'result': {'text': '今天天气怎么样 北京今天晴', 'utterances
      'words': [], 'additions': {'speaker': '2'}},
 ]}}
 
+# One word offset is a provider placeholder (-1). The utterance-level text and
+# timing are still valid, so the transcript must be `partial` rather than
+# rejected, and the surviving speaker labels must still reach diarization.
+PARTIAL_REPLY = {'result': {'text': '今天天气怎么样 北京今天晴', 'utterances': [
+    {'text': '今天天气怎么样', 'start_time': 500, 'end_time': 1000,
+     'words': [{'text': '今', 'start_time': -1, 'end_time': -1, 'confidence': 0}],
+     'additions': {'speaker': '1'}},
+    {'text': '北京今天晴', 'start_time': 1500, 'end_time': 2000,
+     'words': [], 'additions': {'speaker': '2'}},
+]}}
+
 
 class LabelledTransport:
     """Serves the signed-URL upload and one labelled recognition response."""
 
-    def __init__(self):
+    def __init__(self, reply=None):
+        self.reply = REPLY if reply is None else reply
         self.calls, self.audio = [], b''
 
     def request(self, method, url, headers, body=None, **kwargs):
@@ -54,7 +66,7 @@ class LabelledTransport:
         if method == 'GET':
             return HTTPReply(200, {}, self.audio)
         return HTTPReply(200, {'x-api-status-code': '20000000'},
-                         json.dumps(copy.deepcopy(REPLY), ensure_ascii=False).encode())
+                         json.dumps(copy.deepcopy(self.reply), ensure_ascii=False).encode())
 
 
 def write_speech_like_wav(path, rate=16000):
@@ -91,7 +103,8 @@ class SemanticAttributionEndToEnd(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def run_import(self):
+    def run_import(self, reply=None):
+        self.transport = LabelledTransport(reply)
         providers = RunProviders(
             asr=lambda root: VolcengineASRProvider(root, 'synthetic-key',
                 transport_config={'audio_transport': 'object_storage',
@@ -160,6 +173,45 @@ class SemanticAttributionEndToEnd(unittest.TestCase):
         for kind in ('attribution', 'turns', 'timeline', 'metrics'):
             self.assertEqual(docs[kind]['run_id'], manifest['run_id'])
             self.assertNotIn('case_id', docs[kind])
+
+    def test_partial_asr_evidence_still_reaches_diarization(self):
+        """A partial transcript keeps its valid utterance/speaker evidence.
+
+        One placeholder word offset must not delete the whole transcript, and a
+        stage that is not `complete` must not stop the surviving speaker labels
+        from being handed to diarization.
+        """
+        directory, manifest = self.run_import(reply=PARTIAL_REPLY)
+        docs = self.documents(directory, manifest)
+
+        transcript = docs['transcript']
+        self.assertEqual(transcript['status'], 'partial')
+        data = transcript['data']
+        self.assertEqual([s['text'] for s in data['segments']],
+                         ['今天天气怎么样', '北京今天晴'])
+        self.assertEqual([(s['start_ms'], s['end_ms']) for s in data['segments']],
+                         [(500, 1000), (1500, 2000)])
+        # The unusable word timing is an explicit gap, not a silently dropped word.
+        self.assertEqual(len(data['gaps']), 1)
+        self.assertIn('invalid word timestamps', data['gaps'][0]['reason'])
+        self.assertEqual(data['segments'][0]['words'], [])
+        self.assertEqual([s['speaker_id'] for s in data['segments']], ['1', '2'])
+
+        # Diarization consumed that partial transcript: two anonymous clusters,
+        # derived from the same single recognition call (no second submission).
+        self.assertEqual([m for m, *_ in self.transport.calls], ['PUT', 'GET', 'POST'])
+        speaker = docs['speaker-assignments']
+        self.assertIn(speaker['status'], ('complete', 'partial'))
+        self.assertEqual(len(speaker['data']['speaker_segments']), 2)
+        self.assertEqual(sorted(s['native_speaker_id'] for s in speaker['data']['speaker_segments']),
+                         ['1', '2'])
+        self.assertEqual(self.role_provider.calls, [])
+
+        # Roles are still user-owned, so role-dependent stages still abstain.
+        self.assertEqual(docs['attribution']['data']['status'], 'partial')
+        for kind in ('turns', 'timeline', 'metrics'):
+            self.assertEqual(docs[kind]['status'], 'insufficient_evidence')
+            self.assertIsNone(docs[kind]['data'])
 
 
 if __name__ == '__main__':
