@@ -47,7 +47,7 @@ Online Event Producer                 Offline Event Producer
 
 当前正式交付为 Docker 后端与前端，通过 Windows 浏览器访问；不要求 Windows EXE/安装包。Docker 内包含媒体处理依赖，运行数据通过持久卷保存。Browser Station 的 TypeScript 目标仍编译为普通浏览器 JavaScript 静态产物，由现有 FastAPI/Docker 交付链服务，不改变 `Linux Server + Docker Backend + Remote Chrome Browser Station` 的正式拓扑。`v0.5.0` 稳定版的启动命令、附件和 SHA-256 以 [Docker/API 文档](docs/20-docker-api.md) 与 [发布说明](docs/releases/0.5.0.md) 为准；`v0.5.0-alpha.1` 预览版仍保留为历史候选记录。
 
-默认部署面向可信单用户 localhost。模型和语音服务凭据只由后端持有，不进入浏览器、Git、运行快照或报告；保存配置不等于服务连通或真实效果已经验证。2026-09-18 的目标配置进一步把 Judge/LLM、File ASR、Streaming ASR、TTS 的非敏感参数外置到服务器 `providers.yaml`，把对象存储参数外置到独立 `storage.yaml`，长期 secret 只保留 env/secret reference；该迁移由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 跟踪并已由 PR #90 在 `v0.5.0` 实现（software_verified）；真实 TOS 路径待后续真实验收，SQLite/固定 Signed URL 仅作 legacy 兼容层。Active TTS 在此基础上进一步区分 **`tts`（完整文本→冻结/资产型 TTS）** 与 **`streaming_tts`（流式文本→流式音频）** 两类能力：火山目标协议分别为 V3 单向 WS 与 V3 双向 WS；speaker、format/sample rate、speech rate 以及协议实际支持的 loudness/pitch 等参数必须按官方 V3 字段外置配置并进入非敏感 Run snapshot，不支持的组合不得静默忽略（#98）。
+默认部署面向可信单用户 localhost。模型和语音服务凭据只由后端持有，不进入浏览器、Git、运行快照或报告；保存配置不等于服务连通或真实效果已经验证。2026-09-18 的目标配置进一步把 Judge/LLM、File ASR、Streaming ASR、TTS 的非敏感参数外置到服务器 `providers.yaml`，把对象存储参数外置到独立 `storage.yaml`，长期 secret 只保留 env/secret reference；该迁移由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 跟踪并已由 PR #90 在 `v0.5.0` 实现（software_verified）；真实 TOS 路径待后续真实验收，SQLite/固定 Signed URL 仅作 legacy 兼容层。Active TTS 在此基础上进一步区分 **`tts`（完整文本→冻结/资产型 TTS）** 与 **`streaming_tts`（流式文本→流式音频）** 两类能力：火山目标协议分别为 V3 单向 WS 与 V3 双向 WS；**两条 TTS 链的输出格式统一固定为 MP3，不提供 format/encoding 配置项**。speaker/voice、sample rate、speech rate 以及协议实际支持的 loudness/pitch 等参数按官方 V3 字段外置配置并进入非敏感 Run snapshot，不支持的组合不得静默忽略（#98）。
 
 ## 验证原则
 
