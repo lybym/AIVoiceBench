@@ -6,6 +6,8 @@ from aivoicebench import api
 from aivoicebench.version import VERSION
 from aivoicebench.runner import digest
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 class WebReleaseTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
@@ -21,7 +23,13 @@ class WebReleaseTests(unittest.TestCase):
     def test_fixed_voice_generation_has_live_progress_contract(self):
         script = self.client.get('/static/voice_test.js').text
         self.assertIn('vt-generation-progress', script)
-        self.assertIn("setAttribute('aria-live', 'polite')", script)
+        # The progress line is an aria-live status region. `voice_test.js` is now
+        # the compiled artifact of `web/src/voice_test.ts`, so the exact spacing is
+        # asserted on the TypeScript source and the attribute itself on the served
+        # script.
+        self.assertIn("setAttribute('aria-live', 'polite')",
+                      (REPO_ROOT / 'web' / 'src' / 'voice_test.ts').read_text(encoding='utf-8'))
+        self.assertIn("setAttribute('aria-live'", script)
         self.assertIn('startSynthesisProgress', script)
         self.assertIn('/api/voice-test/sessions/${sessionId}', script)
         self.assertIn('setFixedGenerationBusy(true)', script)
@@ -32,16 +40,19 @@ class WebReleaseTests(unittest.TestCase):
         legitimately have a QA ledger entry while the measurements are unavailable to
         the reader. The UI must show that state instead of rendering nothing. This is a
         source-level contract check: a full browser run of `audioQaNote` needs a driver
-        this environment does not provide.
+        this environment does not provide. `app.js` is now the compiled artifact of
+        `web/src/app.ts`, so the report tab is checked on the served script and the
+        rendering rules on the TypeScript source that produces it.
         """
         script = self.client.get('/static/app.js').text
-        self.assertIn('audioQaNote(d)', script, 'the report tab must render the QA note')
-        self.assertIn('const qa=d.audio_qa||{}', script)
-        # Absent measurements must not short-circuit the whole section.
-        self.assertIn('if(!m&&!stage.status&&!stage.reason)return', script)
+        self.assertIn('audioQaNote(data)', script, 'the report tab must render the QA note')
         self.assertIn('未获得音频质量测量', script)
         self.assertIn('本记录没有可读取的音频质量测量值', script)
-        self.assertNotIn('if(!m.duration_ms&&!conditions.length)return', script)
+        source = (REPO_ROOT / 'web' / 'src' / 'app.ts').read_text(encoding='utf-8')
+        self.assertIn('const qa = data.audio_qa || {};', source)
+        # Absent measurements must not short-circuit the whole section.
+        self.assertIn('if (!measurements && !stage.status && !stage.reason) return', source)
+        self.assertNotIn('if (!measurements.duration_ms && !conditions.length) return', source)
 
     def test_legacy_report_without_timeline(self):
         d=self.root/'RUN-legacy';d.mkdir()

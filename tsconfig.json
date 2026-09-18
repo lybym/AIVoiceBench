@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+
+    "module": "none",
+    "moduleDetection": "legacy",
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "rootDir": "web/src",
+    "outDir": "aivoicebench/static",
+    "newLine": "lf",
+    "sourceMap": false,
+    "declaration": false,
+    "removeComments": false,
+    "skipLibCheck": true,
+
+    "noEmitOnError": true,
+    "pretty": true
+  },
+  "include": ["web/src/**/*.ts"]
+}

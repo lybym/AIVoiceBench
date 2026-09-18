@@ -4,7 +4,7 @@
 >
 > 2026-09-16 架构决策：**Linux Server + Docker Backend + Remote Chrome Browser Station 是正式主架构，而不是权宜方案。** 原生 Windows 只作为未来专业 HIL/Audio Station Agent 的可选扩展。近期组件分工为 TEN VAD（Browser Control）、Silero VAD（Server finalized acoustic analysis）、火山 ASR 原生 speaker separation（Recording Analysis 当前 speaker clustering 主路径）和 wavesurfer.js（Evidence UI）。代码实现与真实设备验收状态不因本轮文档更新自动升级。
 >
-> 2026-09-17 实现语言决策：**Browser Station 的目标实现语言从当前 Vanilla JS 收敛为 TypeScript。** 这是 Browser Measurement Agent 的静态类型工程化，不是 React/Vue 等框架重写，也不改变 Python/FastAPI 后端、Docker/Chrome 交付拓扑、协议或 Measurement semantics。当前 JS 实现仍是代码事实，迁移由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪，验证完成前保持 planned。
+> 2026-09-17 实现语言决策：**Browser Station 的实现语言收敛为 TypeScript。** 这是 Browser Measurement Agent 的静态类型工程化，不是 React/Vue 等框架重写，也不改变 Python/FastAPI 后端、Docker/Chrome 交付拓扑、协议或 Measurement semantics。2026-09-19：等价迁移已落地（`web/src/*.ts` 为手写源码，`aivoicebench/static/*.js` 为编译产物），[Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 的代码与 deterministic typecheck/build 门禁已完成；远端 Chrome 与容器内的行为验证仍以发布/CI 的既有 browser/container 运行为准。
 
 ## 1. 项目定位
 
@@ -34,7 +34,7 @@ AIVoiceBench 的业务逻辑不以极低对话 RTT 为首要目标，因此可�
 ```text
 ┌──────────────── Remote Test Site ────────────────┐
 │ Remote Chrome Browser Station                    │
-│ TypeScript target / current Vanilla JS           │
+│ TypeScript source / compiled browser JS          │
 │                                                  │
 │  Speaker ← stimulus playback                     │
 │  Microphone → getUserMedia → AudioWorklet        │
@@ -71,7 +71,7 @@ Browser Station 与 Server 之间的网络 RTT、WebSocket queue、server schedu
 | Backend deployment | Linux Server + Docker |
 | Backend | Python 3.12 + FastAPI + Uvicorn |
 | Remote client | Chrome Browser Station |
-| Frontend | 当前 HTML/CSS/Vanilla JS；目标 TypeScript 源码 + 编译后浏览器 JS；不要求框架重写 |
+| Frontend | TypeScript 源码（`web/src/`）+ 编译后浏览器 JS（`aivoicebench/static/`）；不要求框架重写 |
 | Browser audio | `getUserMedia` + `AudioWorklet` + Web Audio |
 | Control transport | WebSocket / HTTPS |
 | Control VAD | 当前 RMS；目标 TEN VAD Browser/WASM；RMS 保留 fallback |
@@ -88,7 +88,7 @@ Browser Station 与 Server 之间的网络 RTT、WebSocket queue、server schedu
 | Formal measurement | Active Measurement + Recording Analysis → Canonical EventTimeline → unique Metric Engine |
 | Native Windows | 非当前正式交付；未来可选专业 HIL Station Agent |
 
-当前实现基线仍以 PRD 的 `v0.4.0` 为准。文档中的 TypeScript、TEN/Silero/wavesurfer/远端部署决策属于 planned architecture，只有代码、测试和相应浏览器/容器/真实证据完成后才能升级状态。
+当前实现基线仍以 PRD 的 `v0.4.0` 为准。Browser Station TypeScript 等价迁移已完成到代码与 deterministic build/typecheck 门禁；TEN VAD、Silero VAD、wavesurfer Evidence Workbench 与远端部署仍属 planned architecture，只有代码、测试和相应浏览器/容器/真实证据完成后才能升级状态。
 
 ## 4. Browser Station 与 Linux Server 职责
 
@@ -110,7 +110,7 @@ Browser 不保存长期 Provider Credential，不运行正式 Metric 公式，�
 
 远端正式部署使用 HTTPS/WSS。requested 与 actual `echoCancellation`、`noiseSuppression`、`autoGainControl` 必须进入 provenance。
 
-Browser Station 当前实现位于 `aivoicebench/static/`，主要手写 JS 入口为 `app.js`、`models.js`、`voice_test.js` 和 `pcm_capture_worklet.js`。目标是按 #84 等价迁移到 TypeScript，使 audio frame、AudioWorklet message、sample index/sequence、VAD/control observation、capture integrity、media settings、WebSocket lifecycle 与 Fixed/Free Run state 具有显式类型。迁移后的 TypeScript 编译为普通浏览器 JavaScript，继续由现有 FastAPI/Docker 静态交付；不得借迁移改变 HTTP/WebSocket contract、PCM framing、Run/Turn identity 或正式时间基。
+Browser Station 当前手写源码位于 `web/src/`：`app.ts`、`models.ts`、`voice_test.ts`、`pcm_capture_worklet.ts`（另有 `audioworklet-globals.d.ts` 提供 AudioWorklet 全局作用域的最小声明）。`aivoicebench/static/*.js` 是这些源码的编译产物，也是 FastAPI/Docker 直接交付的文件；`index.html`/`app.css` 仍是手写静态资产。audio frame 与 sequence/sample counter、AudioWorklet message、VAD/control observation、capture integrity、media settings、WebSocket lifecycle 与 Fixed/Free Run state 均有显式类型。编译产物是普通浏览器 JavaScript（classic script，共用页面全局脚本作用域），不得借迁移改变 HTTP/WebSocket contract、PCM framing、Run/Turn identity 或正式时间基。`tsconfig.json` 使用 `strict`；`scripts/verify-web-build.mjs` 同时校验 typecheck 与产物新鲜度，`scripts/smoke-web-station.mjs` 校验三个脚本仍能共用一个全局作用域并暴露 `window.VT`。
 
 ### 4.2 Linux Server
 

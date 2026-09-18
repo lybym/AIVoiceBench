@@ -50,7 +50,7 @@ Issue 定义工作单元，PR 定义一次可审阅变更，工作日志记录�
 
 | Issue | PRD 编号 | 追踪重点 |
 | --- | --- | --- |
-| [#84](https://github.com/lybym/AIVoiceBench/issues/84) | F023/F025、N002/N003/N007 | Browser Station TypeScript 等价迁移、audio frame/sample timebase/WebSocket/control state 类型化；不改变 Measurement semantics |
+| [#84](https://github.com/lybym/AIVoiceBench/issues/84) | F023/F025、N002/N003/N007 | Browser Station TypeScript 等价迁移、audio frame/sample timebase/WebSocket/control state 类型化；不改变 Measurement semantics。状态：code/test/build gate done（`web/src` 手写源码 + `aivoicebench/static` 编译产物）；远端浏览器与容器行为验证由发布流程承担 |
 | [#98](https://github.com/lybym/AIVoiceBench/issues/98) | F015/F016、F020–F021、F023 | Active TTS V3 WebSocket：Fixed 单向 WS asset synthesis + frozen Stimulus；Free Streaming LLM → 双向 WS TTS → streaming playback；protocol-specific TTS config 与 cancel/stale lifecycle |
 
 #98 是 TTS/交互 transport 实现任务，不替代 F025 的 durable Measurement Audio、Stimulus Alignment、Canonical Live Timeline 或真实设备 Measurement 验收。其 provider integration evidence 也不自动构成 physical-device / measurement-equivalence verification。

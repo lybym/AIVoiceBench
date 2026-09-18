@@ -2,7 +2,7 @@
 
 2026-09-16 已在 `v0.4.0` 实现基线之上补充一轮架构决策：**Linux Server + Docker 后端、远端 Chrome Browser Station、现场生成音频 sample timebase** 成为正式主架构；VAD 近期采用 TEN VAD（浏览器控制）+ Silero VAD（服务器离线/最终化分析），Recording Analysis 优先使用火山 ASR 自带 speaker separation，当前不接 3D-Speaker，Evidence UI 采用 wavesurfer.js。代码实现和真实设备验收状态不因本轮文档决策自动升级。
 
-2026-09-17 进一步收敛 Browser Station 的实现语言：**现有 HTML/CSS/Vanilla JS 是当前实现基线，目标实现语言改为 TypeScript**。迁移只用于强化 AudioWorklet、PCM/sample timebase、WebSocket、Control VAD、capture integrity 和 Run state 的静态类型约束；不要求 React/Vue 等框架重写，也不改变 Linux Server + Docker、FastAPI 静态交付、正式 Measurement semantics 或浏览器目标。实现由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪，完成前保持 planned。
+2026-09-19 更新：[Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 的 Browser Station 等价迁移已完成到代码、测试与构建门禁：手写源码为 `web/src/*.ts`，`aivoicebench/static/*.js` 是编译产物，仍由 FastAPI/Docker 静态交付。类型约束只覆盖 AudioWorklet、PCM/sample timebase、WebSocket、Control VAD、capture integrity 和 Run state；不要求 React/Vue 等框架重写，也不改变 Linux Server + Docker、正式 Measurement semantics 或浏览器目标。远端 Chrome 与容器内的行为验证继续由既有 browser/container 测试与发布流程承担。
 
 2026-09-18 配置与 File ASR transport 收敛：`v0.5.0` 已将 LLM/ASR/TTS Provider 与对象存储非敏感参数分别外置为服务器侧 `providers.yaml` / `storage.yaml`，长期 secret 只通过 env/secret reference 解析。File ASR 小文件可 inline Base64，大文件可走私有 TOS + 短期 Presigned GET；对象存储不是 Streaming ASR 或所有 File ASR 的强制依赖。该能力由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) / PR #90 实现并完成软件验证，真实服务质量仍需独立验收。
 
@@ -13,7 +13,7 @@
 - **[产品需求 PRD](PRD.md)**：唯一产品入口，维护边界、全局原则、需求目录和正式里程碑；详细功能/指标/验收/追踪/历史见 [PRD 分册导航](prd/README.md)。
 - **[Remote Browser Station 与开源组件策略](26-remote-browser-component-strategy.md)**：2026-09-16/17 的部署、Browser Station TypeScript 目标、VAD、speaker separation、wavesurfer.js 与 Windows Native 边界决策。
 - [产品文档中心](product/README.md)：旧来源归集映射、冲突处置、集中历史快照。
-- [系统架构](01-system-architecture.md)：技术边界与目标设计，包括 Browser Station 当前 Vanilla JS / 目标 TypeScript 的实现边界。
+- [系统架构](01-system-architecture.md)：技术边界与目标设计，包括 Browser Station 的 TypeScript 源码 / 编译产物交付边界。
 - [测试方法](02-test-methodology.md)、[指标定义](03-metric-definition.md)、[契约版本](07-contract-versions.md)：验证和数据约束。
 - [Roadmap](04-development-roadmap.md)：PRD 编号到 Issue 的执行映射；Browser Station TypeScript 等价迁移由 #84 跟踪。
 - [Context](05-project-context.md)：决策来源与工作区上下文；[Work log](06-work-log.md)：实际执行记录。
