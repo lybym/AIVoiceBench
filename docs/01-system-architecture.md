@@ -78,6 +78,8 @@ Browser Station 与 Server 之间的网络 RTT、WebSocket queue、server schedu
 | Server acoustic boundary | 当前 Energy VAD legacy；目标 Silero VAD baseline |
 | Recording ASR | File ASR Provider，P0 默认火山极速版 HTTP；小文件 inline Base64，大文件对象存储 URL |
 | Active ASR | StreamingASRProvider，近期优先火山 |
+| Fixed TTS target | 火山 V3 WebSocket 单向流式；完整文本输入 → 流式音频 → 冻结 Stimulus Artifact（#98） |
+| Free TTS target | 火山 V3 WebSocket 双向流式；Streaming LLM text → streaming audio/playback（#98） |
 | Speaker separation | 当前优先使用火山 ASR-native anonymous speaker labels；3D-Speaker deferred |
 | Waveform/Evidence UI | wavesurfer.js planned |
 | Provider config | 目标：外置只读 `providers.yaml`；LLM/ASR/TTS 非敏感配置 source of truth |
@@ -132,6 +134,8 @@ Provider 与 Storage 配置属于 Server Deployment Plane，不属于 Browser UI
 ```text
 /etc/aivoicebench/providers.yaml
     ├─ judge / File ASR / Streaming ASR / TTS profiles
+    ├─ tts route: complete-text / asset synthesis
+    ├─ streaming_tts route: streaming-text / streaming-audio session
     └─ capability routes
 
 /etc/aivoicebench/storage.yaml
@@ -244,6 +248,12 @@ ASR
 └── StreamingASRProvider
        ├── VolcengineStreamingASRProvider
        └── future provider
+
+TTS
+├── AssetTTSProvider
+│      └── Volcengine V3 unidirectional WebSocket
+└── StreamingTTSProvider
+       └── Volcengine V3 bidirectional WebSocket
 ```
 
 ### 8.1 Recording Analysis
@@ -281,28 +291,31 @@ Active Measurement 已知平台播放 stimulus，必须保存 immutable stimulus
 ### Fixed Voice Test
 
 ```text
-Test Case
-→ TTS / Frozen Audio
-→ Browser playback
+Test Case complete text
+→ V3 Unidirectional WebSocket TTS
+→ streaming provider audio
+→ normalize / freeze Stimulus Artifact + SHA-256/sample metadata
+→ Browser playback of frozen asset
 → Device Response
 → TEN VAD target / RMS fallback
 → deterministic next action
 ```
 
-基础 Fixed Mode 不强制依赖 Streaming ASR；需要语义判断的 Case 才显式声明 ASR Observation 依赖。
+基础 Fixed Mode 不强制依赖 Streaming ASR；需要语义判断的 Case 才显式声明 ASR Observation 依赖。TTS WebSocket 只负责准备固定 stimulus；正式 Run 不因开始执行而重新合成同一 Case。
 
 ### Free Voice Test
 
 ```text
-TTS
-→ Device
+Device
 → TEN VAD + Streaming ASR
-→ Observation
-→ LLM Decision
-→ Next Test Action
+→ final Observation
+→ Streaming LLM Decision/Text
+→ V3 Bidirectional WebSocket TTS
+→ streaming audio delivery/playback
+→ Device
 ```
 
-Free Mode 的控制链需要 Streaming ASR 理解设备回答。对话 RTT 不是 Benchmark 的主要优化目标，因此 Provider 可以运行在远端 Server；Measurement timebase 仍由 Browser Station local audio clock 决定。
+Free Mode 的控制链需要 Streaming ASR 理解设备回答；目标 TTS 链不等待完整 LLM response，而是将可安全播报的有序 text chunks 输入双向 TTS session。对话 RTT 可以作为 Provider/Control 诊断，但不是 Benchmark 的正式声学时间基；Measurement timebase 仍由 Browser Station local audio clock 决定。Stop/cancel/stale Turn 后的迟到 TTS 音频不得进入下一轮。
 
 ## 11. Canonical Event / Metric
 
