@@ -18,7 +18,8 @@ AIVoiceBench 同时推进两条一级正式测量链：
 - Server Acoustic Boundary：Silero VAD 为首个正式候选 baseline；
 - Speaker separation：优先使用火山 ASR 原生 speaker labels，当前不接 3D-Speaker；
 - Evidence UI：wavesurfer.js；
-- Windows Native：不作为正式交付方向。\n- Provider/Storage 配置：目标改为服务器侧外置 `providers.yaml` + `storage.yaml`，由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 实现；File ASR P0 默认极速版 HTTP，小文件 inline Base64，大文件私有 TOS + Presigned GET。
+- Windows Native：不作为正式交付方向。
+- Provider/Storage 配置：目标改为服务器侧外置 `providers.yaml` + `storage.yaml`，由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 实现；File ASR P0 默认极速版 HTTP，小文件 inline Base64，大文件私有 TOS + Presigned GET。
 
 ## 2. 当前基线
 
