@@ -27,7 +27,54 @@ Ingestion
 
 已有代码能执行 acoustic → ASR-native diarization → attribution → fusion；只有存在角色证据时才继续 turns/timeline/metrics，否则弃权。Judge/Findings 尚未完整接入 ImportRun。历史 `web-analysis` 记录保持可读且不重写。
 
-`ModelSettings.capture()` 返回 model/provider snapshot 与 RunProviders。ASR 与 ASR-native diarization 已可进入 ImportRun；Judge 配置可捕获但主链未完整执行。Credential values 与 signed URLs 保持内存态，不写快照。
+`ModelSettings.capture()` 是当前实现中的 model/provider snapshot 入口；ASR 与 ASR-native diarization 已可进入 ImportRun，Judge 配置可捕获但主链未完整执行。2026-09-18 目标架构改为从外置 `providers.yaml` / `storage.yaml` 解析有效配置，并继续生成 secret-free Run snapshot。Credential values 与完整 Presigned URL 始终保持运行时内存态，不写快照。#87 合并前，SQLite model settings 仍是当前代码事实。
+
+## 2026-09-18 File ASR 与对象存储决策
+
+Recording Analysis 的 P0 File ASR 继续采用火山**录音文件识别极速版 HTTP**，不切换到 Streaming ASR。
+
+三种火山录音文件识别形态的产品定位：
+
+- **极速版 HTTP**：当前 AIVoiceBench 默认；单次请求返回，适合交互式 Recording Analysis。
+- **标准版**：保留为未来高质量/长录音 Provider mode；异步 submit/query 生命周期，不进入 #87 当前实现。
+- **闲时版**：保留为未来大规模历史回归/批处理 Provider mode；不适合当前“上传后立即看报告”的主流程。
+
+极速版目标 transport：
+
+```text
+canonical WAV
+    |
+    +-- <= inline_max_bytes --> Base64 audio.data
+    |
+    +-- >  inline_max_bytes --> private TOS object
+                               --> short-lived Presigned GET URL
+                               --> audio.url
+```
+
+初始 `inline_max_bytes` 为 **15 MiB**，作为可配置工程默认值而不是硬编码产品常量。对象存储只在 URL transport 需要时参与；小文件不应因为缺少 TOS 而被阻断。
+
+TOS 是第一对象存储 adapter，原因是与当前火山服务栈部署一致、支持私有对象和预签名 URL。它不是 File ASR 协议的强制绑定。Storage Adapter 必须保持可替换，且对象存储只承担临时 transport，不成为 Evidence source。
+
+目标运行配置分离：
+
+```text
+/etc/aivoicebench/providers.yaml
+  └─ File ASR / Streaming ASR / TTS / Judge profiles + routes
+
+/etc/aivoicebench/storage.yaml
+  └─ TOS endpoint/region/bucket/prefix + credential refs + TTL/cleanup
+```
+
+长期 secret 不进入 YAML；只保存环境变量/secret reference。仓库样例见 `config/providers.example.yaml` 与 `config/storage.example.yaml`。
+
+官方契约核对入口（实现时仍须再次在线验证）：
+
+- 录音文件识别极速版 HTTP：火山文档 ID `6561/1631584`；
+- 录音文件识别标准版：`6561/1354868`；
+- 录音文件识别闲时版：`6561/1840838`；
+- TOS Presigned URL：对象存储预签名机制文档。
+
+实现任务见 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87)。
 
 ## 2026-09-16 speaker separation 决策
 
@@ -63,17 +110,24 @@ VAD 不作为 ASR 的强制前置。两者并行产生 evidence；Silero thresho
 
 ## Current Volcengine File ASR contract boundary
 
-当前代码实现过的极速 File ASR path 使用配置化 endpoint/model/resource 与后端凭据，通过 URL/发布机制提交 canonical audio，保留 provider invocation audit。旧审计曾核对 `volc.bigasr.auc_turbo` 极速接口以及 utterance/word timing；具体 endpoint/resource/请求字段属于 dated adapter contract，不是永久产品要求。
+当前代码实现过的极速 File ASR path 使用配置化 endpoint/model/resource 与后端凭据，但仍通过固定 URL/发布机制提交 canonical audio。旧审计曾核对 `volc.bigasr.auc_turbo` 极速接口以及 utterance/word timing；具体 endpoint/resource/请求字段属于 dated adapter contract，不是永久产品要求。
+
+#87 的目标是保留同一极速版 Provider 能力，同时把输入 transport 改成 provider 原生的 `audio.data` / `audio.url` 双路径，并把 endpoint/model/resource/transport policy 全部移入外置 provider 配置。固定 `AIVOICEBENCH_AUDIO_PUT_URL` / `AIVOICEBENCH_AUDIO_GET_URL` / `AIVOICEBENCH_AUDIO_HOST` 不再是目标生产依赖。
 
 2026-09-16 起，speaker separation 接入必须以**当前启用的火山接口文档和真实服务响应**为准，不能仅凭旧文档/旧接口兼容字段推断。服务模型版本、speaker label 语义和准确率都要进入真实验收记录。
 
 ## Configure locally / on Linux Server
 
-1. 在 Web model management 配置 `volcengine_asr` profile、实际 endpoint/model/resource 与后端凭据，并选择 ASR route。
-2. 如当前 adapter 使用 signed URL publisher，继续提供相应 PUT/GET/host 配置；secret/URL 不进入 Issues、报告或源码。
-3. speaker separation 与 ASR 尽量复用同一次原生响应，不为同一录音做无必要的第二次云识别。
-4. `diarization` route 指向 ASR-native labels 时，缺少 labels 应返回 `insufficient_evidence`，不静默造 cluster。
-5. Vosk 保留显式 offline fallback，但不冒充火山调用失败后的自动替代。
+目标部署：
+
+1. 将 `config/providers.example.yaml` 复制为服务器外置 `/etc/aivoicebench/providers.yaml`，配置 File ASR endpoint/model/resource、`audio_transport`、`inline_max_bytes`、route 与 credential env reference。
+2. 仅当 `object_storage` / `auto` 的当前文件需要 URL transport 时，加载 `/etc/aivoicebench/storage.yaml`。TOS bucket 保持 private，Backend 直接上传并生成短期 Presigned GET。
+3. 长期 Provider key / TOS AK/SK 只存在于后端 secret/environment；配置文件、Issue、报告、Run snapshot 与日志不保存 secret 或完整签名 URL。
+4. speaker separation 与 ASR 尽量复用同一次原生响应，不为同一录音做无必要的第二次云识别。
+5. `diarization` route 指向 ASR-native labels 时，缺少 labels 应返回 `insufficient_evidence`，不静默造 cluster。
+6. Vosk 保留显式 offline fallback，但不冒充火山调用失败后的自动替代。
+
+在 #87 合并前，当前 Web model management / SQLite 与固定 Signed URL publisher 仍可能是实际运行入口；不得把上述目标配置方式误写成当前版本已实现。
 
 CLI 仍走相同 ImportRun：
 

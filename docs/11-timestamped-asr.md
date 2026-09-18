@@ -6,6 +6,8 @@ Provider boundary 独立于 hardware/controller。File ASR Provider 返回原生
 
 2026-09-16 路线决定：Recording Analysis 当前优先把 **火山 File ASR 的自动说话人分离**用完整，暂不把 3D-Speaker 作为必要依赖。ASR-native speaker label 是匿名 cluster evidence，不是 tester/device role truth。
 
+2026-09-18 配置/transport 决策：P0 File ASR 默认使用火山录音文件识别极速版 HTTP。目标由外置 `providers.yaml` 定义 endpoint/model/resource 与 `audio_transport`；`auto` 模式下小文件使用 Base64 `audio.data`，大文件才通过外置 `storage.yaml` 选择私有 TOS + 短期 Presigned GET 的 `audio.url`。对象存储是 transport adapter，不是所有 File ASR 的强制前置。
+
 ## Run locally — explicit offline fallback
 
 ```powershell
@@ -59,7 +61,7 @@ tester / device / unknown
 
 ## Current cloud/import path
 
-Main `v0.4.0` 已有 audited Volcengine File ASR Web/CLI ImportRun 基础。Recording Backbone 见 [23-recording-backbone.md](23-recording-backbone.md)。现有代码可以消费 ASR-native labels，但 **2026-09-16 后的下一步是核对当前实际 File ASR 接口的 speaker-separation 请求参数和真实返回语义，并完成真实服务验证**。
+Main `v0.4.0` 已有 audited Volcengine File ASR Web/CLI ImportRun 基础。Recording Backbone 见 [23-recording-backbone.md](23-recording-backbone.md)。现有代码可以消费 ASR-native labels，但当前音频 publication 仍依赖固定 Signed URL 配置；#87 将其改为极速版原生 `audio.data` / `audio.url` 双路径并外置 Provider/Storage 配置。**speaker-separation 请求参数和真实返回语义仍必须基于当前官方契约核对并完成真实服务验证**。
 
 不得仅凭旧版 API 文档中的 `with_speaker_info` 等字段修改当前新接口请求；实际 adapter 必须以当前启用 endpoint/resource 的官方契约和真实响应为依据。
 

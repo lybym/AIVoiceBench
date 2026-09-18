@@ -1,0 +1,28 @@
+# AIVoiceBench object-storage configuration — example only
+# Runtime target: /etc/aivoicebench/storage.yaml
+# Do not place AK/SK/session-token values in this file. Reference environment variables.
+#
+# Object storage is NOT required for every File ASR request. With audio_transport=auto,
+# eligible small files are submitted inline as audio.data; an object store is used only
+# when URL transport is required.
+
+schema_version: 1
+
+stores:
+  - id: tos-asr-temp
+    provider: tos
+    endpoint: https://tos-cn-beijing.volces.com
+    region: cn-beijing
+    bucket: "<private-bucket>"
+    prefix: aivoicebench/asr/
+
+    credentials:
+      access_key_env: TOS_ACCESS_KEY
+      secret_key_env: TOS_SECRET_KEY
+      # Optional when temporary credentials are used.
+      session_token_env: TOS_SESSION_TOKEN
+
+    publication:
+      presigned_get_ttl_seconds: 3600
+      delete_after_use: true
+      lifecycle_max_age_hours: 24

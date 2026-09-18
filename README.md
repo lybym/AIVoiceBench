@@ -47,7 +47,7 @@ Online Event Producer                 Offline Event Producer
 
 当前正式交付为 Docker 后端与前端，通过 Windows 浏览器访问；不要求 Windows EXE/安装包。Docker 内包含媒体处理依赖，运行数据通过持久卷保存。Browser Station 的 TypeScript 目标仍编译为普通浏览器 JavaScript 静态产物，由现有 FastAPI/Docker 交付链服务，不改变 `Linux Server + Docker Backend + Remote Chrome Browser Station` 的正式拓扑。`v0.4.0` 的启动命令、附件和 SHA-256 以 [Docker/API 文档](docs/20-docker-api.md) 与 [发布说明](docs/releases/0.4.0.md) 为准。
 
-默认部署面向可信单用户 localhost。模型和语音服务凭据只由后端持有，不进入浏览器、Git、运行快照或报告；保存配置不等于服务连通或真实效果已经验证。
+默认部署面向可信单用户 localhost。模型和语音服务凭据只由后端持有，不进入浏览器、Git、运行快照或报告；保存配置不等于服务连通或真实效果已经验证。2026-09-18 的目标配置进一步把 Judge/LLM、File ASR、Streaming ASR、TTS 的非敏感参数外置到服务器 `providers.yaml`，把对象存储参数外置到独立 `storage.yaml`，长期 secret 只保留 env/secret reference；该迁移由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 跟踪，当前 SQLite/固定 Signed URL 路径在实现完成前仍是代码事实。
 
 ## 验证原则
 

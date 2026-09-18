@@ -1,0 +1,81 @@
+# AIVoiceBench provider configuration — example only
+# Runtime target: /etc/aivoicebench/providers.yaml
+# Do not place credential values in this file. Use credential_env references.
+#
+# Issue #87 defines this as the target source of truth. Until that implementation lands,
+# current releases still use the existing model-settings persistence path.
+
+schema_version: 1
+
+profiles:
+  - id: judge-doubao
+    name: Doubao Judge
+    provider: volcengine
+    protocol: openai_chat
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    model: "<ark-endpoint-id>"
+    credential_env: ARK_API_KEY
+    enabled: true
+    capabilities: [judge]
+    parameters:
+      temperature: 0.3
+      max_tokens: 4096
+      timeout_seconds: 30
+
+  - id: volc-file-asr
+    name: Volcengine File ASR Flash
+    provider: volcengine
+    protocol: volcengine_asr
+    base_url: https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash
+    model: bigmodel
+    credential_env: VOLCENGINE_SPEECH_API_KEY
+    enabled: true
+    capabilities: [asr, diarization]
+    parameters:
+      resource_id: volc.bigasr.auc_turbo
+      timeout_seconds: 300
+      file_mode: flash
+      audio_transport: auto
+      inline_max_bytes: 15728640
+      object_storage_ref: tos-asr-temp
+
+  - id: volc-streaming-asr
+    name: Volcengine Streaming ASR
+    provider: volcengine
+    protocol: volcengine_streaming_asr
+    base_url: wss://openspeech.bytedance.com/api/v3/sauc/bigmodel
+    model: bigmodel
+    credential_env: VOLCENGINE_SPEECH_API_KEY
+    enabled: true
+    capabilities: [streaming_asr]
+    parameters:
+      resource_id: volc.bigasr.sauc.duration
+      timeout_seconds: 300
+      end_window_size: 800
+      force_to_speech_time: 1000
+
+  - id: volc-tts
+    name: Volcengine TTS
+    provider: volcengine
+    protocol: volcengine_tts
+    base_url: https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse
+    model: "<model-label-for-audit>"
+    credential_env: VOLCENGINE_TTS_API_KEY
+    enabled: true
+    capabilities: [tts]
+    parameters:
+      resource_id: "<resource-id>"
+      voice: "<voice-id>"
+      format: wav
+      sample_rate: 16000
+      speed: 0
+      volume: 0
+      pitch: 0
+      timeout_seconds: 30
+
+routes:
+  tts: volc-tts
+  asr: volc-file-asr
+  streaming_asr: volc-streaming-asr
+  diarization: volc-file-asr
+  judge: judge-doubao

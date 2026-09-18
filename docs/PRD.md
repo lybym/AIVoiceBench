@@ -1,10 +1,10 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.5.2
+prd_version: 1.5.3
 status: modularized_for_owner_review
-updated: 2026-09-16
+updated: 2026-09-18
 implementation_baseline: v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd
-main_baseline: 9632844da6ddcef757fd7df20a6bb12e46853cdd
+main_baseline: 30dd2e9294d0b5f7c6e53d2961b98607bacf68ec
 ---
 
 # AIVoiceBench 产品需求文档（PRD）
@@ -72,6 +72,8 @@ Linux Server + Docker Backend
 - **原生 Windows 应用不是当前交付要求。** Windows Native/WASAPI 只作为未来专业 HIL Station Agent 的可选扩展，不要求把整个 AIVoiceBench 后端迁出 Linux/Docker。
 - 网络 RTT 与服务器调度延迟可以影响交互控制，但不得进入正式声学指标；核心原则是：**计算可以远，音频时间轴必须在现场生成。**
 - 当前浏览器主目标仍是 Chrome；正式远端部署必须满足浏览器安全上下文要求并记录实际音频 constraints/settings。
+- **Provider 与对象存储配置必须外置。** LLM / File ASR / Streaming ASR / TTS 的 endpoint、model/resource、voice、route 与协议参数由服务器侧外置 provider 配置文件提供；对象存储 endpoint/region/bucket/prefix/TTL/cleanup 由独立 storage 配置文件提供。长期密钥只通过后端 secret/environment reference 解析，不写入配置文件、Git、浏览器、Run snapshot 或报告。该目标由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 实现；当前 SQLite model settings 与固定 Signed URL publisher 在迁移完成前只属于现状兼容层。
+- Recording Analysis 的 P0 File ASR 默认选择火山**录音文件识别极速版 HTTP**：小文件优先通过 `audio.data` Base64 直传；超过可配置阈值时才使用私有对象存储 + 短期 Presigned GET URL。对象存储不是所有 File ASR 的强制依赖，Streaming ASR 也不经过该文件发布层。
 
 普通电脑扬声器与麦克风是 M2 的基础能力；专业 HIL、同步校准、loopback 和低层声卡接口是 P3 扩展。Recording Analysis 使用 File ASR；Active 控制使用 Streaming ASR。二者的 provider timestamp 都不直接充当正式声学边界。
 
@@ -85,7 +87,7 @@ Linux Server + Docker Backend
 | --- | --- | --- | --- | --- |
 | F001–F003 | 录音导入、Artifact provenance、标准化与 QA | P0 | ✅ implemented（真实录音待验收） | [Recording Analysis](prd/recording-analysis.md) |
 | F004–F009 | 编排、File ASR、归属、Turn/EventTimeline、确定性指标 | P0 | 🟡 partial | [Recording Analysis](prd/recording-analysis.md) |
-| F010–F017 | Judge、Findings、修订、报告、Web、模型配置与重分析 | P0/P1 | ✅/🟡，逐项见分册 | [Recording Analysis](prd/recording-analysis.md) |
+| F010–F017 | Judge、Findings、修订、报告、Web、Provider/Storage 外置配置、File/Streaming ASR/TTS 生命周期与重分析 | P0/P1 | ✅/🟡，逐项见分册；#87 跟踪外置配置与 File ASR transport | [Recording Analysis](prd/recording-analysis.md) |
 | F018–F019 | Compare 与 Frozen Golden Voice | P2/P1 | ⬜ planned | [Recording Analysis](prd/recording-analysis.md) |
 | F020–F021 | Fixed Runner 与 Free Test Agent | P1 / M2–M3 | 🟡 partial | [Active Measurement](prd/active-measurement.md) |
 | F022 | 专业 HIL / Station | P3 | ⏸ deferred | [Active Measurement](prd/active-measurement.md) |

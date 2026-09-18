@@ -1,49 +1,23 @@
-# AIVoiceBench Configuration
-# Copy this file to config/aivoicebench.yaml and fill in your API keys.
-# API keys can also be set via environment variables (recommended for Docker).
+# AIVoiceBench Core Configuration
+# TARGET SCHEMA tracked by Issue #87. Current v0.4.0 code may not consume these
+# external-file keys until the implementation PR lands.
+# Provider/model and object-storage settings are deliberately externalized.
+# Copy the example files to server-owned runtime paths and mount them read-only.
+#
+# Runtime path overrides may also be supplied with:
+#   AIVOICEBENCH_PROVIDERS_CONFIG
+#   AIVOICEBENCH_STORAGE_CONFIG
+#
+# Long-lived credentials MUST NOT be written into these YAML files. Provider/storage
+# files contain only credential environment-variable references.
+
+# === External configuration files ===
+providers_config: /etc/aivoicebench/providers.yaml
+storage_config: /etc/aivoicebench/storage.yaml
 
 # === Output / Cache ===
 output: /data/output
 cache: /data/cache
-
-# === LLM Provider ===
-# Choose: "none" (semantic evaluation unavailable), "volcengine", or "openai"
-llm_provider: none
-
-# --- 火山引擎 豆包 (Volcengine Doubao) ---
-# Setup steps:
-# 1. Register at https://console.volcengine.com/ark
-# 2. Complete real-name verification (实名认证)
-# 3. Create an inference endpoint (推理接入点) at:
-#    https://console.volcengine.com/ark/region:ark+cn-beijing/model
-# 4. Get your API key and endpoint ID from the console
-#
-# volcengine:
-#   api_key: "YOUR_ARK_API_KEY"              # or set env: ARK_API_KEY
-#   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-#   model: "ep-xxxxxxxxxxxxxxxxx"             # your endpoint ID from console
-#   temperature: 0.3
-#   max_tokens: 4096
-
-# --- OpenAI ---
-# openai:
-#   api_key: "YOUR_OPENAI_API_KEY"            # or set env: OPENAI_API_KEY
-#   base_url: "https://api.openai.com/v1"
-#   model: "gpt-4o"
-#   temperature: 0.3
-#   max_tokens: 4096
-
-# === ASR Provider (optional) ===
-# Vosk for offline ASR (download model separately)
-# vosk:
-#   model_dir: /data/cache/models/vosk-model-small-cn-0.22
-#   model_version: "0.22"
-
-# Volcengine cloud ASR
-# volcengine_asr:
-#   api_key: "YOUR_ARK_API_KEY"               # or set env: ARK_API_KEY
-#   app_id: "YOUR_APP_ID"
-#   cluster: "volc/bigasr/auc_turbo"
 
 # === Audio Processing ===
 # ffmpeg_path: /usr/local/bin/ffmpeg

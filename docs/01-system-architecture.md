@@ -76,10 +76,12 @@ Browser Station 与 Server 之间的网络 RTT、WebSocket queue、server schedu
 | Control transport | WebSocket / HTTPS |
 | Control VAD | 当前 RMS；目标 TEN VAD Browser/WASM；RMS 保留 fallback |
 | Server acoustic boundary | 当前 Energy VAD legacy；目标 Silero VAD baseline |
-| Recording ASR | File ASR Provider，近期优先火山 |
+| Recording ASR | File ASR Provider，P0 默认火山极速版 HTTP；小文件 inline Base64，大文件对象存储 URL |
 | Active ASR | StreamingASRProvider，近期优先火山 |
 | Speaker separation | 当前优先使用火山 ASR-native anonymous speaker labels；3D-Speaker deferred |
 | Waveform/Evidence UI | wavesurfer.js planned |
+| Provider config | 目标：外置只读 `providers.yaml`；LLM/ASR/TTS 非敏感配置 source of truth |
+| Object storage | 目标：外置只读 `storage.yaml`；首个 adapter 为私有 TOS，仅承担大文件 File ASR transport |
 | Persistence | Run Artifact + mounted volume |
 | Formal measurement | Active Measurement + Recording Analysis → Canonical EventTimeline → unique Metric Engine |
 | Native Windows | 非当前正式交付；未来可选专业 HIL Station Agent |
@@ -122,6 +124,23 @@ Linux Server + Docker 负责：
 - Human Revision；
 - Report、Artifact 与 Evidence 管理；
 - 多 Browser Station 的集中管理。
+
+### 4.3 Configuration Plane
+
+Provider 与 Storage 配置属于 Server Deployment Plane，不属于 Browser UI，也不属于 Measurement Evidence：
+
+```text
+/etc/aivoicebench/providers.yaml
+    ├─ judge / File ASR / Streaming ASR / TTS profiles
+    └─ capability routes
+
+/etc/aivoicebench/storage.yaml
+    └─ object-storage adapters / TTL / cleanup / credential references
+```
+
+长期 secret 不写入 YAML；配置文件只保存 env/secret reference。Docker 以 read-only mount 加载。Run 在启动时解析一次有效配置，并只把**非敏感 resolved snapshot**写入 provenance。
+
+当前 SQLite model settings 是兼容现状；[Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 完成后，外置文件成为 source of truth，禁止 SQLite 与文件配置静默双写/合并。
 
 ## 5. 两条独立正式 Measurement Pipeline
 
@@ -229,7 +248,7 @@ ASR
 
 ### 8.1 Recording Analysis
 
-当前阶段优先把火山 File ASR 的自动 speaker separation 用完整，而不是新增 3D-Speaker。
+当前阶段优先把火山 File ASR 的自动 speaker separation 用完整，而不是新增 3D-Speaker。P0 File ASR 选择极速版 HTTP：默认 `audio_transport=auto`，小文件直接 Base64 `audio.data`，超过可配置阈值时由 Storage Adapter 上传私有 TOS 并生成短期 Presigned GET 作为 `audio.url`。对象存储不是 File ASR 的普遍前置，也不参与 Streaming ASR。
 
 ```text
 provider speaker labels

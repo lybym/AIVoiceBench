@@ -1,25 +1,192 @@
 # Model management
 
-> 2026-09-11 基线：对齐 main `8d01ef2` / `v0.3.2`（本文件最初的审计基线 `c612d36` / alpha.2 属历史记录）。当前主链与验证限制见 [Recording Backbone](23-recording-backbone.md)；真实验收仍待完成。
+> 2026-09-18 target decision: provider/model and object-storage configuration is **server-side external configuration**, not application code and not browser-owned state. Current `main` still contains the SQLite-backed model-settings implementation; [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) performs the migration. This document distinguishes current fact from target behavior and does not claim #87 is implemented.
 
-The browser model manager separates provider profiles from capability routes. Five purposes are configured independently: **`asr`** (File ASR for Recording Analysis), **`streaming_asr`** (session-based recognition for Active Voice Test), `tts`, `diarization` and result `judge`. Profiles declare protocol, endpoint, model ID, parameters and credential reference; default routes select a profile per purpose. Changes apply at the next Run. Unsupported speech adapters are explicitly not_integrated; saving configuration does not invoke a provider or certify connectivity.
+The system keeps five independent capability routes: **`asr`** (File ASR for Recording Analysis), **`streaming_asr`** (Active Voice Test real-time recognition), `tts`, `diarization`, and result `judge`. File ASR and Streaming ASR remain separate lifecycle families; neither provider timestamp is a formal acoustic boundary.
 
-File ASR and Streaming ASR are deliberately separate purposes rather than one vague `default_asr`: the first recognizes a finished External Recording for Recording Analysis; the second runs a live session for Active Control and text/semantic observation (PRD-F016, [Streaming ASR 边界](24-streaming-asr.md)). Neither provider's timestamps are formal acoustic boundaries. Active Measurement speech boundaries come from the Live Measurement Audio processor, while Streaming ASR text may be referenced as semantic Evidence. A configuration written before `streaming_asr` existed loads with that purpose unconfigured and reports `routes_defaulted`; existing purposes are never re-pointed silently.
+## 1. Configuration ownership
 
-M1 wires the configured Volcengine ASR route for File ASR. ASR-native diarization reuses the selected ASR response when its route selects an enabled volcengine_asr profile; bind both routes to the same profile. The `streaming_asr` route selects the Volcengine big-model streaming protocol and drives the free-mode capture path; it does not require signed-URL audio publication. Judge configuration can be captured, but ImportRun does not execute it. ASR/clusters do not imply role attribution. Vosk remains intact.
+### Current implementation
 
-## Reference and adaptation
+Current releases persist model profiles/routes under:
 
-Reviewed the local DeepSeek Harness source: packages/llm/llm-pi-ai/src/config.ts (provider profiles and credentials), packages/host/apiproxy/src/api/settings.ts (redacted descriptors and expected revisions), and dynamic-config.spec.ts (request-level resolution). AIVoiceBench implements its own Python storage and validation around those ideas; it does not vendor or clone the Harness architecture. No guessed model IDs, voices or speech endpoint presets are shipped.
+```text
+AIVOICEBENCH_OUTPUT/.model-settings/credentials.sqlite3
+```
 
-## Persistence and credentials
+The browser model manager can edit those settings. Credential values are backend-only and the API returns only redacted/configured state. This remains a compatibility fact until #87 lands.
 
-Settings use SQLite transactions in AIVOICEBENCH_OUTPUT/.model-settings/credentials.sqlite3, persisted by the existing output volume. The local database contains credentials in plaintext and must remain private; Linux directory/file modes are 0700/0600. The Web API only returns configured flags. A credential_env reference takes precedence over a locally saved key; keys can be updated, preserved by omission or explicitly cleared. Secrets never enter Run snapshots. Invalid configuration responses never echo request bodies. Model configuration APIs are for the existing trusted single-user deployment, not a multi-tenant admin system. Compose binds localhost; use an authenticated proxy before making the application available remotely.
+### Target configuration
 
-## Revisions and Run evidence
+The target server runtime uses two external files:
 
-Writes require expected_revision; stale editors receive 409 instead of replacing newer settings. Profile/schema validation, route validation, persistence and revision increment share a transaction. Removing a profile removes its local secret; active routes must be cleared. Each Web Run resolves settings once, captures a secret-free model-config.json and registers its SHA256 in the import manifest. Snapshots live inside the selected analysis revision. Existing revisions retain their snapshot after subsequent edits. Stored settings override legacy LLM environment routing after the first save; before that, environment routing remains available.
+```text
+/etc/aivoicebench/providers.yaml
+/etc/aivoicebench/storage.yaml
+```
 
-## Verification
+Repository examples:
 
-Tests cover credential redaction, persistence, env precedence, stale writes, invalid routes/parameters/URLs, cross-origin mutation rejection, unsupported adapters, no-network save operations and immutable Run snapshots. Docker release smoke includes model settings CRUD/redaction and codec imports. These checks do not constitute external API connectivity or real-recording accuracy acceptance.
+```text
+config/providers.example.yaml
+config/storage.example.yaml
+```
+
+`config/aivoicebench.example.yaml` contains only core application settings plus paths to those external files. The runtime path may be overridden by:
+
+```text
+AIVOICEBENCH_PROVIDERS_CONFIG
+AIVOICEBENCH_STORAGE_CONFIG
+```
+
+These environment variables identify **file locations only**. Endpoint/model/resource/voice/route/storage parameters must not be scattered across many process environment variables or hard-coded in application code.
+
+For Docker/Linux Server deployment, the two runtime files should be mounted read-only. They are deployment input and must be independently reviewable/versionable outside the image.
+
+## 2. Provider configuration
+
+`providers.yaml` is the target source of truth for non-secret provider configuration:
+
+- profile id/name/provider/protocol;
+- endpoint/base URL;
+- model or endpoint id;
+- resource id;
+- TTS voice/audio parameters;
+- timeout and protocol-specific parameters;
+- capability declarations and default routes;
+- credential **reference** such as `credential_env`, never the credential value.
+
+Expected route set:
+
+```text
+tts
+asr
+streaming_asr
+diarization
+judge
+```
+
+ASR-native diarization should normally point `diarization` to the same File ASR profile so one native recognition response can provide transcript/timestamps/speaker labels without a duplicate billable call.
+
+The OpenAI-compatible Judge path remains Chat Completions-compatible. File ASR, Streaming ASR and TTS use their protocol-specific adapters. Provider configuration does not prove connectivity or paid-service readiness.
+
+## 3. Object-storage configuration
+
+`storage.yaml` is separate from provider configuration because object storage is an **audio transport adapter**, not an ASR model.
+
+It owns only non-secret storage parameters such as:
+
+```text
+provider
+endpoint
+region
+bucket
+prefix
+credential env references
+presigned GET TTL
+delete-after-use
+lifecycle backstop
+```
+
+The first implementation target is Volcengine TOS. The bucket/object must remain private. The backend uploads directly through the storage adapter and only exposes a time-bounded Presigned GET URL to a File ASR provider when URL transport is needed.
+
+Object storage is not required by Streaming ASR and is not required for every File ASR request.
+
+## 4. File ASR transport policy
+
+Recording Analysis keeps Volcengine **录音文件识别极速版 HTTP** as the P0 File ASR path.
+
+Target modes:
+
+```text
+audio_transport = inline | object_storage | auto
+```
+
+Default `auto` behavior:
+
+```text
+canonical WAV
+    |
+    +-- <= inline_max_bytes --> Base64 --> audio.data --> File ASR Flash
+    |
+    +-- >  inline_max_bytes --> private object storage
+                               --> short-lived Presigned GET
+                               --> audio.url --> File ASR Flash
+```
+
+Initial engineering default:
+
+```text
+inline_max_bytes = 15728640   # 15 MiB
+```
+
+The threshold is configurable and must be captured in the Run's non-secret configuration provenance; it is not a permanent product constant.
+
+Standard/Idle File ASR may be added later as additional provider modes. They are not required by #87 and do not replace the default Flash path.
+
+The existing fixed publication variables:
+
+```text
+AIVOICEBENCH_AUDIO_PUT_URL
+AIVOICEBENCH_AUDIO_GET_URL
+AIVOICEBENCH_AUDIO_HOST
+```
+
+are current implementation details only. #87 removes them from the production dependency path. A backend that already owns the canonical WAV should not require a pre-created PUT URL merely to upload its own file.
+
+## 5. Credentials and secret boundary
+
+Long-lived credentials remain backend-only.
+
+External YAML contains references such as:
+
+```yaml
+credential_env: VOLCENGINE_SPEECH_API_KEY
+credentials:
+  access_key_env: TOS_ACCESS_KEY
+  secret_key_env: TOS_SECRET_KEY
+```
+
+It must not contain the resolved secret values.
+
+Secrets and complete signed URLs must never enter:
+
+- Git;
+- browser payload/static bundle;
+- Run snapshot/model-config artifact;
+- report;
+- Issue/PR text;
+- ordinary logs.
+
+A Run snapshot records effective **non-secret** provider/storage configuration, selected route, transport mode/threshold, model/resource identifiers, storage adapter id, and safe invocation provenance.
+
+## 6. Revisions and migration
+
+Configuration is resolved once at Run start and the resolved non-secret view is immutable for that AnalysisRevision. A later file edit affects only a later Run/reanalysis.
+
+Migration from current SQLite settings must be explicit:
+
+- do not silently merge SQLite and external-file values;
+- startup/API must identify the active source;
+- a conflict is an explicit configuration error or a documented compatibility mode;
+- legacy settings remain readable only for the bounded migration period;
+- browser configuration UI must not continue persisting a second authoritative copy after file-based ownership becomes active.
+
+## 7. Verification
+
+#87 must cover:
+
+- YAML schema/version validation;
+- missing/unreadable config files;
+- duplicate/invalid profile or route references;
+- missing credential environment variables without secret echo;
+- URL/protocol/range validation;
+- `inline | object_storage | auto` branch selection;
+- no-storage behavior for eligible inline File ASR;
+- required-storage failure for over-threshold File ASR;
+- TOS upload / Presigned GET / cleanup audit using controlled fixtures;
+- secret and signed-URL redaction;
+- immutable per-Run non-secret configuration snapshots;
+- Docker read-only config mounts and restart behavior.
+
+These tests are software/container evidence only. Real Volcengine/TOS calls and authorized real recordings remain separate #22/#85 acceptance evidence.

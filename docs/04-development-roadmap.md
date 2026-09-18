@@ -19,6 +19,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 - Speaker separation：优先使用火山 ASR 原生 speaker labels，当前不接 3D-Speaker；
 - Evidence UI：wavesurfer.js；
 - Windows Native：不作为正式交付方向。
+- Provider/Storage 配置：目标改为服务器侧外置 `providers.yaml` + `storage.yaml`，由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 实现；File ASR P0 默认极速版 HTTP，小文件 inline Base64，大文件私有 TOS + Presigned GET。
 
 ## 2. 当前基线
 
@@ -26,7 +27,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 | 范围 | 当前事实 | 明确缺口 |
 | --- | --- | --- |
-| Recording Analysis | 导入、标准化、云 File ASR、聚类/归属、融合，以及有角色证据时的 Turn/Event/Metric 主链已有 | 真实火山 speaker separation 请求/响应验收、Judge/Findings 主链、人工修订、wavesurfer Evidence UI、完整报告和真实录音验收未闭环 |
+| Recording Analysis | 导入、标准化、云 File ASR、聚类/归属、融合，以及有角色证据时的 Turn/Event/Metric 主链已有 | 当前 Provider 配置仍由 SQLite/旧路径管理且 File ASR 仍依赖固定 URL publication；#87 外置配置 + inline/TOS transport、真实火山 speaker separation、Judge/Findings、人工修订、wavesurfer、完整报告和真实录音验收未闭环 |
 | Browser Station implementation | 当前 `aivoicebench/static/` 使用 HTML/CSS/Vanilla JS，核心 JS 入口为 `app.js`、`models.js`、`voice_test.js`、`pcm_capture_worklet.js` | TypeScript toolchain、等价迁移、typecheck/build、Docker 静态交付与 browser/container 回归尚未完成（#84） |
 | Fixed Voice Test | 浏览器播放、麦克风、Control RMS VAD、WebSocket 控制、Turn ID、超时、停止和迟到事件防护已有 | TEN VAD Browser Adapter、Frozen Golden Voice、Measurement Audio、条件 Barge-in、设备设置快照和实体设备验收未闭环 |
 | Free Voice Test | AudioWorklet 在设备回答阶段把 PCM 送入 Streaming ASR；partial/final、Agent 下一轮和显式 File ASR fallback 已有 | 不是跨整次 Run 的 durable Measurement Audio；真实云/设备、预算、Coverage、Barge-in 与 Streaming TTS 未完成 |
@@ -35,9 +36,21 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 ## 3. 近期执行顺序
 
+### R0 — Provider / Object Storage Configuration Foundation (#87)
+
+1. 将 Judge/LLM、File ASR、Streaming ASR、TTS、diarization routes 的非敏感配置收敛到服务器侧外置 `providers.yaml`；
+2. 将对象存储参数收敛到独立 `storage.yaml`，首个 adapter 为私有 TOS；长期 API Key / AK / SK 只通过 env/secret reference 解析；
+3. Docker 只读挂载外置文件，Run start 时解析一次，snapshot 只保存 resolved non-secret provenance；
+4. File ASR 极速版实现 `inline | object_storage | auto`：默认 `auto`，初始 inline 阈值 15 MiB 且可配置；
+5. 小文件使用 `audio.data` Base64，不要求 Storage；大文件由 Backend 直接上传私有 TOS，生成短期 Presigned GET 作为 `audio.url`，完成后清理并保留 lifecycle backstop；
+6. 移除生产路径对 `AIVOICEBENCH_AUDIO_PUT_URL/GET_URL/HOST` 的依赖；SQLite model settings 与外置配置不得形成两个静默 source of truth；
+7. 标准版/闲时版仅保留未来 Provider mode 扩展点，不在本切片实现。
+
+阶段出口：fresh Docker deployment 可仅凭外置 provider/storage 配置和 backend secret env 完成配置解析；小 File ASR 不配置 TOS 也可运行 inline，大文件明确选择 TOS URL transport；所有配置冲突、缺失与 secret redaction 可审计。
+
 ### R1 — Recording Analysis：先把已有云能力用完整
 
-1. 核对并实现当前火山 File ASR 自动说话人分离参数/响应映射；
+1. 在 #87 的外置 Provider/Storage 配置与 File ASR transport 基础上，核对并实现当前火山 File ASR 自动说话人分离参数/响应映射；
 2. 保存匿名 speaker labels、provider/model/config provenance；
 3. Attribution 继续把 `speaker_N` 映射到 tester/device/unknown，禁止按顺序猜角色；
 4. 真实 5–20 分钟 AI 玩具录音验证 speaker coverage、冲突、abstention 和角色复核工作量；
@@ -93,7 +106,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 ## 5. 与既有产品里程碑的映射
 
-- **M1 Recording Analysis**：R1、R2、R4 优先收口真实录音证据链。
+- **M1 Recording Analysis**：R0、R1、R2、R4 优先收口配置/transport 与真实录音证据链。
 - **M2 Fixed Voice Test**：A、B、C、D 完成普通 turn-taking 最小闭环；Browser Station TypeScript 等价迁移属于 A 的工程基础，不新增产品能力。
 - **M3 Free Voice Test Agent**：复用相同 Browser Station/Measurement Plane，完成 E、F 的实时展示/最终化。
 - **M4 关联与验证**：完成 G；外部录音关联服务于复测/方法验证，不承担 Active Result 转正。

@@ -14,9 +14,9 @@ PRD refs: PRD-F016 / F020 / F021 / F023；相关 N003、N004。技术契约文�
 | 生命周期 | 一次提交、一次识别；可离线重跑 | `start_session → push_audio → events → finish_input → close / cancel` |
 | 输出 | 完整 Transcript（utterances / timestamps / 说话人标签） | partial / final transcript + speech / endpoint 事件 |
 | 主要角色 | Recording Analysis 的文字/语义证据；provider timestamp 非声学真值 | Active Control Plane 的实时文字/语义观察；可被正式结果引用为语义证据，但不提供正式声学边界 |
-| 凭据 | 后端持有；按服务要求可含 Signed URL 音频发布 | 后端持有；**浏览器不接触任何长期凭据** |
+| 凭据/文件 transport | 后端持有；极速版可 inline Base64，只有大文件 URL 模式才使用对象存储 + 短期 Presigned GET | 后端持有；**不使用对象存储文件发布，浏览器不接触任何长期凭据** |
 
-两者共享"provider / model / resource / 版本化调用审计 / 凭据不入库不入快照"的原则，
+两者共享“provider / model / resource / 版本化调用审计 / 长期凭据不入配置文件且不入快照”的原则；Provider 非敏感参数由目标外置 `providers.yaml` 统一声明，
 但生命周期不同，**不合并成一个只接受文件的接口**。`asr.py` 的 `ASRProvider`
 （`FileASRProvider` 别名）继续是 File ASR 契约，语义不变。
 
@@ -100,7 +100,7 @@ VAD 使用 `AnalyserNode.getFloatTimeDomainData` 计算**线性 PCM RMS**（−1
   **强制生效**：缺少项时拒绝启动、指名缺少项、不发起任何 LLM/TTS/ASR 调用。
 - 自由模式的 `capture_mode=auto` **只解析为 Streaming ASR**；缺少 Streaming ASR 时明确拒绝，
   不静默切换。`turn_file`（整轮录音 + File ASR）只有操作者显式选择时使用，并在 UI、play
-  消息与执行记录中标注为降级。Streaming ASR **不需要** File ASR 的 Signed URL 音频发布。
+  消息与执行记录中标注为降级。Streaming ASR **不需要** File ASR 的对象存储或 Signed URL 音频发布；File ASR fallback 自身按 #87 的 `inline | object_storage | auto` policy 处理。
 - 降级上传帧：浏览器上传实际录到的容器，后端先校验签名/大小，再用 FFmpeg 解码为
   canonical 16 kHz mono PCM16 WAV 并做 canonical QA，然后才调用 File ASR；文本取自归一化
   `segments`。非法媒体、识别失败、空结果分别记录为 `invalid_audio` / `asr_failed`，不包装成
