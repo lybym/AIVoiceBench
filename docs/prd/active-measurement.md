@@ -10,6 +10,8 @@
 - 支持多轮播放、响应观察、条件触发、取消与失败处理；无响应、低置信度、音频故障和中断必须有明确结果，不能无限等待或伪造成功。
 - 相同 Case 与相同 Observation 序列重放时，控制决策应一致；控制层“回答结束”不等同正式声学时延或 Barge-in 判定。
 - Fixed Mode 的基础推进可仅依赖 VAD；只有需要语义观察的 Case 才显式要求 ASR。
+- Fixed 的目标 TTS transport 为火山 **V3 WebSocket 单向流式**：完整 Case 文本一次提交，Provider 音频流在准备阶段收齐、校验并规范化为不可变 Stimulus Artifact（保存 Hash、sample metadata 与 non-secret provider/config provenance）；正式 Run 播放冻结资产，不在每次执行时临时重新合成。Provider 流式编码与最终冻结资产格式是两个不同层次，不能继续假设“流式返回 WAV”。
+- speaker/voice、encoding/format、sample rate、speech rate 以及所选协议/音色官方实际支持的 loudness 等常用参数由服务器 `providers.yaml` 外置配置；不支持的参数组合必须明确拒绝或报告 unsupported，不得静默忽略。
 
 已有受控的软件/容器/浏览器验证覆盖停止、轮次校验、超时状态和最小 `execution-record`；真实扬声器、麦克风和实体设备多轮验收仍未完成。
 
@@ -17,10 +19,12 @@
 
 **状态：🟡 partial；优先级：P1 / M3。** 用户提供 Goal、Strategy、Coverage、Budget、Stop Condition 与禁止行为；受 Harness 约束的 Agent 基于 Observation 决定下一步动作。
 
-- 正式控制路径是 Browser Mic → VAD/Streaming ASR → Observation → Agent Decision → TTS/Playback，不以整轮录音后 File ASR 作为主路径。
+- 正式控制路径是 Browser Mic → VAD/Streaming ASR → Observation → **Streaming LLM → V3 Bidirectional Streaming TTS → Streaming Playback**，不以整轮录音后 File ASR 作为主路径，也不以“等待完整 LLM 文本后生成完整音频文件”作为目标播放链。
 - partial 只用于展示和留痕；Agent 的下一轮决策只使用 final。设备文本是 Control Evidence，provider timestamp 不能成为正式声学边界。
 - 保存版本化目标、策略、允许工具、预算、停止条件、Observation、Decision、实际动作和失败理由；超预算、无 final、服务失败或用户停止须明确处置。
 - File ASR 整轮上传只能作为操作者显式选择且显式标注的 fallback；缺少 Streaming ASR 时 `auto` 不得静默降级。
+- Free 的目标 TTS transport 为火山 **V3 WebSocket 双向流式**，由独立 `streaming_tts` route 配置；LLM text chunk、TTS audio chunk、session/turn identity、finish/cancel/stale lifecycle 必须保持顺序和可追溯。Stop、Turn 切换或未来 Barge-in cancel 后的迟到音频不得串入下一轮；双向链失败不得静默切回旧 SSE 或单向 WS。
+- 双向接口的 speaker、encoding/format、sample rate、speech rate 以及官方实际支持的 loudness/pitch 等常用参数必须按官方字段与合法值配置；Provider/浏览器时间与 chunk 到达时间属于 Control/Provider Evidence，不直接成为正式 acoustic boundary。
 
 当前最小实时链路、后端能力预检、显式降级、时域 RMS VAD 判停和失败状态已有有限验证；真实云调用、真实设备、Coverage 与预算闭环仍待验收。近期控制 VAD 的目标实现改为 TEN VAD Browser/WASM Adapter；RMS 仅保留 fallback/debug，不能因文档选型被写成 implemented。
 
