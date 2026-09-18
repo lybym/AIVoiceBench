@@ -57,7 +57,7 @@ class BackboneTests(unittest.TestCase):
         self.client=TestClient(api.app);self.addCleanup(self.client.close)
         profile={'id':'speech','name':'Synthetic service','provider':'volcengine','protocol':'volcengine_asr',
                  'model':'bigmodel','base_url':API,'capabilities':['asr','diarization'],'enabled':True,
-                 'credential_env':'','parameters':{}}
+                 'credential_env':'','parameters':{'audio_transport':'object_storage'}}
         self.client.post('/api/models',json={'expected_revision':0,'profiles':[profile],
             'routes':dict(asr='speech',judge=None,tts=None,diarization='speech'),
             'secrets':{'speech':'secret-canary'}}).raise_for_status()

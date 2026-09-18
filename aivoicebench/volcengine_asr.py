@@ -9,6 +9,8 @@ separation needs its own request flag is NOT verified, so no such flag is sent
 (see UNVERIFIED_CAPABILITIES). Sending an unknown field could be rejected or
 silently change the request contract.
 """
+import base64
+import hashlib
 import json
 import math
 import os
@@ -16,8 +18,8 @@ import uuid
 from pathlib import Path
 
 from .asr import ProviderOutput
-from .cloud_transport import (API, HTTPTransport, SignedURLPublication,
-                              canonical_audio, closed_config)
+from .cloud_transport import (API, HTTPTransport, canonical_audio, closed_config)
+from .model_settings import DEFAULT_INLINE_MAX_BYTES
 from .providers import InvocationAudit, ProviderIdentity, ProviderFailure, immutable_json
 
 # The exact request properties this adapter is allowed to send, because each one
@@ -51,12 +53,20 @@ class VolcengineASRProvider:
 
     def __init__(self, root, api_key, *, model='bigmodel', endpoint=API,
                  resource_id='volc.bigasr.auc_turbo', timeout=300,
-                 publication=None, transport=None):
+                 publication=None, transport=None,
+                 transport_config=None, storage_adapter_factory=None):
         # This adapter implements one verified contract, not arbitrary URLs/models.
         if endpoint != API or model != 'bigmodel' or resource_id != 'volc.bigasr.auc_turbo':
             raise ProviderFailure('Unsupported ASR contract; configure the documented flash endpoint/model/resource')
         self.root, self.key = Path(root), api_key
         self.transport = transport or HTTPTransport(timeout)
+        # transport_config selects inline Base64 vs object-storage URL transport
+        # (PRD-F005/F016, Issue #87).  When absent, defaults to auto with the
+        # engineering threshold; the legacy SignedURLPublication path is used
+        # only as a migration fallback when no storage adapter is configured.
+        self.transport_config = transport_config or {
+            'audio_transport': 'auto', 'inline_max_bytes': DEFAULT_INLINE_MAX_BYTES}
+        self.storage_adapter_factory = storage_adapter_factory
         self.publication = publication
         self.config = {'model_name': model, 'resource_id': resource_id,
                        'enable_itn': False, 'enable_punc': True, 'enable_ddc': False,
@@ -82,25 +92,21 @@ class VolcengineASRProvider:
                 json.loads(p.read_text(encoding='utf-8')).get('provider')=='volcengine'
                 for p in (self.root/'provider-calls').glob('*/start.json')))
         outputs = []
+        cleanup = None
         try:
             if not self.key:
                 raise ProviderFailure('ASR credential missing')
-            publication = self.publication or SignedURLPublication(
-                os.environ.get('AIVOICEBENCH_AUDIO_PUT_URL', ''),
-                os.environ.get('AIVOICEBENCH_AUDIO_GET_URL', ''),
-                os.environ.get('AIVOICEBENCH_AUDIO_HOST', ''))
-            if callable(publication):
-                publication = publication()
-            url, proof = publication.publish(mono_wav, self.root)
-            outputs.append(proof)
+            audio_field, transport_meta = self._prepare_audio(mono_wav, audit, outputs)
+            cleanup = transport_meta.get('cleanup')
             request_id = str(uuid.uuid4())
             request_path = audit.directory / 'request.json'
             immutable_json(request_path, {'request_id': request_id,
-                'publication_ref': proof.relative_to(self.root).as_posix(),
+                'transport': transport_meta['mode'],
+                'audio_transport_config': dict(self.transport_config),
                 'audio_format': 'wav', 'request': {k:v for k,v in self.config.items()
                     if k not in ('resource_id', 'timeout_seconds')}})
             outputs.append(request_path)
-            body = {'audio': {'url': url, 'format': 'wav', 'rate': 16000, 'bits': 16, 'channel': 1},
+            body = {'audio': dict(audio_field, format='wav', rate=16000, bits=16, channel=1),
                     'request': json.loads(request_path.read_text())['request']}
             reply = self.transport.request('POST', API, {'Content-Type': 'application/json',
                 'X-Api-Key': self.key, 'X-Api-Resource-Id': self.config['resource_id'],
@@ -113,10 +119,11 @@ class VolcengineASRProvider:
                 decoded = json.dumps(json.loads(decoded), ensure_ascii=False)
             except ValueError:
                 pass
-            if any(secret and secret in decoded for secret in (self.key, url)):
+            secret_echoes = [self.key] + ([audio_field.get('url')] if 'url' in audio_field else [])
+            if any(secret and secret in decoded for secret in secret_echoes):
                 path = audit.directory / 'withheld-response.json'
                 immutable_json(path, {'sha256': hashlib.sha256(reply.body).hexdigest(),
-                    'reason': 'Response contains request credentials; native body withheld'})
+                    'reason': 'Response contains request credentials or transport URL; native body withheld'})
                 outputs.append(path)
                 raise ProviderFailure('Unsafe native response')
             raw = audit.directory / 'native-response.json'
@@ -137,6 +144,86 @@ class VolcengineASRProvider:
             if not audit.finished:
                 audit.finish('failed', outputs, failure_code='provider_error')
             raise ProviderFailure('Cloud ASR failed; retained invocation evidence, no automatic resubmission') from None
+        finally:
+            if cleanup is not None:
+                adapter, object_key = cleanup
+                try:
+                    cleanup_status = adapter.cleanup(object_key, self.root)
+                    transport_proof = audit.directory / 'transport-cleanup.json'
+                    immutable_json(transport_proof, cleanup_status)
+                except Exception:
+                    pass  # lifecycle policy is the backstop; do not mask the ASR result
+
+    def _prepare_audio(self, mono_wav, audit, outputs):
+        """Select inline Base64 or object-storage URL transport.
+
+        Returns ``(audio_field, transport_meta)`` where ``audio_field`` is
+        ``{'data': base64}`` or ``{'url': presigned_get}``, and
+        ``transport_meta`` carries the auditable transport choice.  The
+        presigned URL stays in memory only; it never enters outputs or logs.
+        """
+        mode = self.transport_config.get('audio_transport', 'auto')
+        inline_max = self.transport_config.get('inline_max_bytes', DEFAULT_INLINE_MAX_BYTES)
+        size = Path(mono_wav).stat().st_size
+        use_inline = mode == 'inline' or (mode == 'auto' and size <= inline_max)
+        if use_inline:
+            return self._inline_audio(mono_wav, audit, outputs, mode)
+        return self._object_storage_audio(mono_wav, audit, outputs, mode)
+
+    def _inline_audio(self, mono_wav, audit, outputs, requested_mode):
+        """Encode canonical WAV as Base64 audio.data (no object storage needed)."""
+        data = Path(mono_wav).read_bytes()
+        encoded = base64.b64encode(data).decode('ascii')
+        proof = audit.directory / 'transport.json'
+        immutable_json(proof, {'schema_version': '1.0.0',
+            'transport': 'inline', 'requested_mode': requested_mode,
+            'size_bytes': len(data),
+            'source_sha256': hashlib.sha256(data).hexdigest()})
+        outputs.append(proof)
+        return {'data': encoded}, {'mode': 'inline', 'cleanup': None}
+
+    def _object_storage_audio(self, mono_wav, audit, outputs, requested_mode):
+        """Upload a private TOS object and return a short-lived Presigned GET URL.
+
+        The presigned URL is returned only to the caller and never persisted.
+        Transport preference: TOS adapter (external config) → legacy
+        ``publication`` → legacy env-var signed URLs.  When none is configured
+        the request fails so inline transport can remain available for eligible
+        recordings (PRD-F005, Issue #87).
+        """
+        if self.storage_adapter_factory is not None:
+            adapter = self.storage_adapter_factory(self.root)
+            object_key, upload_proof = adapter.upload(mono_wav, self.root)
+            outputs.append(upload_proof)
+            url = adapter.presigned_get(object_key)
+            proof = audit.directory / 'transport.json'
+            immutable_json(proof, {'schema_version': '1.0.0',
+                'transport': 'object_storage', 'requested_mode': requested_mode,
+                'storage_adapter': adapter.store_id, 'object_key': object_key,
+                'source_sha256': hashlib.sha256(Path(mono_wav).read_bytes()).hexdigest()})
+            outputs.append(proof)
+            return {'url': url}, {'mode': 'object_storage', 'cleanup': (adapter, object_key)}
+        # Legacy publication: caller-supplied or env-var signed PUT/GET URLs.
+        from .cloud_transport import SignedURLPublication
+        publication = self.publication
+        if publication is None:
+            legacy = tuple(os.environ.get(k, '') for k in
+                           ('AIVOICEBENCH_AUDIO_PUT_URL', 'AIVOICEBENCH_AUDIO_GET_URL', 'AIVOICEBENCH_AUDIO_HOST'))
+            if all(legacy):
+                publication = SignedURLPublication(*legacy)
+        if publication is not None:
+            publication = publication() if callable(publication) else publication
+            url, proof = publication.publish(mono_wav, self.root)
+            outputs.append(proof)
+            transport_proof = audit.directory / 'transport.json'
+            immutable_json(transport_proof, {'schema_version': '1.0.0',
+                'transport': 'object_storage_legacy', 'requested_mode': requested_mode,
+                'source': 'signed_url_publication'})
+            outputs.append(transport_proof)
+            return {'url': url}, {'mode': 'object_storage_legacy', 'cleanup': None}
+        raise ProviderFailure(
+            'Object-storage transport requires a storage adapter or legacy publication, '
+            'but none is configured; use inline transport for eligible recordings')
 
     def normalize(self, messages, duration_ms):
         segments, gaps = [], []
