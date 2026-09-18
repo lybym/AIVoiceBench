@@ -1301,3 +1301,13 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **官方契约。** 实现前必须重新核对：[V3 单向 WebSocket](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-websocket?lang=zh) 与 [V3 双向 WebSocket](https://docs.volcengine.com/docs/DoubaoVoice/bidirectional-streaming-text-to-speech-websocket?lang=zh)。本轮文档依据官方 API 列表确认 endpoint 及“单向=完整文本输入/流式音频输出、双向=实时文本输入/流式音频输出”的选型边界；不以旧 V1、第三方示例或当前 SSE adapter 作为 wire-contract。
 - **同步范围。** 根 `README.md`、`docs/PRD.md`（1.5.4）、Active PRD 分册、System Architecture、Development Roadmap、Model Management、Active Measurement 技术设计、文档导航、traceability 与 PRD changelog 已同步。实现状态保持 partial/planned；没有修改应用代码、schema 或配置 example，也未声称 WebSocket TTS 已实现。
 - **验证边界。** 文档更新直接落在 `main`，本轮只做文档一致性/来源检查：PRD-F020/F021、M2/M3、#98、`tts`/`streaming_tts`、两条官方 URL 与两个目标 endpoint 在对应文档中可追踪。未运行软件/browser/container/真实云/实体设备测试，因为本轮没有实现代码；这些验证属于 #98 acceptance。
+
+
+## 2026-09-18 — Active TTS 媒体格式进一步收敛：固定 MP3
+
+- **产品决策覆盖上一条 TTS 记录中的 WAV 目标表述。** Fixed 与 Free 的火山 V3 WebSocket TTS 输出格式统一固定为 **MP3**；`format/encoding` 不再属于 `providers.yaml` 可配置项。目标是减少配置面和协议分支，避免为测试刺激额外引入格式转换。
+- **Fixed。** V3 单向 WS 返回 MP3 流；服务端只做完整性/可播放性校验和元数据提取，随后直接冻结为 MP3 Stimulus Artifact，保存 SHA-256、sample metadata 与 non-secret provider/config provenance。正式 Run 播放该 MP3，不生成 WAV 转换副本。
+- **Free。** V3 双向 WS 同样固定输出 MP3 chunks，按 Turn identity 流式送往 Browser playback；Stop/cancel/stale 规则不变。
+- **配置。** 继续保留 speaker/voice、sample rate、speech rate 以及协议/音色真正支持时的 loudness/pitch 等必要项；TTS format/encoding 不再暴露给用户。Run snapshot 可记录 resolved `format=mp3` 作为 provenance，但它不是操作者可调参数。
+- **边界。** 本决策只针对 **Active TTS 输出/Stimulus**。Recording Analysis 的 canonical audio、Active Measurement 的 durable Measurement Audio 等证据链仍可使用 PCM/WAV；它们不是 TTS 播放资产，不受此次格式简化影响。
+- **同步。** PRD 升至 1.5.5，README、Active PRD、Architecture、Roadmap、Model Management、Active Measurement、文档导航、changelog 与 Issue #98 已同步。当前代码仍是旧 V3 HTTP SSE/WAV 实现，直到 #98 落地前不得把目标状态写成 implemented。
