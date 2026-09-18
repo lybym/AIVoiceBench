@@ -71,6 +71,8 @@ host
 | GET | `/api/runs`、`/api/runs/{run_id}` | 历史/详情与分析产物 |
 | GET | `/api/runs/{run_id}/audio` | 标准化音频回放 |
 | POST | `/api/runs/{run_id}/resume` | 显式 retry ASR；不是通用重分析接口 |
+| GET | `/api/runs/{run_id}/role-review` | 人工说话人角色复核面：匿名聚类、代表性区间、转写片段、试听范围、已保存 revision 与 diff |
+| POST | `/api/runs/{run_id}/role-review` | 保存 `{mapping, reviewer, reason}`：要求每个聚类都有明确决定（`unknown` 有效），创建不可变 revision 并重跑 Attribution 及下游；不调用 Provider |
 | GET / POST | `/api/models` | 脱敏模型配置；长期凭据留在 server |
 | GET | `/api/voice-test/capabilities/{mode}` | 能力预检；不默认发起付费探测 |
 | POST | `/api/voice-test/sessions/{id}/start` | 启动会话；能力不足时明确拒绝 |
