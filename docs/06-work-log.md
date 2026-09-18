@@ -1337,3 +1337,13 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **验证。** 全量 `python -m unittest discover -s tests` → **657 tests, OK**（Windows，CPython 3.13）。改动已推送到 `fix/issue-93-seed-asr-manual-role`；PR #96 正文按仓库模板重写为只 `Closes #93`，#94/#95 声明为独立后续 PR。
 - **证据边界。** 真实云任务恢复验收（不重复计费的 resume）本轮仍未执行，属 #85；不从脚本化 transport 测试推断。
 - **基线校正。** 该分支已 rebase 到当时的 `main`。Recording Analysis 的三项决定原先分别记为 1.5.4/1.5.5/1.5.6，与 #98 已落地的同名版本冲突，故合并为 PRD 1.5.6 一条；#94/#95 沿用 1.5.7/1.5.8。
+
+## 2026-09-18 — 实现 Issue #94：acoustic ↔ ASR speaker span 对齐与覆盖诊断（PRD-F006–F009/M001–M010/N001/N003/N005/N007）
+
+- **分支与栈。** 由 `fix/issue-93-seed-asr-manual-role` 切出 `fix/issue-94-speaker-span-alignment`（依赖 PR #96），保持“一 Issue 一分支一 PR”。#95 将继续从本分支叠加，避免改动同一批 orchestration/Web 文件时产生冲突。
+- **单一口径。** 新增 `aivoicebench/alignment.py`：`align_speaker_spans()` 对每个 acoustic segment 给出显式状态 `unmatched | single_cluster | multi_cluster | conflict`，记录双方区间、交集、有符号边界偏移、两个方向的重叠比例与聚类身份。`fusion.apply_speakers()` 改为物化该结论（可传入用实际 acoustic 文档算出的对齐），因此重叠/拆分/弃权规则只有一份实现，不再有两套可能漂移的逻辑。
+- **契约。** 新增 `SpeakerAlignment 1.0.0`（`schemas/speaker-alignment.schema.json`），以 artifact kind `speaker-alignment` 登记为 `alignment.json`，注册前校验；`fusion` stage 记录其 document id/status/policy/processor 版本。新增 `AcousticSegments 1.0.0` 的**可选** `processor.sensitivity`，因此既有文档继续合法；两项决定与迁移说明写入 [契约版本](07-contract-versions.md)。对齐文档不含 `speaker_role`，测试断言其结构中不出现 tester/device。
+- **诊断与解释。** `diagnostics` 输出 `unmatched_acoustic_ms`、`unmatched_speaker_ms`、逐聚类 `coverage_ratio`（含分母）、`low_energy` 分布、`boundary_drift_ms`（tolerance/median/max/超限计数）。新增 `explain_metric_gap()`：指标为空时给出原因代码与涉及片段数；已接入 Run API（`alignment`/`metrics_gap`）、导入报告“指标可用性”章节与 Web 指标/片段面板。这里同时修掉一个真实缺陷：`alignment.json` 不是 stage envelope，却曾被 envelope 读取函数解包，导致 API 报告空对齐。
+- **低音量可评估。** `EnergyVadSegmenter.from_profile()` + `resolve_sensitivity()` 提供 `canonical`（默认，measurement policy）与 `quiet_device`（诊断）；通过 `AIVOICEBENCH_ACOUSTIC_PROFILE` 选择。profile/override 进入文档，非 canonical 必须显式标记 `is_canonical_measurement_policy: false`，未知 profile/参数/非有限值被拒绝；Metric Engine 公式与门槛未改动。
+- **验证。** `python -m unittest discover -s tests` → **682 tests, OK**（Windows，CPython 3.13；含既有 `test_fusion_speakers` 36 项对齐语义回归）。新增 `tests/test_alignment.py` 25 项覆盖 full/partial overlap、one-to-many、many-to-one、boundary drift、conflict、no-match、low-energy、确定性（两次运行除 document_id 完全相同）、不产生角色值、schema 合法性、fusion 一致性（传/不传对齐文档结果相同），以及导入链与 API/报告解释。
+- **证据边界。** 本轮是 software_verified：fixture 与 synthetic 录音证明对齐逻辑、契约与解释链；覆盖率数字只是测量事实，不证明真实 speaker coverage、低音量识别质量或识别准确率。真实录音量化、人工复核与浏览器回放仍由 [#85](https://github.com/lybym/AIVoiceBench/issues/85) 承担。

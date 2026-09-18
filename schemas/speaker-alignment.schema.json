@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/speaker-alignment.schema.json",
+  "title": "SpeakerAlignment 1.0.0",
+  "description": "Deterministic overlap/coverage alignment between acoustic segments and ASR speaker spans. Records both source intervals, signed offsets, overlap ratios, per-cluster coverage and low-energy distribution. It never maps an anonymous speaker cluster to a tester/device role, and it never replaces an acoustic boundary with provider timing.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "document_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "policy_version": { "type": "string", "minLength": 1 },
+        "min_overlap_ms": { "type": "number", "minimum": 0 },
+        "boundary_drift_tolerance_ms": { "type": "number", "minimum": 0 },
+        "low_energy_percentile": { "type": "number", "minimum": 0, "maximum": 100 },
+        "overlap_basis": { "type": "string", "minLength": 1 },
+        "note": { "type": "string", "minLength": 1 },
+        "overrides": { "type": "object" }
+      },
+      "required": ["policy_version", "min_overlap_ms", "boundary_drift_tolerance_ms",
+                   "low_energy_percentile", "overlap_basis", "note", "overrides"],
+      "additionalProperties": false
+    },
+    "processor": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "deterministic": { "type": "boolean" },
+        "network_access": { "type": "boolean" }
+      },
+      "required": ["name", "version", "deterministic", "network_access"],
+      "additionalProperties": false
+    },
+    "sources": {
+      "type": "object",
+      "properties": {
+        "acoustic_document_id": { "type": ["string", "null"] },
+        "speaker_document_id": { "type": ["string", "null"] },
+        "transcript_document_id": { "type": ["string", "null"] },
+        "audio_sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+        "acoustic_processor": { "type": ["object", "null"] },
+        "speaker_processor": { "type": ["object", "null"] }
+      },
+      "required": ["acoustic_document_id", "speaker_document_id", "transcript_document_id",
+                   "audio_sha256", "acoustic_processor", "speaker_processor"],
+      "additionalProperties": false
+    },
+    "status": { "enum": ["complete", "partial", "insufficient_evidence"] },
+    "reason": { "type": ["string", "null"] },
+    "alignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "acoustic_segment_id": { "type": ["string", "null"] },
+          "acoustic_start_ms": { "type": "number", "minimum": 0 },
+          "acoustic_end_ms": { "type": "number", "minimum": 0 },
+          "acoustic_speech_ms": { "type": "number", "minimum": 0 },
+          "acoustic_confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+          "acoustic_uncertainty_ms": { "type": ["number", "null"], "minimum": 0 },
+          "acoustic_mean_rms": { "type": ["number", "null"], "minimum": 0 },
+          "acoustic_peak_rms": { "type": ["number", "null"], "minimum": 0 },
+          "low_energy": { "type": "boolean" },
+          "speaker_matches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "speaker_id": { "type": "string" },
+                "native_speaker_id": { "type": ["string", "null"] },
+                "speaker_segment_id": { "type": ["string", "null"] },
+                "asr_start_ms": { "type": "number" },
+                "asr_end_ms": { "type": "number" },
+                "overlap_start_ms": { "type": "number" },
+                "overlap_end_ms": { "type": "number" },
+                "overlap_ms": { "type": "number", "minimum": 0 },
+                "overlap_ratio_of_acoustic": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "overlap_ratio_of_speaker": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "start_offset_ms": { "type": "number" },
+                "end_offset_ms": { "type": "number" },
+                "cluster_confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "timestamp_source": { "type": "string", "minLength": 1 }
+              },
+              "required": ["speaker_id", "native_speaker_id", "speaker_segment_id",
+                           "asr_start_ms", "asr_end_ms", "overlap_start_ms", "overlap_end_ms",
+                           "overlap_ms", "overlap_ratio_of_acoustic", "overlap_ratio_of_speaker",
+                           "start_offset_ms", "end_offset_ms", "cluster_confidence",
+                           "timestamp_source"],
+              "additionalProperties": false
+            }
+          },
+          "speaker_candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "speaker_id": { "type": "string" },
+                "overlap_ms": { "type": "number", "minimum": 0 }
+              },
+              "required": ["speaker_id", "overlap_ms"],
+              "additionalProperties": false
+            }
+          },
+          "distinct_cluster_count": { "type": "integer", "minimum": 0 },
+          "state": { "enum": ["unmatched", "single_cluster", "multi_cluster", "conflict"] },
+          "matched_speaker_id": { "type": ["string", "null"] },
+          "boundary_drift_ms": { "type": ["number", "null"], "minimum": 0 }
+        },
+        "required": ["acoustic_segment_id", "acoustic_start_ms", "acoustic_end_ms",
+                     "acoustic_speech_ms", "acoustic_confidence", "acoustic_uncertainty_ms",
+                     "acoustic_mean_rms", "acoustic_peak_rms", "low_energy", "speaker_matches",
+                     "speaker_candidates", "distinct_cluster_count", "state",
+                     "matched_speaker_id", "boundary_drift_ms"],
+        "additionalProperties": false
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "properties": {
+        "acoustic_segment_count": { "type": "integer", "minimum": 0 },
+        "speaker_span_count": { "type": "integer", "minimum": 0 },
+        "cluster_count": { "type": "integer", "minimum": 0 },
+        "acoustic_speech_ms": { "type": "number", "minimum": 0 },
+        "matched_acoustic_ms": { "type": "number", "minimum": 0 },
+        "unmatched_acoustic_ms": { "type": "number", "minimum": 0 },
+        "unmatched_acoustic_ratio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "conflicted_acoustic_ms": { "type": "number", "minimum": 0 },
+        "speaker_speech_ms": { "type": "number", "minimum": 0 },
+        "covered_speaker_ms": { "type": "number", "minimum": 0 },
+        "unmatched_speaker_ms": { "type": "number", "minimum": 0 },
+        "unmatched_speaker_ratio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "unmatched_acoustic_segment_ids": { "type": "array", "items": { "type": ["string", "null"] } },
+        "conflicted_acoustic_segment_ids": { "type": "array", "items": { "type": ["string", "null"] } },
+        "per_cluster": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "speaker_id": { "type": "string" },
+              "native_speaker_id": { "type": ["string", "null"] },
+              "speaker_speech_ms": { "type": "number", "minimum": 0 },
+              "matched_ms": { "type": "number", "minimum": 0 },
+              "coverage_ratio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+              "speaker_span_count": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["speaker_id", "native_speaker_id", "speaker_speech_ms",
+                         "matched_ms", "coverage_ratio", "speaker_span_count"],
+            "additionalProperties": false
+          }
+        },
+        "low_energy": {
+          "type": "object",
+          "properties": {
+            "percentile": { "type": "number", "minimum": 0, "maximum": 100 },
+            "threshold_mean_rms": { "type": ["number", "null"], "minimum": 0 },
+            "segment_count": { "type": "integer", "minimum": 0 },
+            "speech_ms": { "type": "number", "minimum": 0 },
+            "unmatched_ms": { "type": "number", "minimum": 0 },
+            "unmatched_ratio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+            "note": { "type": "string", "minLength": 1 }
+          },
+          "required": ["percentile", "threshold_mean_rms", "segment_count", "speech_ms",
+                       "unmatched_ms", "unmatched_ratio", "note"],
+          "additionalProperties": false
+        },
+        "boundary_drift_ms": {
+          "type": "object",
+          "properties": {
+            "matched_segment_count": { "type": "integer", "minimum": 0 },
+            "tolerance_ms": { "type": "number", "minimum": 0 },
+            "median_ms": { "type": ["number", "null"], "minimum": 0 },
+            "max_ms": { "type": ["number", "null"], "minimum": 0 },
+            "beyond_tolerance_count": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["matched_segment_count", "tolerance_ms", "median_ms", "max_ms",
+                       "beyond_tolerance_count"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["acoustic_segment_count", "speaker_span_count", "cluster_count",
+                   "acoustic_speech_ms", "matched_acoustic_ms", "unmatched_acoustic_ms",
+                   "unmatched_acoustic_ratio", "conflicted_acoustic_ms", "speaker_speech_ms",
+                   "covered_speaker_ms", "unmatched_speaker_ms", "unmatched_speaker_ratio",
+                   "unmatched_acoustic_segment_ids", "conflicted_acoustic_segment_ids",
+                   "per_cluster", "low_energy", "boundary_drift_ms"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["schema_version", "document_id", "policy", "processor", "sources", "status",
+               "reason", "alignments", "diagnostics"],
+  "additionalProperties": false
+}

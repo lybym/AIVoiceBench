@@ -131,7 +131,9 @@ VAD 不作为 ASR 的强制前置。两者并行产生 evidence；Silero thresho
 
 单份授权私有录音通过 Seed standard 得到 67 个 timestamped utterances 和 5 个匿名 speaker clusters；1 个异常 word timing 被保留为 partial gap。语义处理器提出 3 个 tester clusters、2 个 device clusters，全部 `needs_review`。但 84 个 acoustic segments 没有 speaker-cluster/role evidence，最终 Timeline/metrics 因 `insufficient_evidence` 弃权。
 
-该结果验证了真实云调用和问题复现，不是质量验收。异步恢复/partial evidence/schema 修复由 [#93](https://github.com/lybym/AIVoiceBench/issues/93) 跟踪；acoustic↔ASR span 对齐和低音量设备 coverage 由 [#94](https://github.com/lybym/AIVoiceBench/issues/94) 跟踪；完整记录见 [27-real-recording-diagnostic.md](27-real-recording-diagnostic.md)。
+该结果验证了真实云调用和问题复现，不是质量验收。异步恢复/partial evidence/schema 修复由 [#93](https://github.com/lybym/AIVoiceBench/issues/93) 跟踪；acoustic↔ASR span 对齐和低音量设备 coverage 由 [#94](https://github.com/lybym/AIVoiceBench/issues/94) 跟踪（软件实现已落地：`alignment.json` + `speaker-alignment` artifact、`metrics_gap` 原因计数、acoustic sensitivity profile）；完整记录见 [27-real-recording-diagnostic.md](27-real-recording-diagnostic.md)。
+
+对齐 artifact 属于 fusion stage 输出：`analysis/ANALYSIS-*/alignment.json` 由 `SpeakerAlignment 1.0.0` 校验后注册为 kind `speaker-alignment`，与 `fused-segments` envelope 并列。它记录双方区间、有符号边界偏移、双向重叠比例、逐聚类 coverage 与 low-energy 分布；不匹配/冲突状态保留，不含 role 字段。Run API 通过 `alignment` 与 `metrics_gap` 暴露，报告增加“指标可用性”章节。
 
 在 #87 合并前，当前 Web model management / SQLite 与固定 Signed URL publisher 仍可能是实际运行入口；不得把上述目标配置方式误写成当前版本已实现。
 
@@ -143,7 +145,7 @@ python -m aivoicebench import conversation.m4a --model-settings artifacts/.model
 
 ## Evidence, contracts and retry
 
-- `original/` 保留输入 bytes；`analysis/ANALYSIS-*/` 保存 normalization、native ASR、Transcript、acoustic/speaker/attribution/fusion/turn/timeline/metric envelopes、model snapshot、status 和 reports。
+- `original/` 保留输入 bytes；`analysis/ANALYSIS-*/` 保存 normalization、native ASR、Transcript、acoustic/speaker/attribution/alignment/fusion/turn/timeline/metric envelopes、model snapshot、status 和 reports。`alignment.json` 是 fusion stage 注册的非 envelope 文档（`speaker-alignment`），读取时不要按 envelope 解包 `data`。
 - `provider-calls/CALL-*/start.json` 在外部调用前落盘；result 记录 duration/status/safe failure/hash references。Credential 回显必须被过滤。
 - Transcript contract 保留 provider-estimated timing、nullable confidence/model hash、speaker labels 等信息；numeric speaker IDs 不是 tester/device roles。
 - explicit retry 生成新的 AnalysisRevision，不覆盖旧 manifest/output；completed operation 不重复计费调用。

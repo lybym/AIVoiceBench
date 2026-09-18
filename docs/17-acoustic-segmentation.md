@@ -100,6 +100,22 @@ TEN Browser provisional、Silero Server finalized、Energy legacy 可以使用�
 
 当前 `EnergyVadSegmenter 1.0.0` 继续使用 `noise_floor_plus_active_range_fraction` policy。Silero/TEN 的首个 policy version 需要在实现时建立，不在本文预先伪造具体阈值。
 
+### 3.1 Acoustic sensitivity profile（#94）
+
+低音量设备回应可能整段落在 canonical 阈值之下，从而既没有 acoustic segment 也没有 speaker 对齐证据。为**评估**（不是替换）这一缺口，`EnergyVadSegmenter.from_profile()` 支持命名 sensitivity profile：
+
+| profile | 定位 | 是否 measurement policy |
+| --- | --- | --- |
+| `canonical` | 现行默认（`threshold_factor 0.15`、`min_speech 100 ms`、`min_silence 200 ms`、`merge_gap 80 ms`、无 roll） | 是 |
+| `quiet_device` | 诊断用：更低 active-range 阈值（`0.05`）、`min_speech 60 ms`、更长 pre/post roll | 否，显式标记 |
+
+约束：
+
+- profile 与显式 override 都进入 `processor.sensitivity`，并带 `is_canonical_measurement_policy`；非 canonical 时 note 明确写明“不得作为 canonical measurement 报告”。
+- `resolve_sensitivity()` 拒绝未知 profile/参数与非有限值；canonical profile 加任何 override 也不再是 canonical。
+- Recording Analysis 通过 `AIVOICEBENCH_ACOUSTIC_PROFILE` 选择 profile，默认 canonical；选择结果随 Run 证据保存，Metric Engine 公式与门槛不受影响，因此不会静默改变测量口径。
+- 覆盖率差异由 alignment 诊断的 `low_energy` 分布与未匹配时长量化，见 [融合/Turn/Event](18-fusion-turns-events.md)。
+
 ## 4. What this stage does NOT do
 
 - Assign speaker roles（tester / device / unknown）；这是 speaker separation + attribution。
@@ -143,7 +159,7 @@ CLI exit code 0 = complete with segments，2 = insufficient evidence，1 = error
   "schema_version": "1.0.0",
   "document_id": "ACOUSTIC-<uuid>",
   "source": { "path", "sha256", "duration_ms", "sample_rate_hz", "channels", "encoding" },
-  "processor": { "method": "energy_vad", "processor_version": "1.0.0", "parameters": { } },
+  "processor": { "method": "energy_vad", "processor_version": "1.0.0", "parameters": { }, "sensitivity": { "profile": "canonical", "overrides": { }, "is_canonical_measurement_policy": true, "note": "…" } },
   "status": "complete | partial | insufficient_evidence",
   "reason": null,
   "segments": [
@@ -162,6 +178,8 @@ CLI exit code 0 = complete with segments，2 = insufficient evidence，1 = error
 ```
 
 Silero/TEN 接入时优先通过兼容 contract 扩展 `processor.method` / parameters/provenance，不为每个 Provider 创建平行 downstream schema。
+
+`processor.sensitivity` 是 #94 加入的**可选**字段（见 §3.1）：未写入该字段的历史文档仍然合法，写入时只描述“这些边界由哪个 sensitivity 产生、是否为 canonical measurement policy”，不改变任何既有 required 字段语义。版本决定与迁移说明见 [契约版本](07-contract-versions.md)。
 
 ## 7. Timing taxonomy
 

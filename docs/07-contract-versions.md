@@ -96,3 +96,14 @@ Migrates inline evidence to the Timeline Evidence catalog; separates observation
 - Imported metrics emit MetricResult 3.0.0 directly; 2.0.0 remains readable through version-aware validation. Fields include analysis_id, prd_ref, turn/response identity, policy/version, reason, confidence source and uncertainty. Nullable fields preserve unknown evidence; schema compliance is not accuracy validation.
 
 Code/tests: [validation.py](../aivoicebench/validation.py), [metrics.py](../aivoicebench/metrics.py), [version compatibility](../tests/test_metric_compatibility.py), [metric contracts](../tests/test_metrics_contract.py). Real-device acceptance remains separate.
+
+## AcousticSegments 1.0.0 additive `processor.sensitivity` + SpeakerAlignment 1.0.0 (Issue #94)
+
+Two contract decisions, both additive:
+
+1. **`AcousticSegments 1.0.0` keeps its version.** `processor.sensitivity` is a new **optional** member (`profile`, `overrides`, `is_canonical_measurement_policy`, `note`). No existing required property changed meaning, and a document written before the field existed still validates, so bumping the version would force every stored Run, example and downstream reader to migrate for a purely descriptive addition. The field exists because a non-canonical acoustic sensitivity must be *visible*: a quiet-device comparison run may never be presented as the canonical measurement policy.
+   - Migration: none required. Readers that ignore unknown members keep working; a reader that needs the sensitivity reads `processor.sensitivity` and must treat a missing field as "canonical, unrecorded" rather than "non-canonical".
+   - Positive/negative coverage: [test_acoustic.py](../tests/test_acoustic.py) records the parameters; [test_alignment.py](../tests/test_alignment.py) covers canonical default, `quiet_device` marking, canonical-with-override losing canonical status, and rejection of unknown profiles/parameters/non-finite values.
+2. **`SpeakerAlignment 1.0.0`** (`schemas/speaker-alignment.schema.json`) is a new document contract for the deterministic acoustic-segment ↔ ASR-speaker-span alignment. It is deliberately separate from FusedSegments rather than extra fields on fused segments: `speaker-alignment` is closed (`additionalProperties: false`) and adding alignment members there would have been a breaking change to a contract that many readers already consume. The alignment document records both source intervals, signed boundary offsets, both overlap ratios, per-cluster coverage with its denominator, the low-energy distribution and the boundary-drift statistics. It contains no `speaker_role` member: an anonymous cluster is never a tester/device role.
+   - It is registered as artifact kind `speaker-alignment` inside the recording chain (`alignment.json`) and validated before registration; the `fusion` stage records its document id, status, policy version and processor version.
+   - Migration: none; no prior artifact had this shape.
