@@ -1,0 +1,16 @@
+{
+  "name": "aivoicebench-browser-station",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AIVoiceBench Browser Station - TypeScript source for the browser-side control layer, compiled to plain browser JavaScript served by FastAPI/Docker.",
+  "type": "commonjs",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "smoke": "node scripts/smoke-web-station.mjs",
+    "verify": "node scripts/verify-web-build.mjs && node scripts/smoke-web-station.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
