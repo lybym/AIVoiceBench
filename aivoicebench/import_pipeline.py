@@ -860,4 +860,3 @@ def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snaps
     if recording_run_errors(run.manifest, directory):
         raise ValueError('Role reanalysis produced invalid Run evidence')
     return directory, run.manifest, build_role_review(directory)
-
