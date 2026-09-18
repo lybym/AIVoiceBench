@@ -34,6 +34,19 @@ jobs:
         with:
           python-version: '3.12'
 
+      # The published image serves the Browser Station's compiled JavaScript, so a
+      # release build proves the TypeScript source and that build output still agree.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Browser Station typecheck and build determinism
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run verify
+
       - name: Resolve the exact source commit
         id: source
         run: |
@@ -170,12 +183,15 @@ jobs:
         env:
           # "the browser module was skipped" must never count as a pass here.
           VT_REQUIRE_BROWSER: '1'
+          # The image serves the compiled Browser Station; its build gate must run.
+          VT_REQUIRE_WEB_BUILD: '1'
           VT_BROWSER_BASE_URL: http://127.0.0.1:8099
         run: |
           set -euo pipefail
           python -m pip install --quiet playwright
           python -m playwright install --with-deps chromium
           python -m unittest tests.test_voice_browser -v
+          python -m unittest tests.test_web_station_build -v
 
       - name: Integration acceptance against the candidate image
         env:

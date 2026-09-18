@@ -8,7 +8,7 @@ AIVoiceBench 的正式主架构确定为：
 
 ```text
 Remote Chrome Browser Station
-├─ TypeScript target / current Vanilla JS implementation
+├─ TypeScript source / compiled browser JS
 ├─ local audio playback / microphone capture
 ├─ AudioWorklet / local sample counter
 ├─ provisional control VAD
@@ -62,7 +62,7 @@ Browser Station 不保存长期 Provider Credential，不负责 Judge、Metric �
 
 ### 2.1 Browser Station 实现语言：TypeScript
 
-当前代码基线仍是 `aivoicebench/static/` 下的 HTML/CSS/Vanilla JS，主要手写浏览器入口包括 `app.js`、`models.js`、`voice_test.js` 和 `pcm_capture_worklet.js`。2026-09-17 决定将 Browser Station 的**目标实现语言**收敛为 TypeScript；实现由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪，完成前不得把文档决策写成 implemented。
+2026-09-17 决定将 Browser Station 的实现语言收敛为 **TypeScript**，2026-09-19 由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 完成等价迁移：手写源码为 `web/src/{app,models,voice_test,pcm_capture_worklet}.ts`（AudioWorklet 全局作用域声明见 `audioworklet-globals.d.ts`），编译产物 `aivoicebench/static/*.js` 仍由现有 FastAPI/Docker 静态链交付，`index.html`/`app.css` 仍是手写资产。
 
 这项迁移的目的不是更换 UI 框架，而是让 Browser Station 作为 Measurement Agent 时的高风险状态具有静态类型约束，重点包括：
 
@@ -198,7 +198,7 @@ External Recording
 ### Active Measurement
 
 ```text
-Browser Station (TypeScript target)
+Browser Station (TypeScript source)
 Mic → AudioWorklet → sample-indexed PCM
        ├─ TEN VAD → provisional control events
        └─ WebSocket → Linux Server → durable Measurement Audio
@@ -228,7 +228,7 @@ TypeScript 迁移本身不是 UI 框架升级，也不扩大 Browser Station 的
 
 ## 9. 验收顺序
 
-1. 完成 Browser Station Vanilla JS → TypeScript 等价迁移：typecheck/build 可重复，AudioWorklet、WebSocket、Fixed/Free 现有行为和 Docker 静态交付不回退；
+1. ✅ 完成 Browser Station Vanilla JS → TypeScript 等价迁移：typecheck/build 可重复（`scripts/verify-web-build.mjs` 校验类型与产物新鲜度），Docker 静态交付路径不变，AudioWorklet/WebSocket/Fixed-Free 行为回归由既有 browser/container 测试承担；
 2. Browser Station sample clock / frame integrity 稳定；
 3. TEN VAD Browser Adapter 与 RMS fallback 并存并可观测；
 4. Silero VAD Server Adapter 接入 Recording Analysis，并能对 Measurement Audio replay；

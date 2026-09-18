@@ -1,120 +1,471 @@
-const $=id=>document.getElementById(id);
-const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const labels={partial:'部分完成',complete:'已完成',failed:'处理失败',insufficient_evidence:'证据不足',pending:'等待处理',observed:'已观测',unknown:'待确认',low_confidence:'待复核'};
-const badge=s=>`<span class="badge ${['partial','complete','failed','observed','insufficient_evidence'].includes(s)?s:''}">${esc(labels[s]||s||'待确认')}</span>`;
-let current={},selected=null,busy=false;
-function notify(message=''){$('notice').hidden=!message;$('notice').textContent=message;}
-async function request(url,options){const r=await fetch(url,options);const d=await r.json();if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:'请求失败，请检查输入或稍后重试');return d;}
-function view(name){['home','import','voice-test','analysis','models'].forEach(n=>$(n).hidden=n!==name);$('breadcrumb').textContent={home:'分析记录',import:'导入录音','voice-test':'语音对话测试',analysis:'录音分析',models:'模型管理'}[name];['home','import','voice-test','models'].forEach(n=>{const b=$('nav-'+n);if(b)b.classList.toggle('active',name===n);});notify();}
-async function home(){view('home');$('runs').innerHTML='<div class="empty" role="status">正在读取分析记录…</div>';try{const d=await request('/api/runs');$('count').textContent=`所有记录 · ${d.runs.length}`;$('runs').innerHTML=d.runs.length?d.runs.map(r=>`<button class="run" data-run="${esc(r.run_id)}"><span class="run-icon">≋</span><span class="run-text"><strong>${esc(r.device||'未命名设备')}</strong><small>${esc(new Date(r.created*1000).toLocaleString('zh-CN'))} · ${esc(r.run_id)}</small></span>${badge(r.status)}<span class="quiet">→</span></button>`).join(''):'<div class="panel empty"><strong>你的第一份分析，从这里开始</strong>导入一段对话录音，建立可追溯的评测记录。</div>';$('runs').querySelectorAll('[data-run]').forEach(b=>b.onclick=()=>openRun(b.dataset.run));}catch(e){$('runs').innerHTML='';notify(e.message);}}
-function importView(){view('import');}
-function voiceTestView(){view('voice-test');vtTab('fixed');}
-function vtTab(name){document.querySelectorAll('[data-vt-tab]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.vtTab===name)));$('vt-fixed').hidden=name!=='fixed';$('vt-free').hidden=name!=='free';}
-function choose(f){if(!f)return;if(!/\.(wav|mp3|m4a)$/i.test(f.name)){notify('请选择 WAV、MP3 或 M4A 文件');return;}selected=f;$('file-label').textContent=f.name;$('file-size').textContent=`${(f.size/1024/1024).toFixed(1)} MB · 已选择，准备分析`;notify();}
-$('file').onchange=e=>choose(e.target.files[0]);$('drop').ondragover=e=>{e.preventDefault();$('drop').classList.add('drag');};$('drop').ondragleave=()=>$('drop').classList.remove('drag');$('drop').ondrop=e=>{e.preventDefault();$('drop').classList.remove('drag');choose(e.dataTransfer.files[0]);$('file').required=false;};
-const fields={device:'设备名称',hardware:'硬件版本',firmware:'固件版本',model:'AI 模型',prompt:'提示词版本',supplier:'供应商',environment:'测试环境',notes:'备注'};
-$('fields').innerHTML=Object.entries(fields).map(([k,v])=>`<label>${v}<input name="${k}" maxlength="4000" placeholder="填写${v}"></label>`).join('');
-$('upload-form').onsubmit=async e=>{e.preventDefault();if(!selected||busy)return;busy=true;$('submit').disabled=true;$('submit').textContent='正在分析…';$('progress').textContent='正在保存、转换与分析录音，请保持页面打开。';notify();const fd=new FormData($('upload-form'));fd.set('file',selected);try{const d=await request('/api/analyze',{method:'POST',body:fd});render(d);}catch(e){notify(e.message);}finally{busy=false;$('submit').disabled=false;$('submit').textContent='开始分析 →';$('progress').textContent='录音将保存在当前服务的数据目录中。';}};
-async function openRun(id){try{render(await request('/api/runs/'+encodeURIComponent(id)));}catch(e){notify(e.message);}}
-function render(d){current=d;view('analysis');$('analysis-title').textContent=d.profile?.device||'录音分析';$('run-id').textContent=d.run_id;$('status').innerHTML=badge(d.status);$('audio').src=d.audio_url||'/api/runs/'+encodeURIComponent(d.run_id)+'/audio';$('summary').innerHTML=[['语音片段',d.transcript?.segments?.length||d.fused_segments.length||d.acoustic_segments.length],['说话人聚类',(d.speaker_segments||[]).length],['对话轮次',d.turns.length],['已观测指标',d.metrics.filter(m=>m.status==='observed'&&m.value!=null).length],['待复核发现',d.findings.length]].map(([l,n])=>`<div class="stat">${l}<b>${n}</b></div>`).join('');tab('segments');if(d.reason)notify(d.reason);}
-const metricNames={first_speech_latency_ms:'首次语音时延',feedback_latency_ms:'首次反馈时延',meaningful_response_latency_ms:'有效回答时延',turn_gap_ms:'轮次间隔',overlap_duration_ms:'重叠时长',overlap_ratio:'重叠比例',barge_in_stop_latency_ms:'打断停止时延',barge_in_success:'打断成功',false_endpoint_candidate:'错误端点（候选）',false_endpoint:'错误端点'};
-const roleNames={tester:'测试者',device:'AI 设备',unknown:'角色待确认'};
-const roleMethods={explicit_evidence:'用户人工指定',semantic_attribution:'历史机器提议（不用于新分析）',human_attribution:'人工复核',none:'等待人工确认'};
-function roleEvidence(a){
-  // A model's own confidence is not a calibrated accuracy; never show it as one.
-  const bits=[roleMethods[a.method]||a.method||'无依据'];
-  if(a.confidence_basis==='uncalibrated_model_self_report')bits.push('模型自评置信度，非校准正确率');
-  else if(a.confidence_basis==='explicit_user_evidence')bits.push('显式证据');
-  else if(a.confidence_basis==='human_review')bits.push('人工复核');
-  if(a.needs_review)bits.push('待复核');
-  return bits.join(' · ');
+"use strict";
+/* AIVoiceBench — analysis workspace view.
+ *
+ * This file is the TypeScript source of `aivoicebench/static/app.js` (compiled by
+ * `npm run build`). It is a classic script rather than a module on purpose: the
+ * page loads it with `<script src="/static/app.js">`, and the server-rendered
+ * `index.html` calls these functions through inline `onclick` attributes, so
+ * every top-level declaration here stays on the page's global script scope, as
+ * it did before the migration.
+ *
+ * It provides the shared view helpers (`$`, `esc`, `badge`, `notify`, `request`)
+ * that `models.ts` and `voice_test.ts` also use.
+ */
+/** Element lookup. Throws when the page markup no longer provides the id. */
+const $ = (id) => document.getElementById(id);
+/** Minimal HTML text escaping for the interpolated view templates. */
+const esc = (value) => String(value ?? '')
+    .replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[character]));
+/** Status pill for a pipeline/analysis status code (`statusLabel` in models.ts). */
+const badge = (status) => `<span class="badge ${['partial', 'complete', 'failed', 'observed', 'insufficient_evidence'].includes(status) ? status : ''}">${esc(statusLabel(status) || '待确认')}</span>`;
+/** Analysis document currently on screen. */
+let current = null;
+/** File selected for import. */
+let selected = null;
+/** One import in flight at a time. */
+let busy = false;
+function notify(message = '') {
+    const notice = $('notice');
+    notice.hidden = !message;
+    notice.textContent = message;
 }
-function attributionNote(d){
-  const doc=d.attribution||{};const items=doc.attributions||[];
-  if(!items.length)return '';
-  const rows=items.map(a=>`<div class="segment"><div><strong>${esc(String(a.speaker_id).split(':').pop())}</strong> → ${esc(roleNames[a.role]||a.role)}<p>${esc(roleEvidence(a))}</p><p>${esc(a.reason||'')}</p></div></div>`).join('');
-  const conflicts=(doc.conflicts||[]).map(c=>`<p>聚类 ${esc(String(c.speaker_id).split(':').pop())} 存在历史角色冲突；新分析只接受用户保存的人工角色。</p>`).join('');
-  return '<h3>角色归属</h3><p>请由用户根据音频与转写证据确认每个聚类是测试者、AI 设备或未知。完成并保存前，不生成后续指标和正式测试报告。</p>'+conflicts+rows;
+/**
+ * JSON request helper.
+ *
+ * A non-2xx response becomes an `Error` carrying the server's `detail` when it is
+ * a string, so callers only ever have to show one message.
+ */
+async function request(url, options) {
+    const response = await fetch(url, options);
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(typeof data.detail === 'string' ? data.detail : '请求失败，请检查输入或稍后重试');
+    }
+    return data;
 }
-function diarizationNote(d){
-  const stage=d.stages?.diarization||{};const scope=d.diarization_scope||{};const count=(d.speaker_segments||[]).length;
-  if(!count)return '<p>说话人聚类：'+esc(labels[stage.status]||stage.status||'未运行')+' · '+esc(stage.reason||'尚未获得说话人分离证据')+'</p>';
-  const natives=[...new Set((d.speaker_segments||[]).map(s=>s.native_speaker_id||'未知'))];
-  return '<p>说话人聚类：'+esc(labels[stage.status]||stage.status)+' · 聚类数 '+count+' · 服务原生标签 '+esc(natives.join('、'))+
-    (scope.invocation_id?' · 依据调用 '+esc(scope.invocation_id):'')+
-    '</p><p>聚类只说明“哪些片段属于同一说话人”，不代表已确认谁是测试者、谁是设备。角色需人工复核或显式证据。</p>';
+const VIEW_TITLES = {
+    home: '分析记录',
+    import: '导入录音',
+    'voice-test': '语音对话测试',
+    analysis: '录音分析',
+    models: '模型管理',
+};
+const NAV_VIEWS = ['home', 'import', 'voice-test', 'models'];
+function view(name) {
+    ['home', 'import', 'voice-test', 'analysis', 'models']
+        .forEach(candidate => { $(candidate).hidden = candidate !== name; });
+    $('breadcrumb').textContent = VIEW_TITLES[name];
+    NAV_VIEWS.forEach(candidate => {
+        const button = $('nav-' + candidate);
+        if (button)
+            button.classList.toggle('active', name === candidate);
+    });
+    notify();
 }
-function audioQaNote(d){
-  // Facts measured on the canonical artifact. These are never a recognition,
-  // accuracy or acceptance verdict, so no pass/fail wording is used. The stage
-  // state and reason are rendered even when no measurements are readable, so an
-  // abstention (or a Run whose QA document is missing) is never silently dropped.
-  const qa=d.audio_qa||{};const m=qa.measurements||null;const conditions=(m&&m.conditions)||[];const stage=d.stages?.audio_qa||{};
-  if(!m&&!stage.status&&!stage.reason)return '';
-  const facts=m&&m.duration_ms?`时长 ${(m.duration_ms/1000).toFixed(1)} s · ${esc(m.encoding||'')} · ${esc(m.channels??'')} 声道 · ${esc(m.sample_rate_hz??'')} Hz`:'';
-  const rows=conditions.map(c=>`<li>${esc(c.condition_id)}：${esc(c.status)} — ${esc(c.basis||'')}<small>${esc(c.limitation||'')}</small></li>`).join('');
-  const header=[facts,stage.status?esc(labels[stage.status]||stage.status):''].filter(Boolean).join(' · ');
-  return '<h3>音频质量检查</h3><p>'+(header||'未获得音频质量测量')+'</p>'+
-    (stage.reason?'<p>'+esc(stage.reason)+'</p>':'')+
-    (rows?'<ul>'+rows+'</ul>':'')+
-    (!m?'<p>本记录没有可读取的音频质量测量值。</p>':'')+
-    '<p>以上只报告测量事实与有效性条件，不构成识别质量、准确率或验收结论。</p>';
+async function home() {
+    view('home');
+    $('runs').innerHTML = '<div class="empty" role="status">正在读取分析记录…</div>';
+    try {
+        const data = await request('/api/runs');
+        $('count').textContent = `所有记录 · ${data.runs.length}`;
+        $('runs').innerHTML = data.runs.length
+            ? data.runs.map(run => `<button class="run" data-run="${esc(run.run_id)}"><span class="run-icon">≋</span><span class="run-text"><strong>${esc(run.device || '未命名设备')}</strong><small>${esc(new Date(run.created * 1000).toLocaleString('zh-CN'))} · ${esc(run.run_id)}</small></span>${badge(run.status)}<span class="quiet">→</span></button>`).join('')
+            : '<div class="panel empty"><strong>你的第一份分析，从这里开始</strong>导入一段对话录音，建立可追溯的评测记录。</div>';
+        $('runs').querySelectorAll('[data-run]').forEach(button => {
+            button.onclick = () => openRun(button.dataset.run);
+        });
+    }
+    catch (error) {
+        $('runs').innerHTML = '';
+        notify(error.message);
+    }
 }
-function alignmentNote(d){
-  // Acoustic boundaries and ASR speaker spans are independent evidence. This panel
-  // reports the recorded overlap/coverage facts behind every assignment or abstention,
-  // so a blank metric table is explainable instead of looking like dropped data. It
-  // never turns a coverage measurement into an accuracy or acceptance claim.
-  const a=d.alignment||{};const g=d.metrics_gap||{};const diag=a.diagnostics||{};
-  if(!a.document_id&&!((g.reasons||[]).length))return '';
-  const ms=v=>v==null?'—':(Number(v)/1000).toFixed(1)+' s';
-  const pct=v=>v==null?'—':(Number(v)*100).toFixed(1)+'%';
-  let html='<h3>声学片段与说话人跨度对齐</h3>';
-  html+='<p>对齐状态：'+esc(labels[a.status]||a.status||'未运行')+(a.reason?' · '+esc(a.reason):'')+'</p>';
-  if(a.policy)html+='<p>策略 '+esc(a.policy.policy_version||'')+' · 依据 '+esc(a.policy.overlap_basis||'')+'。声学边界与 ASR 时间戳互不替代，未匹配与冲突状态均保留。</p>';
-  if(diag.acoustic_segment_count!=null){
-    const low=diag.low_energy||{};
-    html+='<div class="table-wrap"><table><thead><tr><th>对齐事实</th><th>值</th></tr></thead><tbody>'+
-      `<tr><td>未匹配 acoustic 时长</td><td>${ms(diag.unmatched_acoustic_ms)}（${pct(diag.unmatched_acoustic_ratio)}）</td></tr>`+
-      `<tr><td>未匹配 speaker 时长</td><td>${ms(diag.unmatched_speaker_ms)}（${pct(diag.unmatched_speaker_ratio)}）</td></tr>`+
-      `<tr><td>冲突片段</td><td>${(diag.conflicted_acoustic_segment_ids||[]).length}</td></tr>`+
-      `<tr><td>低能量片段（其中未匹配）</td><td>${low.segment_count??0}（${ms(low.unmatched_ms)}）</td></tr>`+
-      '</tbody></table></div>';
-  }
-  const clusters=diag.per_cluster||[];
-  if(clusters.length)html+='<p>逐聚类覆盖：'+clusters.map(c=>esc(String(c.speaker_id).split(':').pop())+' '+pct(c.coverage_ratio)).join(' · ')+'</p>';
-  const reasons=g.reasons||[];
-  if(reasons.length&&g.status!=='observed')html+='<h4>为何没有指标</h4><ul>'+reasons.map(r=>`<li>${esc(r.code)}（涉及 ${r.count} 个片段）：${esc(r.detail)}</li>`).join('')+'</ul>';
-  html+='<p>以上为覆盖率测量事实，用于定位低音量设备缺口，不构成识别准确率或验收结论。</p>';
-  return html;
+function importView() {
+    view('import');
 }
-function roleReviewNote(d){
-  // Manual speaker-role gate. Anonymous clusters are never mapped automatically:
-  // the user listens to each cluster and records an explicit decision, including a
-  // deliberate 「未知」. Nothing role-dependent is presented before that decision.
-  const r=d.role_review||{};const clusters=r.clusters||[];
-  if(!clusters.length)return '';
-  const statusText={awaiting_role_review:'等待人工确认角色',incomplete_review:'确认未完成',complete_review:'角色已确认'}[r.status]||r.status||'';
-  const rev=r.revision;
-  const rows=clusters.map(c=>{
-    const label=String(c.speaker_id).split(':').pop();
-    const iv=(c.representative_intervals||[]).map(i=>`<button class="text-button" data-time="${Number(i.start_ms)/1000}">${(Number(i.start_ms)/1000).toFixed(2)}s</button>`).join(' ');
-    const snips=(c.transcript_snippets||[]).map(s=>'<p>'+esc(s.text)+'</p>').join('');
-    const opts=['tester','device','unknown'].map(role=>`<label><input type="radio" name="role-${esc(c.speaker_id)}" value="${role}"${c.decision===role?' checked':''}> ${esc(roleNames[role])}</label>`).join(' ');
-    const bad=r.awaiting_decision_for.includes(c.speaker_id)?' <small>尚未确认</small>':'';
-    return `<div class="segment" data-cluster="${esc(c.speaker_id)}"><div><strong>聚类 ${esc(label)}</strong> <small>原生标签 ${esc(c.native_speaker_id??'未知')} · ${c.segment_count} 段 · ${(Number(c.speech_ms)/1000).toFixed(1)} s</small>${bad}<p>${opts}</p>${iv?'<p>试听区间：'+iv+'</p>':''}${snips}</div></div>`;
-  }).join('');
-  const diff=r.diff||{};const changed=(diff.changed||[]).map(x=>`${esc(String(x.speaker_id).split(':').pop())}：${esc(roleNames[x.from]||x.from)} → ${esc(roleNames[x.to]||x.to)}`).join('；');
-  let head='<h3>人工确认说话人角色</h3><p>'+esc(statusText)+(r.reason?' · '+esc(r.reason):'')+'</p>';
-  head+='<p>ASR 只给出匿名聚类；测试者、AI 设备或未知必须由人根据音频与转写证据确认。系统不调用 LLM 判断角色，也不按发言顺序推断。每个聚类都必须明确选择，「未知」是有效决定。</p>';
-  if(rev)head+='<p>当前修订 REV-'+esc(rev.revision_index)+' · 复核人 '+esc(rev.reviewer)+(rev.reason?' · '+esc(rev.reason):'')+'</p>';
-  if(changed)head+='<p>相对上一修订的变化：'+changed+'</p>';
-  const controls='<div class="segment"><div><label>复核人<input id="role-reviewer" maxlength="200" placeholder="填写复核人身份"></label><label>说明<input id="role-reason" maxlength="2000" placeholder="可选：本次判断依据"></label><button class="text-button" id="role-save">保存角色并重新分析</button></div></div>';
-  return head+rows+controls+'<p>保存会创建新的 AnalysisRevision，不覆盖机器原件或上一次人工决定；保存后从 Attribution 向下确定性重跑。</p>';
+function voiceTestView() {
+    view('voice-test');
+    vtTab('fixed');
 }
-function tab(name){document.querySelectorAll('[data-tab]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.tab===name)));const d=current;let html='';if(name==='segments'){const segments=d.transcript?.segments?.length?d.transcript.segments:(d.fused_segments.length?d.fused_segments:d.acoustic_segments);const byNative=new Map((d.speaker_segments||[]).map(s=>[String(s.native_speaker_id),s]));const roles=new Map(((d.attribution||{}).attributions||[]).map(a=>[a.speaker_id,a.role]));const clusterOf=s=>byNative.get(String(s.speaker_id));html='<h2>转写与语音片段</h2><p>转写时间是 ASR 估计，非精确声学边界；说话人聚类与角色判定是两件事。</p>'+diarizationNote(d)+roleReviewNote(d)+attributionNote(d)+alignmentNote(d)+segments.map(s=>{const c=clusterOf(s);const role=(c&&roles.get(c.speaker_id))||s.speaker_role||'unknown';const roleInfo=c?roles.get(c.speaker_id):null;const cluster=c?'<small>聚类 '+esc(String(c.speaker_id).split(':').pop())+'（服务原生标签 '+esc(String(c.native_speaker_id))+'）</small>':'';const review=s.role_attribution?.needs_review?' <small>待复核</small>':'';return `<div class="segment"><button data-time="${Number(s.start_ms)/1000}">${(Number(s.start_ms)/1000).toFixed(2)} – ${(Number(s.end_ms)/1000).toFixed(2)} s</button><div><strong>${esc(roleNames[role]||'角色待确认')}</strong>${review}${cluster}${s.text_attribution==='ambiguous_spans_speakers'?'<small>该句跨越多个说话人，未归属给任一角色</small>':''}<p>${esc(s.text||'暂无转写文本')}</p></div></div>`;}).join('');if(!segments.length)html+='<div class="empty">没有可用的语音片段，请查看报告中的处理状态。</div>';}
-if(name==='metrics')html='<h2>评测指标</h2><p>缺少可靠证据时不显示数值，也不将其计为通过。</p><div class="table-wrap"><table><thead><tr><th>指标</th><th>结果</th><th>状态</th></tr></thead><tbody>'+d.metrics.map(m=>`<tr><td>${esc(metricNames[m.name]||m.name)}</td><td>${m.value==null?'—':esc(m.value)+' '+esc(m.unit||'')}</td><td>${badge(m.status)}</td></tr>`).join('')+'</tbody></table></div>'+(d.metrics.length?'':'<div class="empty">暂无可计算指标</div>'+alignmentNote(d));
-if(name==='findings')html='<h2>发现与语义评估</h2>'+d.findings.map(f=>`<div class="segment"><div><strong>${esc(f.title||f.dimension||'待复核发现')}</strong><p>${esc(f.description||f.reason||'')}</p>${badge(f.status)}</div></div>`).join('')+(d.findings.length?'':'<p>暂无可确认的问题结论。这不代表设备已通过评测。</p>')+d.judge_results.map(j=>`<div class="segment"><div><strong>${esc(j.dimension)} · ${esc(j.decision)}</strong><p>${esc(j.reason)}</p>${badge(j.status)}</div></div>`).join('');
-if(name==='report')html=(d.stages?.asr&&d.stages.asr.status!=='complete'?'<p>ASR：'+esc(labels[d.stages.asr.status]||d.stages.asr.status)+' · '+esc(d.stages.asr.reason||'')+'</p><button class="text-button" id="retry-asr">重试转写（可能再次计费）</button>':'')+audioQaNote(d)+'<h2>完整报告</h2><button class="text-button" id="download">下载 Markdown ↓</button><pre>'+esc(d.report_md||'分析报告尚未生成。原始导入证据已保留。')+'</pre>';$('detail').innerHTML=html;if($('retry-asr'))$('retry-asr').onclick=async()=>{if(busy)return;busy=true;$('retry-asr').disabled=true;try{render(await request('/api/runs/'+encodeURIComponent(d.run_id)+'/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({retry_asr:true})}));}catch(e){notify(e.message);}finally{busy=false;if($('retry-asr'))$('retry-asr').disabled=false;}};if($('role-save'))$('role-save').onclick=async()=>{if(busy)return;const mapping={};let missing=0;document.querySelectorAll('[data-cluster]').forEach(node=>{const picked=node.querySelector('input[type=radio]:checked');const id=node.dataset.cluster;if(picked)mapping[id]=picked.value;else missing++;});if(missing){notify('请为每个说话人聚类选择角色（未知也是明确选择）');return;}const reviewer=($('role-reviewer')?.value||'').trim();if(!reviewer){notify('请填写复核人身份');return;}busy=true;$('role-save').disabled=true;try{render(await request('/api/runs/'+encodeURIComponent(d.run_id)+'/role-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping,reviewer,reason:($('role-reason')?.value||'').trim()})}));}catch(e){notify(e.message);}finally{busy=false;if($('role-save'))$('role-save').disabled=false;}};
-$('detail').querySelectorAll('[data-time]').forEach(b=>b.onclick=()=>{$('audio').currentTime=Number(b.dataset.time);$('audio').play().catch(()=>notify('暂时无法播放音频，请检查音频是否已成功标准化。'));});if($('download'))$('download').onclick=()=>{const url=URL.createObjectURL(new Blob([d.report_md],{type:'text/markdown;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=d.run_id+'.md';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};}
-request('/health').then(d=>$('version').textContent='版本 '+d.version).catch(()=>$('version').textContent='服务未连接');home();
+function vtTab(name) {
+    document.querySelectorAll('[data-vt-tab]').forEach(button => {
+        button.setAttribute('aria-selected', String(button.dataset.vtTab === name));
+    });
+    $('vt-fixed').hidden = name !== 'fixed';
+    $('vt-free').hidden = name !== 'free';
+}
+/** Accepted recording formats for import. */
+const IMPORT_EXTENSIONS = /\.(wav|mp3|m4a)$/i;
+function choose(file) {
+    if (!file)
+        return;
+    if (!IMPORT_EXTENSIONS.test(file.name)) {
+        notify('请选择 WAV、MP3 或 M4A 文件');
+        return;
+    }
+    selected = file;
+    $('file-label').textContent = file.name;
+    $('file-size').textContent = `${(file.size / 1024 / 1024).toFixed(1)} MB · 已选择，准备分析`;
+    notify();
+}
+$('file').onchange = event => choose(event.target.files?.[0]);
+$('drop').ondragover = event => { event.preventDefault(); $('drop').classList.add('drag'); };
+$('drop').ondragleave = () => $('drop').classList.remove('drag');
+$('drop').ondrop = event => {
+    event.preventDefault();
+    $('drop').classList.remove('drag');
+    choose(event.dataTransfer?.files?.[0]);
+    $('file').required = false;
+};
+/** Optional device-information fields collected with an import. */
+const fields = {
+    device: '设备名称',
+    hardware: '硬件版本',
+    firmware: '固件版本',
+    model: 'AI 模型',
+    prompt: '提示词版本',
+    supplier: '供应商',
+    environment: '测试环境',
+    notes: '备注',
+};
+$('fields').innerHTML = Object.entries(fields)
+    .map(([key, label]) => `<label>${label}<input name="${key}" maxlength="4000" placeholder="填写${label}"></label>`)
+    .join('');
+$('upload-form').onsubmit = async (event) => {
+    event.preventDefault();
+    if (!selected || busy)
+        return;
+    busy = true;
+    $('submit').disabled = true;
+    $('submit').textContent = '正在分析…';
+    $('progress').textContent = '正在保存、转换与分析录音，请保持页面打开。';
+    notify();
+    const form = new FormData($('upload-form'));
+    form.set('file', selected);
+    try {
+        const data = await request('/api/analyze', { method: 'POST', body: form });
+        render(data);
+    }
+    catch (error) {
+        notify(error.message);
+    }
+    finally {
+        busy = false;
+        $('submit').disabled = false;
+        $('submit').textContent = '开始分析 →';
+        $('progress').textContent = '录音将保存在当前服务的数据目录中。';
+    }
+};
+async function openRun(id) {
+    try {
+        render(await request('/api/runs/' + encodeURIComponent(id)));
+    }
+    catch (error) {
+        notify(error.message);
+    }
+}
+function render(data) {
+    current = data;
+    view('analysis');
+    $('analysis-title').textContent = data.profile?.device || '录音分析';
+    $('run-id').textContent = data.run_id;
+    $('status').innerHTML = badge(data.status);
+    $('audio').src = data.audio_url || '/api/runs/' + encodeURIComponent(data.run_id) + '/audio';
+    const segmentCount = data.transcript?.segments?.length || data.fused_segments.length || data.acoustic_segments.length;
+    $('summary').innerHTML = [
+        ['语音片段', segmentCount],
+        ['说话人聚类', (data.speaker_segments || []).length],
+        ['对话轮次', data.turns.length],
+        ['已观测指标', data.metrics.filter(metric => metric.status === 'observed' && metric.value != null).length],
+        ['待复核发现', data.findings.length],
+    ].map(([label, count]) => `<div class="stat">${label}<b>${count}</b></div>`).join('');
+    tab('segments');
+    if (data.reason)
+        notify(data.reason);
+}
+/** Canonical metric name → display label. */
+const metricNames = {
+    first_speech_latency_ms: '首次语音时延',
+    feedback_latency_ms: '首次反馈时延',
+    meaningful_response_latency_ms: '有效回答时延',
+    turn_gap_ms: '轮次间隔',
+    overlap_duration_ms: '重叠时长',
+    overlap_ratio: '重叠比例',
+    barge_in_stop_latency_ms: '打断停止时延',
+    barge_in_success: '打断成功',
+    false_endpoint_candidate: '错误端点（候选）',
+    false_endpoint: '错误端点',
+};
+/** Speaker role → display label. `unknown` stays a deliberate state. */
+const roleNames = {
+    tester: '测试者',
+    device: 'AI 设备',
+    unknown: '角色待确认',
+};
+/** How a role attribution was produced. Machine proposals are labelled as such. */
+const roleMethods = {
+    explicit_evidence: '用户人工指定',
+    semantic_attribution: '历史机器提议（不用于新分析）',
+    human_attribution: '人工复核',
+    none: '等待人工确认',
+};
+function roleEvidence(attribution) {
+    // A model's own confidence is not a calibrated accuracy; never show it as one.
+    const bits = [roleMethods[attribution.method || ''] || attribution.method || '无依据'];
+    if (attribution.confidence_basis === 'uncalibrated_model_self_report')
+        bits.push('模型自评置信度，非校准正确率');
+    else if (attribution.confidence_basis === 'explicit_user_evidence')
+        bits.push('显式证据');
+    else if (attribution.confidence_basis === 'human_review')
+        bits.push('人工复核');
+    if (attribution.needs_review)
+        bits.push('待复核');
+    return bits.join(' · ');
+}
+function attributionNote(data) {
+    const document = data.attribution || {};
+    const items = document.attributions || [];
+    if (!items.length)
+        return '';
+    const rows = items.map(attribution => `<div class="segment"><div><strong>${esc(String(attribution.speaker_id).split(':').pop())}</strong> → ${esc(roleNames[attribution.role] || attribution.role)}<p>${esc(roleEvidence(attribution))}</p><p>${esc(attribution.reason || '')}</p></div></div>`).join('');
+    const conflicts = (document.conflicts || []).map(conflict => `<p>聚类 ${esc(String(conflict.speaker_id).split(':').pop())} 存在历史角色冲突；新分析只接受用户保存的人工角色。</p>`).join('');
+    return '<h3>角色归属</h3><p>请由用户根据音频与转写证据确认每个聚类是测试者、AI 设备或未知。完成并保存前，不生成后续指标和正式测试报告。</p>' + conflicts + rows;
+}
+function diarizationNote(data) {
+    const stage = data.stages?.diarization || {};
+    const scope = data.diarization_scope || {};
+    const count = (data.speaker_segments || []).length;
+    if (!count)
+        return '<p>说话人聚类：' + esc(statusLabel(stage.status) || '未运行') + ' · ' + esc(stage.reason || '尚未获得说话人分离证据') + '</p>';
+    const natives = [...new Set((data.speaker_segments || []).map(segment => segment.native_speaker_id || '未知'))];
+    return '<p>说话人聚类：' + esc(statusLabel(stage.status)) + ' · 聚类数 ' + count + ' · 服务原生标签 ' + esc(natives.join('、')) +
+        (scope.invocation_id ? ' · 依据调用 ' + esc(scope.invocation_id) : '') +
+        '</p><p>聚类只说明“哪些片段属于同一说话人”，不代表已确认谁是测试者、谁是设备。角色需人工复核或显式证据。</p>';
+}
+function audioQaNote(data) {
+    // Facts measured on the canonical artifact. These are never a recognition,
+    // accuracy or acceptance verdict, so no pass/fail wording is used. The stage
+    // state and reason are rendered even when no measurements are readable, so an
+    // abstention (or a Run whose QA document is missing) is never silently dropped.
+    const qa = data.audio_qa || {};
+    const measurements = qa.measurements || null;
+    const conditions = (measurements && measurements.conditions) || [];
+    const stage = data.stages?.audio_qa || {};
+    if (!measurements && !stage.status && !stage.reason)
+        return '';
+    const facts = measurements && measurements.duration_ms
+        ? `时长 ${(measurements.duration_ms / 1000).toFixed(1)} s · ${esc(measurements.encoding || '')} · ${esc(measurements.channels ?? '')} 声道 · ${esc(measurements.sample_rate_hz ?? '')} Hz`
+        : '';
+    const rows = conditions.map(condition => `<li>${esc(condition.condition_id)}：${esc(condition.status)} — ${esc(condition.basis || '')}<small>${esc(condition.limitation || '')}</small></li>`).join('');
+    const header = [facts, stage.status ? esc(statusLabel(stage.status)) : ''].filter(Boolean).join(' · ');
+    return '<h3>音频质量检查</h3><p>' + (header || '未获得音频质量测量') + '</p>' +
+        (stage.reason ? '<p>' + esc(stage.reason) + '</p>' : '') +
+        (rows ? '<ul>' + rows + '</ul>' : '') +
+        (!measurements ? '<p>本记录没有可读取的音频质量测量值。</p>' : '') +
+        '<p>以上只报告测量事实与有效性条件，不构成识别质量、准确率或验收结论。</p>';
+}
+function alignmentNote(data) {
+    // Acoustic boundaries and ASR speaker spans are independent evidence. This panel
+    // reports the recorded overlap/coverage facts behind every assignment or abstention,
+    // so a blank metric table is explainable instead of looking like dropped data. It
+    // never turns a coverage measurement into an accuracy or acceptance claim.
+    const alignment = data.alignment || {};
+    const gap = data.metrics_gap || {};
+    const diagnostics = alignment.diagnostics || {};
+    if (!alignment.document_id && !((gap.reasons || []).length))
+        return '';
+    const ms = (value) => value == null ? '—' : (Number(value) / 1000).toFixed(1) + ' s';
+    const pct = (value) => value == null ? '—' : (Number(value) * 100).toFixed(1) + '%';
+    let html = '<h3>声学片段与说话人跨度对齐</h3>';
+    html += '<p>对齐状态：' + esc(statusLabel(alignment.status) || '未运行') + (alignment.reason ? ' · ' + esc(alignment.reason) : '') + '</p>';
+    if (alignment.policy)
+        html += '<p>策略 ' + esc(alignment.policy.policy_version || '') + ' · 依据 ' + esc(alignment.policy.overlap_basis || '') + '。声学边界与 ASR 时间戳互不替代，未匹配与冲突状态均保留。</p>';
+    if (diagnostics.acoustic_segment_count != null) {
+        const low = diagnostics.low_energy || {};
+        html += '<div class="table-wrap"><table><thead><tr><th>对齐事实</th><th>值</th></tr></thead><tbody>' +
+            `<tr><td>未匹配 acoustic 时长</td><td>${ms(diagnostics.unmatched_acoustic_ms)}（${pct(diagnostics.unmatched_acoustic_ratio)}）</td></tr>` +
+            `<tr><td>未匹配 speaker 时长</td><td>${ms(diagnostics.unmatched_speaker_ms)}（${pct(diagnostics.unmatched_speaker_ratio)}）</td></tr>` +
+            `<tr><td>冲突片段</td><td>${(diagnostics.conflicted_acoustic_segment_ids || []).length}</td></tr>` +
+            `<tr><td>低能量片段（其中未匹配）</td><td>${low.segment_count ?? 0}（${ms(low.unmatched_ms)}）</td></tr>` +
+            '</tbody></table></div>';
+    }
+    const clusters = diagnostics.per_cluster || [];
+    if (clusters.length)
+        html += '<p>逐聚类覆盖：' + clusters.map(cluster => esc(String(cluster.speaker_id).split(':').pop()) + ' ' + pct(cluster.coverage_ratio)).join(' · ') + '</p>';
+    const reasons = gap.reasons || [];
+    if (reasons.length && gap.status !== 'observed')
+        html += '<h4>为何没有指标</h4><ul>' + reasons.map(reason => `<li>${esc(reason.code)}（涉及 ${reason.count} 个片段）：${esc(reason.detail)}</li>`).join('') + '</ul>';
+    html += '<p>以上为覆盖率测量事实，用于定位低音量设备缺口，不构成识别准确率或验收结论。</p>';
+    return html;
+}
+function roleReviewNote(data) {
+    // Manual speaker-role gate. Anonymous clusters are never mapped automatically:
+    // the user listens to each cluster and records an explicit decision, including a
+    // deliberate 「未知」. Nothing role-dependent is presented before that decision.
+    const review = data.role_review || {};
+    const clusters = review.clusters || [];
+    if (!clusters.length)
+        return '';
+    const statusText = {
+        awaiting_role_review: '等待人工确认角色',
+        incomplete_review: '确认未完成',
+        complete_review: '角色已确认',
+    }[review.status || ''] || review.status || '';
+    const revision = review.revision;
+    const rows = clusters.map(cluster => {
+        const label = String(cluster.speaker_id).split(':').pop();
+        const intervals = (cluster.representative_intervals || []).map(interval => `<button class="text-button" data-time="${Number(interval.start_ms) / 1000}">${(Number(interval.start_ms) / 1000).toFixed(2)}s</button>`).join(' ');
+        const snippets = (cluster.transcript_snippets || []).map(snippet => '<p>' + esc(snippet.text) + '</p>').join('');
+        const options = ['tester', 'device', 'unknown'].map(role => `<label><input type="radio" name="role-${esc(cluster.speaker_id)}" value="${role}"${cluster.decision === role ? ' checked' : ''}> ${esc(roleNames[role])}</label>`).join(' ');
+        const pending = (review.awaiting_decision_for || []).includes(cluster.speaker_id) ? ' <small>尚未确认</small>' : '';
+        return `<div class="segment" data-cluster="${esc(cluster.speaker_id)}"><div><strong>聚类 ${esc(label)}</strong> <small>原生标签 ${esc(cluster.native_speaker_id ?? '未知')} · ${cluster.segment_count} 段 · ${(Number(cluster.speech_ms) / 1000).toFixed(1)} s</small>${pending}<p>${options}</p>${intervals ? '<p>试听区间：' + intervals + '</p>' : ''}${snippets}</div></div>`;
+    }).join('');
+    const diff = review.diff || {};
+    const changed = (diff.changed || []).map(change => `${esc(String(change.speaker_id).split(':').pop())}：${esc(roleNames[change.from] || change.from)} → ${esc(roleNames[change.to] || change.to)}`).join('；');
+    let head = '<h3>人工确认说话人角色</h3><p>' + esc(statusText) + (review.reason ? ' · ' + esc(review.reason) : '') + '</p>';
+    head += '<p>ASR 只给出匿名聚类；测试者、AI 设备或未知必须由人根据音频与转写证据确认。系统不调用 LLM 判断角色，也不按发言顺序推断。每个聚类都必须明确选择，「未知」是有效决定。</p>';
+    if (revision)
+        head += '<p>当前修订 REV-' + esc(revision.revision_index) + ' · 复核人 ' + esc(revision.reviewer) + (revision.reason ? ' · ' + esc(revision.reason) : '') + '</p>';
+    if (changed)
+        head += '<p>相对上一修订的变化：' + changed + '</p>';
+    const controls = '<div class="segment"><div><label>复核人<input id="role-reviewer" maxlength="200" placeholder="填写复核人身份"></label><label>说明<input id="role-reason" maxlength="2000" placeholder="可选：本次判断依据"></label><button class="text-button" id="role-save">保存角色并重新分析</button></div></div>';
+    return head + rows + controls + '<p>保存会创建新的 AnalysisRevision，不覆盖机器原件或上一次人工决定；保存后从 Attribution 向下确定性重跑。</p>';
+}
+function tab(name) {
+    document.querySelectorAll('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === name)));
+    const data = current;
+    let html = '';
+    if (name === 'segments') {
+        const segments = data.transcript?.segments?.length
+            ? data.transcript.segments
+            : (data.fused_segments.length ? data.fused_segments : data.acoustic_segments);
+        const byNative = new Map((data.speaker_segments || []).map(segment => [String(segment.native_speaker_id), segment]));
+        const roles = new Map(((data.attribution || {}).attributions || []).map(attribution => [attribution.speaker_id, attribution.role]));
+        const clusterOf = (segment) => byNative.get(String(segment.speaker_id));
+        html = '<h2>转写与语音片段</h2><p>转写时间是 ASR 估计，非精确声学边界；说话人聚类与角色判定是两件事。</p>' +
+            diarizationNote(data) + roleReviewNote(data) + attributionNote(data) + alignmentNote(data) +
+            segments.map(segment => {
+                const cluster = clusterOf(segment);
+                const role = (cluster && roles.get(cluster.speaker_id)) || segment.speaker_role || 'unknown';
+                const clusterInfo = cluster
+                    ? '<small>聚类 ' + esc(String(cluster.speaker_id).split(':').pop()) + '（服务原生标签 ' + esc(String(cluster.native_speaker_id)) + '）</small>'
+                    : '';
+                const review = segment.role_attribution?.needs_review ? ' <small>待复核</small>' : '';
+                return `<div class="segment"><button data-time="${Number(segment.start_ms) / 1000}">${(Number(segment.start_ms) / 1000).toFixed(2)} – ${(Number(segment.end_ms) / 1000).toFixed(2)} s</button><div><strong>${esc(roleNames[role] || '角色待确认')}</strong>${review}${clusterInfo}${segment.text_attribution === 'ambiguous_spans_speakers' ? '<small>该句跨越多个说话人，未归属给任一角色</small>' : ''}<p>${esc(segment.text || '暂无转写文本')}</p></div></div>`;
+            }).join('');
+        if (!segments.length)
+            html += '<div class="empty">没有可用的语音片段，请查看报告中的处理状态。</div>';
+    }
+    if (name === 'metrics') {
+        html = '<h2>评测指标</h2><p>缺少可靠证据时不显示数值，也不将其计为通过。</p><div class="table-wrap"><table><thead><tr><th>指标</th><th>结果</th><th>状态</th></tr></thead><tbody>' +
+            data.metrics.map(metric => `<tr><td>${esc(metricNames[metric.name] || metric.name)}</td><td>${metric.value == null ? '—' : esc(metric.value) + ' ' + esc(metric.unit || '')}</td><td>${badge(metric.status)}</td></tr>`).join('') +
+            '</tbody></table></div>' +
+            (data.metrics.length ? '' : '<div class="empty">暂无可计算指标</div>' + alignmentNote(data));
+    }
+    if (name === 'findings') {
+        html = '<h2>发现与语义评估</h2>' +
+            data.findings.map(finding => `<div class="segment"><div><strong>${esc(finding.title || finding.dimension || '待复核发现')}</strong><p>${esc(finding.description || finding.reason || '')}</p>${badge(finding.status)}</div></div>`).join('') +
+            (data.findings.length ? '' : '<p>暂无可确认的问题结论。这不代表设备已通过评测。</p>') +
+            data.judge_results.map(judge => `<div class="segment"><div><strong>${esc(judge.dimension)} · ${esc(judge.decision)}</strong><p>${esc(judge.reason)}</p>${badge(judge.status)}</div></div>`).join('');
+    }
+    if (name === 'report') {
+        html = (data.stages?.asr && data.stages.asr.status !== 'complete'
+            ? '<p>ASR：' + esc(statusLabel(data.stages.asr.status)) + ' · ' + esc(data.stages.asr.reason || '') + '</p><button class="text-button" id="retry-asr">重试转写（可能再次计费）</button>'
+            : '') +
+            audioQaNote(data) +
+            '<h2>完整报告</h2><button class="text-button" id="download">下载 Markdown ↓</button><pre>' + esc(data.report_md || '分析报告尚未生成。原始导入证据已保留。') + '</pre>';
+    }
+    $('detail').innerHTML = html;
+    if ($('retry-asr')) {
+        $('retry-asr').onclick = async () => {
+            if (busy)
+                return;
+            busy = true;
+            $('retry-asr').disabled = true;
+            try {
+                render(await request('/api/runs/' + encodeURIComponent(data.run_id) + '/resume', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ retry_asr: true }),
+                }));
+            }
+            catch (error) {
+                notify(error.message);
+            }
+            finally {
+                busy = false;
+                if ($('retry-asr'))
+                    $('retry-asr').disabled = false;
+            }
+        };
+    }
+    if ($('role-save')) {
+        $('role-save').onclick = async () => {
+            if (busy)
+                return;
+            const mapping = {};
+            let missing = 0;
+            document.querySelectorAll('[data-cluster]').forEach(node => {
+                const picked = node.querySelector('input[type=radio]:checked');
+                const id = node.dataset.cluster;
+                if (picked)
+                    mapping[id] = picked.value;
+                else
+                    missing += 1;
+            });
+            if (missing) {
+                notify('请为每个说话人聚类选择角色（未知也是明确选择）');
+                return;
+            }
+            const reviewer = ($('role-reviewer')?.value || '').trim();
+            if (!reviewer) {
+                notify('请填写复核人身份');
+                return;
+            }
+            busy = true;
+            $('role-save').disabled = true;
+            try {
+                render(await request('/api/runs/' + encodeURIComponent(data.run_id) + '/role-review', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        mapping,
+                        reviewer,
+                        reason: ($('role-reason')?.value || '').trim(),
+                    }),
+                }));
+            }
+            catch (error) {
+                notify(error.message);
+            }
+            finally {
+                busy = false;
+                if ($('role-save'))
+                    $('role-save').disabled = false;
+            }
+        };
+    }
+    $('detail').querySelectorAll('[data-time]').forEach(button => {
+        button.onclick = () => {
+            const audio = $('audio');
+            audio.currentTime = Number(button.dataset.time);
+            audio.play().catch(() => notify('暂时无法播放音频，请检查音频是否已成功标准化。'));
+        };
+    });
+    if ($('download')) {
+        $('download').onclick = () => {
+            const url = URL.createObjectURL(new Blob([data.report_md], { type: 'text/markdown;charset=utf-8' }));
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = data.run_id + '.md';
+            anchor.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        };
+    }
+}
+request('/health')
+    .then(data => { $('version').textContent = '版本 ' + data.version; })
+    .catch(() => { $('version').textContent = '服务未连接'; });
+home();

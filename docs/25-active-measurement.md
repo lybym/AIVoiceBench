@@ -4,7 +4,7 @@ PRD refs: PRD-F023/F025/F026、PRD-M001–M010、PRD-N002/N003/N007。本文描�
 
 2026-09-16 决策：正式主架构采用 **Linux Server + Docker Backend + Remote Chrome Browser Station**。Browser Station 现场生成音频 sample timebase；服务器可以远端计算，网络 RTT 不进入正式声学指标。VAD 近期分工为 TEN VAD（Browser Control）+ Silero VAD（Server finalized replay）。详见 [组件策略](26-remote-browser-component-strategy.md)。
 
-2026-09-17 补充实现决策：Browser Station 当前仍是 HTML/CSS/Vanilla JS，目标实现语言改为 **TypeScript**，迁移由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪。该迁移只强化浏览器侧音频帧、sample timebase、WebSocket、Control VAD、capture integrity 与状态机的类型约束，不改变本文件定义的 Measurement semantics，也不要求 React/Vue 等框架重写。
+2026-09-17 补充实现决策：Browser Station 的实现语言收敛为 **TypeScript**，迁移由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪；2026-09-19 该等价迁移已完成到代码、测试与 deterministic build/typecheck 门禁。该迁移只强化浏览器侧音频帧、sample timebase、WebSocket、Control VAD、capture integrity 与状态机的类型约束，不改变本文件定义的 Measurement semantics，也不要求 React/Vue 等框架重写。
 
 2026-09-18 补充 Active TTS 决策：Fixed 使用火山 V3 WebSocket **单向流式**完成完整话术的 asset synthesis，并在正式 Run 前冻结 Stimulus；Free 使用火山 V3 WebSocket **双向流式**承接 Streaming LLM text 并向 Browser 流式输出音频。实现由 [Issue #98](https://github.com/lybym/AIVoiceBench/issues/98) 跟踪；当前 V3 HTTP SSE adapter 仍是实现事实，文档目标不得被误写成已完成。
 
@@ -12,7 +12,7 @@ PRD refs: PRD-F023/F025/F026、PRD-M001–M010、PRD-N002/N003/N007。本文描�
 
 ```text
 Remote Chrome Browser Station
-(TypeScript target / current Vanilla JS)
+(TypeScript source / compiled browser JS)
 Browser Microphone
        ↓ one physical PCM source + local sample counter
  ┌─────┴────────────────────────────────────┐
@@ -78,9 +78,9 @@ LLM chunk 时间、TTS provider event、audio chunk arrival、Browser playback c
 
 ## 2. Remote Browser Station contract
 
-Browser Station 是现场 audio I/O endpoint，不是业务后端。当前浏览器源码位于 `aivoicebench/static/`，手写 JS 入口包括 `app.js`、`models.js`、`voice_test.js` 和 `pcm_capture_worklet.js`；这些入口迁移到 TypeScript 后，编译产物仍须由现有 FastAPI/Docker 静态交付链服务，浏览器运行时仍执行普通 JavaScript。
+Browser Station 是现场 audio I/O endpoint，不是业务后端。手写源码位于 `web/src/`（`app.ts`、`models.ts`、`voice_test.ts`、`pcm_capture_worklet.ts`），编译产物位于 `aivoicebench/static/` 并由现有 FastAPI/Docker 静态交付链服务，浏览器运行时仍执行普通 JavaScript（classic script，共用页面全局脚本作用域）。
 
-TypeScript 迁移必须保持当前 HTTP/WebSocket contract、PCM framing、Run/Turn identity、控制语义和 `sample_index / sample_rate` 时间基兼容。迁移完成前当前 Vanilla JS 仍是实现事实；类型语言决策不能自动升级任何 Active Measurement capability 状态。
+TypeScript 迁移必须保持当前 HTTP/WebSocket contract、PCM framing、Run/Turn identity、控制语义和 `sample_index / sample_rate` 时间基兼容。迁移已按此约束落地（`web/src/` 为唯一手写来源，`aivoicebench/static/*.js` 为编译产物，构建门禁校验两者一致）；类型语言迁移不升级任何 Active Measurement capability 状态。
 
 每次 Session/Run 至少记录：
 
@@ -186,7 +186,7 @@ Browser Station 或可选 Windows Audio Station Agent
 | Capability | Status |
 | --- | --- |
 | Remote Browser Station architecture | decided；实现/远端真实部署验收 pending |
-| Browser Station TypeScript migration | planned；当前 Vanilla JS；Issue #84 |
+| Browser Station TypeScript migration | code/test/build gate done（`web/src` 源码 + `aivoicebench/static` 编译产物，Issue #84）；远端 Chrome 与容器内行为验证由既有 browser/container 运行承担 |
 | Fixed V3 unidirectional WS TTS + frozen stimulus | planned；当前 V3 HTTP SSE；Issue #98 |
 | Free Streaming LLM → V3 bidirectional WS TTS → streaming playback | planned；Issue #98 |
 | TEN VAD Browser Adapter | planned；RMS fallback 已有 |
