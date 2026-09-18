@@ -2,7 +2,7 @@
 
 > 2026-09-18 target decision: provider/model and object-storage configuration is **server-side external configuration**, not application code and not browser-owned state. Current `main` still contains the SQLite-backed model-settings implementation; [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) performs the migration. This document distinguishes current fact from target behavior and does not claim #87 is implemented.
 
-The system keeps five independent capability routes: **`asr`** (File ASR for Recording Analysis), **`streaming_asr`** (Active Voice Test real-time recognition), `tts`, `diarization`, and result `judge`. File ASR and Streaming ASR remain separate lifecycle families; neither provider timestamp is a formal acoustic boundary.
+The target route model keeps lifecycle-distinct capabilities: **`asr`** (File ASR for Recording Analysis), **`streaming_asr`** (Active Voice Test real-time recognition), **`tts`** (complete-text / asset synthesis, used by Fixed), **`streaming_tts`** (streaming-text / streaming-audio session, used by Free), `diarization`, and result `judge`. Current `main` still exposes the legacy five-route model and V3 HTTP SSE TTS; the `streaming_tts` route and V3 WebSocket split are target behavior tracked by [Issue #98](https://github.com/lybym/AIVoiceBench/issues/98). File ASR and Streaming ASR remain separate lifecycle families; Provider timestamps are never formal acoustic boundaries.
 
 ## 1. Configuration ownership
 
@@ -68,7 +68,20 @@ judge
 
 ASR-native diarization should normally point `diarization` to the same File ASR profile so one native recognition response can provide transcript/timestamps/speaker labels without a duplicate billable call.
 
-The OpenAI-compatible Judge path remains Chat Completions-compatible. File ASR, Streaming ASR and TTS use their protocol-specific adapters. Provider configuration does not prove connectivity or paid-service readiness.
+### Active TTS transport split (#98)
+
+Active Voice Test must not use one ambiguous TTS profile to infer transport at runtime:
+
+- `tts`: complete text / asset synthesis. The target Volcengine adapter uses **V3 WebSocket unidirectional streaming** (`wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream`). Fixed cases submit the complete text once, consume the provider audio stream, validate/normalize it and freeze a Stimulus Artifact before the formal Run.
+- `streaming_tts`: streaming text / streaming audio session. The target Volcengine adapter uses **V3 WebSocket bidirectional streaming** (`wss://openspeech.bytedance.com/api/v3/tts/bidirection`). Free mode feeds ordered LLM text chunks into one Turn-bound TTS session and streams returned audio to Browser playback.
+
+Both profiles are server-owned. Browser code receives audio/control data but never Provider credentials and never connects directly to Volcengine. A failure on the bidirectional path does not silently select SSE or the unidirectional route.
+
+TTS profile parameters must use the provider's **current official V3 field semantics**, not legacy aliases inferred from the existing SSE adapter. Common configurable parameters include speaker/voice, output encoding/format, sample rate and speech rate; loudness/volume and pitch are exposed only where the selected protocol/model/voice officially supports them. Unsupported combinations are configuration errors or explicit `unsupported` capability results, never silent no-ops. The Run snapshot records only non-secret resolved values and the actual transport.
+
+For Fixed, provider stream encoding and final Stimulus Artifact encoding are separate concerns. The official streaming API does not imply that the wire stream is WAV; the Backend may wrap/normalize supported provider audio (for example PCM) into the project's frozen WAV asset after synthesis and before formal playback.
+
+The OpenAI-compatible Judge path remains Chat Completions-compatible. File ASR, Streaming ASR and the two TTS lifecycle families use protocol-specific adapters. Provider configuration does not prove connectivity or paid-service readiness.
 
 ## 3. Object-storage configuration
 
