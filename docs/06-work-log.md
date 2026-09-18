@@ -1260,3 +1260,14 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **P2 处理。** P2-1 数字与 CI 引用已在上面更正如实：本条目修正上一轮误记的测试计数，并改引该轮 HEAD 的 container run；P2-2 测试改名为 `test_registered_artifacts_stay_self_describing_on_disk`，并在 docstring 中说明跨进程重启证据来自 CI container job；P2-3 `audio-qa-conditions` 现在进入 `stages.audio_qa.output_artifact_ids`；P2-4 新增 legacy 兼容语义（旧 Run 测量文档没有 `conditions` 时视图返回显式 `conditions_version: unassessed`，而不是空数组，避免“缺失条件”被读成“满足条件”）；P2-5 `audioQaNote()` 现在独立渲染 `stages.audio_qa` 状态与原因，测量缺失时不再整段消失。
 - **新增回归测试。** `tests/test_import.py`：`data_artifact_ref` 指向 JSON 测量文档 + `output_artifact_ids` 完整性、近静音（非零但不可闻）保持 `unassessed`、沉默 envelope 的 `schema_errors(..., 'analysis-output')`、测试改名。`tests/test_recording_backbone.py`：`test_audio_qa_survives_a_resumed_analysis_revision`（复用已覆盖的 report 中断 `/resume` 路径，断言 revision 变化后 `audio_qa` 不变且不重复调用 ASR）、`test_legacy_run_view_reports_absent_conditions_as_unassessed`（pre-PR：complete envelope 内联 data + 无 conditions + 新 revision）。`tests/test_web_release.py`：`audioQaNote` 的源码级契约检查（测量缺失不得短路整段），替代本环境无法运行的浏览器驱动测试。
 - **边界。** 本次仍未执行真实录音验收与本地 Docker 验收；`real_recording_verified` 继续保持未声明。浏览器驱动级 `audioQaNote` 测试仍缺失（本环境无驱动），以源码契约检查 + API 契约测试替代并如实标注。
+
+## 2026-09-18 — Provider/Object Storage 外置配置与 File ASR transport 文档收敛（#87）
+
+- **用户授权决策。** 所有 LLM/ASR/Streaming ASR/TTS Provider 的非敏感配置与对象存储配置从应用代码/内部持久化目标中外置：运行时目标为 server-owned `providers.yaml` + `storage.yaml`，Docker read-only mount；长期 Provider key / TOS AK/SK 不写 YAML，只通过 env/secret reference 解析。
+- **File ASR 选择。** Recording Analysis P0 继续使用火山录音文件识别极速版 HTTP，不改为 Streaming ASR。默认 `audio_transport=auto`：canonical WAV 小于等于可配置阈值时使用 `audio.data` Base64；超过阈值时才使用私有 TOS + 短期 Presigned GET URL 的 `audio.url`。初始工程默认 15 MiB，可配置且进入 non-secret Run provenance；不作为永久产品常量。
+- **对象存储边界。** TOS 是第一 Storage Adapter，但不是 File ASR 协议硬绑定，也不是 Streaming ASR 前置。对象存储只承担大文件临时 transport；bucket/object private，Backend 直接上传，识别后删除并以 lifecycle 兜底。固定 `AIVOICEBENCH_AUDIO_PUT_URL/GET_URL/HOST` 被标记为待迁移实现细节。
+- **配置样例。** 新增 `config/providers.example.yaml` 与 `config/storage.example.yaml`；`config/aivoicebench.example.yaml` 只保留核心应用设置与两份外置配置文件路径。样例不包含真实 secret。
+- **需求/追踪。** PRD 升级到 1.5.3，更新 F005/F015/F016、Roadmap、Architecture、Model Management、Docker/API、LLM、Recording Backbone、Streaming ASR 与 traceability；创建 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 负责实际 loader/validator、SQLite migration、inline/TOS transport、Docker mount 与测试。#22 继续负责真实 Volcengine File ASR + speaker separation 证据，#85 继续作为真实录音最终 Gate。
+- **外部契约核对。** 本轮沿用并复核火山官方录音文件识别极速版/标准版/闲时版文档入口与 TOS Presigned URL 机制；实现时仍须按 AGENTS 重新在线核对当前 Provider API，不把 dated endpoint/resource 当永久产品常量。
+- **验证边界。** 本轮只修改文档与 example config，并创建 Issue；未修改应用代码、未执行真实 Volcengine/TOS 调用、未声称 software/container/browser/real-recording 状态升级。合并前应检查 Markdown 本地链接、YAML parse 与 diff scope。
+\n
