@@ -1329,3 +1329,11 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **配置。** 继续保留 speaker/voice、sample rate、speech rate 以及协议/音色真正支持时的 loudness/pitch 等必要项；TTS format/encoding 不再暴露给用户。Run snapshot 可记录 resolved `format=mp3` 作为 provenance，但它不是操作者可调参数。
 - **边界。** 本决策只针对 **Active TTS 输出/Stimulus**。Recording Analysis 的 canonical audio、Active Measurement 的 durable Measurement Audio 等证据链仍可使用 PCM/WAV；它们不是 TTS 播放资产，不受此次格式简化影响。
 - **同步。** PRD 升至 1.5.5，README、Active PRD、Architecture、Roadmap、Model Management、Active Measurement、文档导航、changelog 与 Issue #98 已同步。当前代码仍是旧 V3 HTTP SSE/WAV 实现，直到 #98 落地前不得把目标状态写成 implemented。
+
+### Issue #93 验收补齐（PR #96）
+
+- **缺口核对。** 逐条核对 #93 验收后发现只有一项缺少证据：provider rejection 已被 `test_recording_backbone.py::test_failures_preserve_native_and_run` 覆盖（`reject`/`timeout`/`bad-time`/`bad-upload`/`echo`，并断言不二次 POST），但缺少“partial ASR evidence 进入 diarization”的 pipeline 证据。
+- **新增测试。** `tests/test_semantic_e2e.py::test_partial_asr_evidence_still_reaches_diarization`：使用一个 provider word offset 占位符 `-1` 的响应，断言 transcript 为 `partial`、utterance 文本/区间/speaker 标签保留、坏 word timing 记为显式 gap，并且 diarization 仍从同一次识别调用得到 2 个匿名聚类、无第二次提交、无角色推断。
+- **验证。** 全量 `python -m unittest discover -s tests` → **657 tests, OK**（Windows，CPython 3.13）。改动已推送到 `fix/issue-93-seed-asr-manual-role`；PR #96 正文按仓库模板重写为只 `Closes #93`，#94/#95 声明为独立后续 PR。
+- **证据边界。** 真实云任务恢复验收（不重复计费的 resume）本轮仍未执行，属 #85；不从脚本化 transport 测试推断。
+- **基线校正。** 该分支已 rebase 到当时的 `main`。Recording Analysis 的三项决定原先分别记为 1.5.4/1.5.5/1.5.6，与 #98 已落地的同名版本冲突，故合并为 PRD 1.5.6 一条；#94/#95 沿用 1.5.7/1.5.8。
