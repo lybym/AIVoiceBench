@@ -6,7 +6,7 @@ Provider boundary 独立于 hardware/controller。File ASR Provider 返回原生
 
 2026-09-16 路线决定：Recording Analysis 当前优先把 **火山 File ASR 的自动说话人分离**用完整，暂不把 3D-Speaker 作为必要依赖。ASR-native speaker label 是匿名 cluster evidence，不是 tester/device role truth。
 
-2026-09-18 配置/transport 决策：P0 File ASR 默认使用火山录音文件识别极速版 HTTP。目标由外置 `providers.yaml` 定义 endpoint/model/resource 与 `audio_transport`；`auto` 模式下小文件使用 Base64 `audio.data`，大文件才通过外置 `storage.yaml` 选择私有 TOS + 短期 Presigned GET 的 `audio.url`。对象存储是 transport adapter，不是所有 File ASR 的强制前置。
+2026-09-18 配置/transport 决策：P0 File ASR 默认使用豆包 Seed ASR 2.0 标准版资源 `volc.seedasr.auc`，异步执行 `submit → query`；极速版只保留显式兼容模式。外置 `providers.yaml` 定义 endpoint/model/resource、`file_mode` 与 `audio_transport`；`auto` 模式下小文件使用 Base64 `audio.data`，大文件才通过外置 `storage.yaml` 选择私有 TOS + 短期 Presigned GET 的 `audio.url`。
 
 ## Run locally — explicit offline fallback
 
@@ -25,7 +25,7 @@ Input 为 PCM16/16 kHz，mono 或 stereo with explicit channel selection。Adapt
 
 Words/segments 保留 provider-estimated audio-relative timing。Lexical confidence 不等于 timestamp confidence。ASR timestamp 不自动升级为 acoustic speech event。
 
-Text without timing becomes partial transcript with a gap. Empty recognition is an empty completed provider result, not proof that the DUT remained silent. Normalization rejects invalid/out-of-range/nonfinite timings.
+Text without timing becomes partial transcript with a gap. 单个 word timing 缺失、为负或越界时，normalizer 保留仍有效的 utterance/speaker evidence 并记录 gap/partial；只有无法形成可审计 utterance 的输入才拒绝整段。Empty recognition is an empty completed provider result, not proof that the DUT remained silent.
 
 External transcript 不代表 DUT 内部 ASR；不能用外部 ASR Transcript 冒充设备内部 transcript 计算 device ASR CER。
 
@@ -53,7 +53,7 @@ tester / device / unknown
 - Provider speaker ID 只表示 ASR 服务认为属于同一说话人的 cluster；
 - 不按 `speaker_0 = tester`、`speaker_1 = device` 进行顺序映射；
 - label 缺失、冲突、短片段不可靠时保留 unknown / insufficient_evidence；
-- role attribution 继续由显式证据、语义角色提议、上下文和人工修订共同完成；
+- role attribution 只接受用户保存的人工 mapping；LLM 不判断 tester/device；
 - 原始 speaker label、provider/model/config/invocation 必须可追溯；
 - speaker boundary 与 acoustic VAD boundary 是不同 Evidence Source，不静默覆盖。
 
@@ -61,7 +61,7 @@ tester / device / unknown
 
 ## Current cloud/import path
 
-Main `v0.4.0` 已有 audited Volcengine File ASR Web/CLI ImportRun 基础。Recording Backbone 见 [23-recording-backbone.md](23-recording-backbone.md)。现有代码可以消费 ASR-native labels，但当前音频 publication 仍依赖固定 Signed URL 配置；#87 将其改为极速版原生 `audio.data` / `audio.url` 双路径并外置 Provider/Storage 配置。**speaker-separation 请求参数和真实返回语义仍必须基于当前官方契约核对并完成真实服务验证**。
+`v0.5.0` 已具备外置配置和原生 `audio.data` / `audio.url` transport。2026-09-18 的授权诊断调用验证 Seed standard 的 `submit → query`、`enable_speaker_info` 与原生 speaker labels 可用；adapter 仍只接受明确列出的 endpoint/resource 组合，不作为任意 URL 透传器。异步 submit 成功后必须先保留 request ID 和 invocation audit；中断恢复先 query 同一 job，不得自动重新上传。修复与回归验收由 [#93](https://github.com/lybym/AIVoiceBench/issues/93) 跟踪。
 
 不得仅凭旧版 API 文档中的 `with_speaker_info` 等字段修改当前新接口请求；实际 adapter 必须以当前启用 endpoint/resource 的官方契约和真实响应为依据。
 

@@ -2,8 +2,7 @@
 # Runtime target: /etc/aivoicebench/providers.yaml
 # Do not place credential values in this file. Use credential_env references.
 #
-# Issue #87 defines this as the target source of truth. Until that implementation lands,
-# current releases still use the existing model-settings persistence path.
+# v0.5.0 loads this server-owned file as the non-secret source of truth.
 
 schema_version: 1
 
@@ -23,18 +22,18 @@ profiles:
       timeout_seconds: 30
 
   - id: volc-file-asr
-    name: Volcengine File ASR Flash
+    name: Doubao Seed ASR 2.0 Standard
     provider: volcengine
     protocol: volcengine_asr
-    base_url: https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash
+    base_url: https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit
     model: bigmodel
     credential_env: VOLCENGINE_SPEECH_API_KEY
     enabled: true
     capabilities: [asr, diarization]
     parameters:
-      resource_id: volc.bigasr.auc_turbo
+      resource_id: volc.seedasr.auc
       timeout_seconds: 300
-      file_mode: flash
+      file_mode: seed_standard
       audio_transport: auto
       inline_max_bytes: 15728640
       object_storage_ref: tos-asr-temp

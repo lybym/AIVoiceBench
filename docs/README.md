@@ -4,7 +4,9 @@
 
 2026-09-17 进一步收敛 Browser Station 的实现语言：**现有 HTML/CSS/Vanilla JS 是当前实现基线，目标实现语言改为 TypeScript**。迁移只用于强化 AudioWorklet、PCM/sample timebase、WebSocket、Control VAD、capture integrity 和 Run state 的静态类型约束；不要求 React/Vue 等框架重写，也不改变 Linux Server + Docker、FastAPI 静态交付、正式 Measurement semantics 或浏览器目标。实现由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪，完成前保持 planned。
 
-2026-09-18 配置与 File ASR transport 收敛：目标把 LLM/ASR/TTS Provider 与对象存储非敏感参数分别外置为服务器侧 `providers.yaml` / `storage.yaml`，长期 secret 只通过 env/secret reference 解析。Recording Analysis P0 继续使用火山 File ASR 极速版 HTTP：小文件 inline Base64，大文件私有 TOS + 短期 Presigned GET；对象存储不是 Streaming ASR 或所有 File ASR 的强制依赖。实现由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 跟踪。
+2026-09-18 配置与 File ASR transport 收敛：`v0.5.0` 已将 LLM/ASR/TTS Provider 与对象存储非敏感参数分别外置为服务器侧 `providers.yaml` / `storage.yaml`，长期 secret 只通过 env/secret reference 解析。File ASR 小文件可 inline Base64，大文件可走私有 TOS + 短期 Presigned GET；对象存储不是 Streaming ASR 或所有 File ASR 的强制依赖。该能力由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) / PR #90 实现并完成软件验证，真实服务质量仍需独立验收。
+
+同日的授权诊断录音进一步验证了 Seed ASR 2.0 标准版的异步 submit/query 与匿名 speaker labels，并暴露部分时间戳、断线恢复和低音量设备对齐缺口。最新产品决定是不使用 LLM 判断角色，改由用户人工确认后再生成后续指标与正式报告；完整事实见 [真实录音诊断记录](27-real-recording-diagnostic.md)，任务由 [#93](https://github.com/lybym/AIVoiceBench/issues/93)、[#94](https://github.com/lybym/AIVoiceBench/issues/94) 和 [#95](https://github.com/lybym/AIVoiceBench/issues/95) 跟踪。
 
 2026-09-18 Active TTS 路线进一步收敛：Fixed 目标使用火山 V3 WebSocket 单向流式接口生成并冻结 **MP3 Stimulus Artifact**，Free 目标使用 V3 WebSocket 双向流式接口承接 Streaming LLM 并向 Browser 流式播放 **MP3**；新增 `streaming_tts` 生命周期/route，与 Fixed 的 `tts` asset synthesis 分离。**TTS format/encoding 固定为 MP3，不作为可配置项**；音色、采样率、语速以及协议实际支持的音量/音调等必要参数按官方 V3 字段外置配置。该迁移由 [Issue #98](https://github.com/lybym/AIVoiceBench/issues/98) 跟踪，当前 HTTP SSE 实现状态不因此升级。
 
@@ -20,5 +22,6 @@
 - [Streaming ASR 边界](24-streaming-asr.md)：Active Voice Test 的实时识别边界、事件模型、二进制音频通道与火山契约；Recording Analysis 的 File ASR 见 [时间戳 ASR](11-timestamped-asr.md)。
 - [Active Measurement](25-active-measurement.md)：持续 Measurement Audio、sample clock、Stimulus Reference、在线声学处理、Canonical Timeline 和统一指标边界，以及 Browser Station TypeScript 迁移的非行为变更约束。
 - [Recording Backbone](23-recording-backbone.md)：火山 File ASR、ASR-native speaker labels、Attribution/Fusion 主链与审计边界。
+- [真实录音诊断记录](27-real-recording-diagnostic.md)：2026-09-18 实测问题、已修复候选、空白指标根因、Issue 与验收边界。
 
 根目录 [AGENTS.md](../AGENTS.md) 规定开发者如何读取与同步 PRD。技术专题文件不是额外 PRD，不以旧例子或工作日志替代用户需求。

@@ -162,31 +162,19 @@ def _asr_invocation(run):
     return info
 
 
-def _attribute(run, diarization_doc, parent, explicit_mapping=None, semantic_provider=None,
-               transcript_doc=None):
+def _attribute(run, diarization_doc, parent, explicit_mapping=None):
     """Map speaker_id to tester/device/unknown using evidence.
 
-    Explicit or human evidence has authority. When it leaves clusters unresolved and
-    a semantic provider is configured, the processor may propose roles from the
-    existing speaker/transcript evidence; those proposals stay needs_review and are
-    never presented as a calibrated accuracy. Without any evidence, ALL speakers
-    remain 'unknown' — never inferred from first-speaker order or speaker count.
+    Only explicit user/human evidence may assign tester/device. Without a saved
+    mapping, all speakers remain unknown and role-dependent stages abstain.
     """
-    from .semantic_attribution import semantic_role_attribution
-    if diarization_doc is None:
-        attr_doc = semantic_role_attribution({'speaker_segments': []})
-    else:
-        attr_doc = semantic_role_attribution(
-            diarization_doc, provider=semantic_provider, transcript_doc=transcript_doc,
-            explicit_mapping=explicit_mapping)
+    from .diarization import attribute_speakers
+    attr_doc = attribute_speakers(
+        diarization_doc or {'speaker_segments': []}, explicit_mapping=explicit_mapping)
     status = attr_doc['status']
     reason = attr_doc.get('reason') or attr_doc.get('notes') or 'Source attribution'
     output = run.envelope('attribution', status, reason,
                           _envelope_data(attr_doc, status), [parent])
-    if attr_doc.get('invocations'):
-        invocation_path = run.analysis / 'attribution-invocations.json'
-        write_json(invocation_path, {'invocations': attr_doc['invocations']})
-        run.register(invocation_path, 'provider_invocation', [parent], 'semantic_attribution:1.0.0')
     return [output], attr_doc, None if status == 'complete' else reason
 
 
@@ -484,7 +472,10 @@ def _run_evidence_chain(run, normalized, asr_available, providers=None):
     asr_art_id = None
     asr_invocation = _asr_invocation(run)
     asr_stage = run.manifest['stages']['asr']
-    if asr_stage['status'] == 'complete':
+    # A partial ASR result can still carry usable utterance and speaker-label
+    # evidence (for example, one word-level timestamp may be unavailable).
+    # Do not discard that valid sentence-level evidence before diarization.
+    if asr_stage['status'] in ('complete', 'partial'):
         transcript_path = run.analysis / 'transcript.json'
         if transcript_path.exists():
             envelope_data = json.loads(transcript_path.read_text(encoding='utf-8'))
@@ -508,18 +499,16 @@ def _run_evidence_chain(run, normalized, asr_available, providers=None):
         diar_art_id = run.manifest['stages']['diarization']['output_artifact_ids'][-1]
 
     # Source attribution — parent: diarization output
-    # Explicit mapping from profile or test context (Level 1 evidence).
-    # The semantic role provider reuses the configured semantic service (PRD-F010)
-    # and is only consulted for clusters that explicit evidence left unresolved.
+    # Role assignment is user-owned. The current explicit mapping seam is used by
+    # fixtures and future persisted manual revisions; no LLM is consulted here.
     explicit_mapping = None
     if hasattr(run, '_explicit_speaker_mapping'):
         explicit_mapping = run._explicit_speaker_mapping
-    semantic_provider = getattr(providers, 'judge', None) if providers is not None else None
 
     attr_parents = [diar_art_id] if diar_art_id else [acoustic_art_id or norm_art_id]
     attribution_result = run.execute('attribution', attr_parents,
         lambda: _attribute(run, diarization_result, diar_art_id or (acoustic_art_id or norm_art_id),
-                           explicit_mapping, semantic_provider, transcript_doc))
+                           explicit_mapping))
 
     attr_art_id = None
     if run.manifest['stages']['attribution']['output_artifact_ids']:

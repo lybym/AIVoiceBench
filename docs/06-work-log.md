@@ -1290,6 +1290,24 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **build Release / container smoke（本地受限）。** `docker build -t aivoicebench:v0.5.0-alpha.1 .` 失败：Docker Desktop 无法访问 `registry-1.docker.io`（无 HTTPS proxy，IPv6 `2a03:2880:…:443` 连接超时），base image `python:3.12-slim` 未本地缓存。本环境无法完成镜像构建与 `docker_smoke.py` 容器 smoke；container/server 验证由 PR CI `backbone-smoke`（`docker build` → `docker_smoke.py` → `test_recording_backbone.py` → restart → verify-history）在 GitHub runner 上执行，结果以 PR CI 为准。版本一致性已由 `test_web_release`（`/health`==VERSION）与 `test_release_packaging` 在软件层证明。
 - **证据边界与限制。** 本次只声明 software_verified；M1 尚未通过（`acceptance-status.md` 明示），#90 真实 TOS / container-server 路径未在 main push 验证（backbone-smoke 此前只在 PR 分支跑），#21 仍 Open、真实录音最终验收由 #85 承担。不创建 stable tag、不发布 Stable Release、不构建/发布镜像归档；正式镜像与附件由合并后手动 `release.yml` dispatch 构建。预览版不接管 `Latest`，`v0.4.0` 仍是稳定版。
 
+## 2026-09-18 — Seed ASR 2.0 真实录音诊断、修复候选与 Issue 拆分
+
+- **部署与安全。** `v0.5.0` 容器以只读 `/app/config` 和持久 `/data` 挂载运行；Provider secret 继续由本地 secret/env file 注入，未写入 YAML、Git、Issue 或报告。授权私有录音与生成报告不提交仓库。
+- **故障复现。** 依次观察到无效 voice key 的 401、resource 未开通的 403、Flash 返回少量 `-1` word offset 导致整份 Transcript 拒绝、Seed standard 因 adapter 仅支持 Flash 而被拒绝、partial ASR 未进入 diarization、role JSON 被 generic JudgeResult schema 拒绝、60 秒 LLM timeout，以及客户端中断后云 job 已完成但本地缺少安全恢复路径。
+- **修复候选。** 增加封闭的 Seed standard submit/query contract 与 `enable_speaker_info`；异常 word timing 降级为 gap/partial；partial transcript 继续进入 ASR-native diarization；恢复时优先 query 已保存 request ID。代码尚在工作树，正式合入与完整回归由 [#93](https://github.com/lybym/AIVoiceBench/issues/93) 跟踪。
+- **诊断结果。** 恢复分析得到 67 个 timestamped utterances、5 个匿名 speaker clusters、1 个 timing gap。诊断阶段 LLM 曾提出 3 个 tester clusters 与 2 个 device clusters（全部 `needs_review`）和 6 个候选 turns；随后产品决定废止机器角色归因，因此这些输出不进入正式结果。84 个 acoustic segments 无 speaker cluster/人工角色 evidence，Timeline/metrics 正确返回 partial/insufficient，而不是生成零值。
+- **遗留需求。** 创建 [#94](https://github.com/lybym/AIVoiceBench/issues/94) 处理 acoustic segment ↔ ASR speaker span 的确定性 overlap/coverage 对齐、低音量设备 coverage 诊断与“为何无指标”解释。#93/#94 均是现有 #22/#24/#25/#27 的子任务；#85 继续承担 5–20 分钟、人工作业、浏览器与重分析的正式验收 Gate。
+
+## 2026-09-18 — 角色归因改为用户人工确认（PRD-F006–F009/F012–F014/F017）
+
+- **用户决定。** Recording Analysis 不再使用 LLM 判断 tester/device。ASR 只提供匿名 speaker clusters；用户听取/查看证据后逐 cluster 标记 tester、device 或 unknown。
+- **Gate。** 未保存完整人工 mapping 前，role-dependent Turns、Timeline、Metrics 与正式测试报告保持等待人工复核/证据不足；允许展示的只有明确标注 provisional 的导入/诊断状态。
+- **Revision。** mapping 保存或修改必须形成新的 AnalysisRevision，不覆盖 ASR/diarization 原件、旧人工决定或旧报告；重分析从 Attribution 向下确定性执行。
+- **实现与追踪。** 当前工作树停止在 Recording Analysis orchestration 中调用 semantic role provider；完整 Web/API cluster 播放、人工 mapping、revision diff、重分析和 final report Gate 由 [#95](https://github.com/lybym/AIVoiceBench/issues/95) 跟踪。#93 已移除 role-LLM schema 范围，#94 已补充只消费人工 mapping 的依赖说明。
+- **Seed 默认与异步口径。** 用户进一步明确 Recording Analysis 使用豆包 Seed ASR 2.0 `volc.seedasr.auc` 并异步处理；`config/providers.example.yaml`、PRD 1.5.6、Architecture/Model/Docker/Backbone 文档改为 Seed standard 目标默认，Flash 只保留显式兼容模式。#93 已追加该决定。
+- **异步状态审计补强。** Seed poll window 耗尽但 provider job 仍 pending 时不写 terminal `result.json`；后续 resume 继续 query 同一 request ID。只有 provider 明确终态拒绝才结束该 invocation，防止 timeout→resume 隐式二次 submit。
+- **验证。** 最终定向 ASR/transport/backbone/config/人工 mapping/禁用 LLM 角色调用回归 **63 tests, OK**；全量 `python -m unittest discover -s tests` → **638 tests, OK（skipped=2）**。新增测试覆盖 Seed submit→query、`enable_speaker_info`、中断/轮询超时后仅 query 原 request ID 且不二次 submit、坏 word timing 保留 utterance，以及配置了语义 provider 时 Recording Analysis 仍不调用其做角色判断。
+
 
 
 ## 2026-09-18 — Active TTS V3 WebSocket 路线收敛（Issue #98）

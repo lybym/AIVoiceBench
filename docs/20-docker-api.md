@@ -112,7 +112,7 @@ browser / OS
 
 云 Provider 需要外置服务路由与后端凭据引用。Recording Analysis 当前优先验证火山 File ASR 原生 speaker separation；ASR-native labels 仍是匿名 speaker clusters，必须进入 Attribution 才能得到 tester/device/unknown。
 
-File ASR P0 默认使用火山极速版 HTTP，并支持：
+File ASR 默认使用豆包 Seed ASR 2.0 `volc.seedasr.auc` 异步 submit/query；极速版 HTTP 仅为显式兼容模式。音频 transport 支持：
 
 ```text
 auto
@@ -121,6 +121,8 @@ auto
 ```
 
 因此对象存储是大文件 URL transport 的可选基础设施，不是所有 File ASR 的启动前置，也不参与 Streaming ASR。Backend 已持有文件时直接使用 Storage Adapter 上传，不再要求人为预先生成固定 PUT URL。私有对象完成识别后应删除，并用 bucket lifecycle 作为兜底清理。
+
+Seed standard 是异步 submit/query：服务端必须在首次 submit 后持久化 request ID、query audit 与 stage 状态。HTTP 客户端断开或容器/worker 恢复时，先 query 既有 job；不得把重连实现成未提示的第二次计费 submit。当前修复验收见 [#93](https://github.com/lybym/AIVoiceBench/issues/93)。
 
 当前阶段不要求 3D-Speaker。详见 [Recording Backbone](23-recording-backbone.md)、[模型/配置管理](16-model-management.md) 与 [组件策略](26-remote-browser-component-strategy.md)。
 

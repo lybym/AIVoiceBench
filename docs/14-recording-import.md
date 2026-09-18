@@ -8,7 +8,9 @@ Recording Analysis is the M1 implementation priority and one of two independent 
 
 ## What works
 
-Three-format ingestion, immutable source/canonical PCM16/16kHz/mono assets, QA, optional configured Vosk or cloud ASR, native responses/audit and Transcript are integrated. Acoustic, ASR-native clustering, attribution and fusion share the ledger. Role-dependent turns/events/metrics execute only with evidence; default unknown roles abstain. Judge/Findings are not executed and reports are stage-status reports.
+Three-format ingestion, immutable source/canonical PCM16/16kHz/mono assets, QA, optional configured Vosk or cloud ASR, native responses/audit and Transcript are integrated. Acoustic and ASR-native clustering share the ledger. Role-dependent turns/events/metrics execute only after explicit user role evidence; default unknown roles abstain. LLM role attribution is disabled by product decision. Judge/Findings are not executed and current reports are provisional stage-status reports, not the post-review final test report.
+
+Cloud ASR 的 `partial` 不等于无证据：只要 persisted Transcript 仍含合法 utterance/timestamp/speaker labels，diarization/attribution 必须消费这些有效部分并保留 gap 原因。对于 Seed standard 异步任务，resume 应查询已保存的 provider request ID，而不是重新 submit 同一录音。具体缺陷与验收见 [#93](https://github.com/lybym/AIVoiceBench/issues/93)。
 
 ## Windows commands
 
@@ -86,5 +88,7 @@ Tests use synthetic tones to exercise actual WAV/MP3/AAC-in-M4A decoding, 44.1kH
 Ingestion refusals are covered as durable states rather than silent gaps: a corrupt, truncated, empty or unmappable recording (for example a multichannel WAV or an unsupported `.txt` container) keeps its Run, records the refusal reason in `manifest.json`, leaves `original_sha256` null and registers no `original_recording`, and still writes a report. `test_import.py` also re-reads a completed Run from disk alone and re-hashes every registered artifact, proving that reading a Run needs no in-memory process state; the CI `Recording backbone container` workflow performs the equivalent check across a `docker restart`.
 
 Remaining: real ASR/speaker-label verification, automatic role/semantic association, Judge/Findings/full report integration, human revisions and full Windows-browser/real-recording acceptance. No Windows executable or professional HIL is a prerequisite.
+
+2026-09-18 的单份授权诊断录音已经观察到真实 Seed standard transcript 和 5 个匿名 speaker clusters，但 acoustic segments 未获得 speaker 对齐，且没有用户保存的角色 mapping，Timeline/metrics 因证据不足而弃权。诊断时曾执行的 LLM 角色提议现只作为历史故障证据，不进入产品结果。见 [诊断记录](27-real-recording-diagnostic.md)、[#94](https://github.com/lybym/AIVoiceBench/issues/94) 与人工确认 Gate [#95](https://github.com/lybym/AIVoiceBench/issues/95)。
 
 Official media references: [FFmpeg stream selection/conversion](https://ffmpeg.org/ffmpeg.html), [FFprobe structured metadata](https://ffmpeg.org/ffprobe.html), [resampler options](https://ffmpeg.org/ffmpeg-resampler.html). Local CLI needs installed FFmpeg/FFprobe; Docker already includes them.

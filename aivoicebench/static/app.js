@@ -19,7 +19,7 @@ async function openRun(id){try{render(await request('/api/runs/'+encodeURICompon
 function render(d){current=d;view('analysis');$('analysis-title').textContent=d.profile?.device||'录音分析';$('run-id').textContent=d.run_id;$('status').innerHTML=badge(d.status);$('audio').src=d.audio_url||'/api/runs/'+encodeURIComponent(d.run_id)+'/audio';$('summary').innerHTML=[['语音片段',d.transcript?.segments?.length||d.fused_segments.length||d.acoustic_segments.length],['说话人聚类',(d.speaker_segments||[]).length],['对话轮次',d.turns.length],['已观测指标',d.metrics.filter(m=>m.status==='observed'&&m.value!=null).length],['待复核发现',d.findings.length]].map(([l,n])=>`<div class="stat">${l}<b>${n}</b></div>`).join('');tab('segments');if(d.reason)notify(d.reason);}
 const metricNames={first_speech_latency_ms:'首次语音时延',feedback_latency_ms:'首次反馈时延',meaningful_response_latency_ms:'有效回答时延',turn_gap_ms:'轮次间隔',overlap_duration_ms:'重叠时长',overlap_ratio:'重叠比例',barge_in_stop_latency_ms:'打断停止时延',barge_in_success:'打断成功',false_endpoint_candidate:'错误端点（候选）',false_endpoint:'错误端点'};
 const roleNames={tester:'测试者',device:'AI 设备',unknown:'角色待确认'};
-const roleMethods={explicit_evidence:'人工指定',semantic_attribution:'模型推断（待复核）',human_attribution:'人工复核',none:'无依据'};
+const roleMethods={explicit_evidence:'用户人工指定',semantic_attribution:'历史机器提议（不用于新分析）',human_attribution:'人工复核',none:'等待人工确认'};
 function roleEvidence(a){
   // A model's own confidence is not a calibrated accuracy; never show it as one.
   const bits=[roleMethods[a.method]||a.method||'无依据'];
@@ -33,9 +33,8 @@ function attributionNote(d){
   const doc=d.attribution||{};const items=doc.attributions||[];
   if(!items.length)return '';
   const rows=items.map(a=>`<div class="segment"><div><strong>${esc(String(a.speaker_id).split(':').pop())}</strong> → ${esc(roleNames[a.role]||a.role)}<p>${esc(roleEvidence(a))}</p><p>${esc(a.reason||'')}</p></div></div>`).join('');
-  const conflicts=(doc.conflicts||[]).map(c=>`<p>聚类 ${esc(String(c.speaker_id).split(':').pop())}：显式证据为 ${esc(roleNames[c.explicit_role]||c.explicit_role)}，模型推断为 ${esc(roleNames[c.semantic_role]||c.semantic_role)}；已保留显式证据并提示复核。</p>`).join('');
-  const pending={'not_configured':'未配置语义服务','insufficient_input':'输入证据不足','invalid_output':'模型输出未通过校验','failed':'调用失败','proposed':''}[doc.semantic_status]||'';
-  return '<h3>角色归属</h3><p>角色是带依据的假设，不是设备验收结论。'+(doc.semantic_status==='proposed'?'模型推断仅供参考，需人工复核。':'')+'</p>'+(pending?'<p>语义角色判断：'+esc(pending)+'</p>':'')+conflicts+rows;
+  const conflicts=(doc.conflicts||[]).map(c=>`<p>聚类 ${esc(String(c.speaker_id).split(':').pop())} 存在历史角色冲突；新分析只接受用户保存的人工角色。</p>`).join('');
+  return '<h3>角色归属</h3><p>请由用户根据音频与转写证据确认每个聚类是测试者、AI 设备或未知。完成并保存前，不生成后续指标和正式测试报告。</p>'+conflicts+rows;
 }
 function diarizationNote(d){
   const stage=d.stages?.diarization||{};const scope=d.diarization_scope||{};const count=(d.speaker_segments||[]).length;

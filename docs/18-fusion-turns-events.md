@@ -2,11 +2,11 @@
 
 2026-09-11 基线 main c612d36 / alpha.2；产品要求见 [PRD-F006～F009](PRD.md)。
 
-ImportRun 分别登记 acoustic、diarization、attribution、fusion、turns、timeline、metrics。ASRNativeDiarizationProvider 复用已有 ASR 原生响应/Transcript 标签，不追加服务调用；需配置 ASR 与 diarization 路由。缺标签则 insufficient_evidence，不按轮流发言补标签。
+ImportRun 分别登记 acoustic、diarization、attribution、fusion、turns、timeline、metrics。ASRNativeDiarizationProvider 复用已有 ASR 原生响应/Transcript 标签，不追加服务调用；需配置 ASR 与 diarization 路由。`partial` Transcript 中仍合法的 utterance/speaker labels 继续作为 evidence，gap 单独保留；缺标签则 insufficient_evidence，不按轮流发言补标签。
 
-聚类与角色分开：speaker ID 按录音 Hash 隔离并保留 invocation/原生响应引用；不同录音的 speaker_0 不是同一身份。聚类 confidence 留空，角色默认 unknown。内部 attribute_speakers() 接受显式映射，普通 Web/CLI 没有角色编辑入口。[PR #54](https://github.com/lybym/AIVoiceBench/pull/54) 的语义角色处理器尚未合并。
+聚类与角色分开：speaker ID 按录音 Hash 隔离并保留 invocation/原生响应引用；不同录音的 speaker_0 不是同一身份。聚类 confidence 留空，角色默认 unknown。Recording Analysis 不调用 LLM 判断角色；用户在 Evidence Workbench 中人工标记 tester/device/unknown，并以新 AnalysisRevision 保存后才重跑下游。当前普通 Web/CLI 尚无角色编辑入口，由 [#95](https://github.com/lybym/AIVoiceBench/issues/95) 跟踪。
 
-跨聚类声学片段按边界拆分，重叠标签冲突以 ambiguous_overlap 弃权，不整段归给最大重叠者。拆分文本来自相应 ASR 区间，不把全文复制到每段；原始声学边界与 provider_utterance_estimate 分开记录，不把估计边界变成声学真值。
+跨聚类声学片段按边界拆分，重叠标签冲突以 ambiguous_overlap 弃权，不整段归给最大重叠者。拆分文本来自相应 ASR 区间，不把全文复制到每段；原始声学边界与 provider_utterance_estimate 分开记录，不把估计边界变成声学真值。2026-09-18 的诊断样本出现“ASR 有 cluster、84 个 acoustic segments 均无 cluster/role”的对齐缺口；[#94](https://github.com/lybym/AIVoiceBench/issues/94) 要求以 overlap/coverage、未匹配与冲突状态修复，不允许 nearest-role 填充。
 
 有已知角色才构建 turns/responses 和 Timeline/指标；_timeline() 绑定 Run 身份。未知角色下相关阶段不足证据。完整旧/新回答语义关联、timeout 健康窗口和真实混音打断判定仍待验收。
 

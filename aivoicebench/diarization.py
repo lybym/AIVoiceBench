@@ -311,10 +311,9 @@ def attribute_speakers(diarization_doc, acoustic_doc=None, transcript_doc=None,
 
     This is the Source Attribution step, separate from diarization.
 
-    Attribution levels:
-    1. Explicit evidence (explicit_mapping, ExecutionRun link, Frozen Audio match)
-    2. Semantic attribution (LLM, not implemented here)
-    3. Human attribution (revision, not implemented here)
+    Attribution authority:
+    1. Explicit user/human evidence (persisted revision target)
+    2. Otherwise unknown; LLM role assignment is not used by Recording Analysis
 
     Without any evidence, ALL speakers remain 'unknown'.
     NEVER infers from first-speaker order or speaker count.
@@ -371,8 +370,8 @@ def attribute_speakers(diarization_doc, acoustic_doc=None, transcript_doc=None,
         'document_id': 'ATTR-' + uuid.uuid4().hex,
         'speaker_segments_ref': diarization_doc.get('document_id'),
         'status': 'partial',
-        'reason': 'No role attribution evidence available. '
-                  'Requires explicit mapping, semantic attribution, or human review. '
+        'reason': 'Awaiting manual speaker-role review. '
+                  'Requires an explicit user mapping. '
                   'NOT inferred from speaker order or count.',
         'attributions': [{
             'speaker_id': sid,

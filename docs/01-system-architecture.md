@@ -76,7 +76,7 @@ Browser Station 与 Server 之间的网络 RTT、WebSocket queue、server schedu
 | Control transport | WebSocket / HTTPS |
 | Control VAD | 当前 RMS；目标 TEN VAD Browser/WASM；RMS 保留 fallback |
 | Server acoustic boundary | 当前 Energy VAD legacy；目标 Silero VAD baseline |
-| Recording ASR | File ASR Provider，P0 默认火山极速版 HTTP；小文件 inline Base64，大文件对象存储 URL |
+| Recording ASR | 默认豆包 Seed ASR 2.0 `volc.seedasr.auc` 异步 submit/query；小文件 inline Base64，大文件对象存储 URL；极速版为兼容模式 |
 | Active ASR | StreamingASRProvider，近期优先火山 |
 | Fixed TTS target | 火山 V3 WebSocket 单向流式；完整文本输入 → **MP3 流** → 冻结 MP3 Stimulus Artifact（#98） |
 | Free TTS target | 火山 V3 WebSocket 双向流式；Streaming LLM text → **MP3 流** → streaming playback（#98） |
@@ -258,7 +258,7 @@ TTS
 
 ### 8.1 Recording Analysis
 
-当前阶段优先把火山 File ASR 的自动 speaker separation 用完整，而不是新增 3D-Speaker。P0 File ASR 选择极速版 HTTP：默认 `audio_transport=auto`，小文件直接 Base64 `audio.data`，超过可配置阈值时由 Storage Adapter 上传私有 TOS 并生成短期 Presigned GET 作为 `audio.url`。对象存储不是 File ASR 的普遍前置，也不参与 Streaming ASR。
+当前阶段优先把豆包 Seed ASR 2.0 File ASR 的自动 speaker separation 用完整，而不是新增 3D-Speaker。P0 默认资源为 `volc.seedasr.auc`，按异步 `submit → query` 处理；默认 `audio_transport=auto`，小文件直接 Base64 `audio.data`，超过可配置阈值时由 Storage Adapter 上传私有 TOS 并生成短期 Presigned GET 作为 `audio.url`。对象存储不是 File ASR 的普遍前置，也不参与 Streaming ASR。
 
 ```text
 provider speaker labels

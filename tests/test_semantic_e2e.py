@@ -1,15 +1,15 @@
-"""Positive end-to-end: labelled service fixture -> semantic roles -> Metrics.
+"""Recording import does not use an LLM to assign speaker roles.
 
 Chain under test:
   labelled ASR native response fixture
     -> one ImportRun (cloud ASR path)
     -> speaker clusters derived from that same response
-    -> semantic role proposal from existing evidence
-    -> Fusion -> Turns -> Timeline -> canonical MetricResult
+    -> anonymous clusters awaiting user role review
+    -> role-dependent Turns/Timeline/Metrics abstain
 
-The ASR transport and the semantic provider are both simulated. This proves the
-software chain only: no real model call, no real speech service call and no real
-recording are involved.
+The ASR transport and a configured semantic provider are simulated. The test
+proves that Recording Analysis does not call that provider for tester/device
+roles. No real model, speech service or recording is involved.
 """
 
 import copy
@@ -28,7 +28,6 @@ from aivoicebench.cloud_transport import API, HTTPReply
 from aivoicebench.diarization import ASRNativeDiarizationProvider
 from aivoicebench.import_pipeline import import_recording
 from aivoicebench.model_settings import RunProviders
-from aivoicebench.validation import metric_errors, schema_errors
 from aivoicebench.volcengine_asr import VolcengineASRProvider
 from tests.test_semantic_attribution import ScriptedRoleProvider, content_decider
 
@@ -114,7 +113,7 @@ class SemanticAttributionEndToEnd(unittest.TestCase):
             out[kind] = envelope
         return out
 
-    def test_labelled_fixture_reaches_metrics_through_semantic_roles(self):
+    def test_labelled_fixture_waits_for_manual_roles_without_llm_call(self):
         directory, manifest = self.run_import()
         docs = self.documents(directory, manifest)
 
@@ -127,51 +126,26 @@ class SemanticAttributionEndToEnd(unittest.TestCase):
         speaker = docs['speaker-assignments']
         self.assertEqual(speaker['status'], 'complete')
         self.assertEqual(len(speaker['data']['speaker_segments']), 2)
-        self.assertEqual(json.loads(self.role_provider.calls[0]['user_prompt']),
-                         json.loads(self.role_provider.calls[0]['user_prompt']))
+        self.assertEqual(self.role_provider.calls, [])
 
-        # Semantic roles: machine proposals, review-required, uncalibrated.
+        # Anonymous clusters wait for a user mapping; no machine role proposal.
         attribution = docs['attribution']['data']
-        self.assertEqual(attribution['semantic_status'], 'proposed')
-        roles = {a['speaker_id']: a['role'] for a in attribution['attributions']}
-        self.assertEqual(sorted(roles.values()), ['device', 'tester'])
+        self.assertEqual(attribution['status'], 'partial')
         for item in attribution['attributions']:
-            self.assertEqual(item['method'], 'semantic_attribution')
-            self.assertTrue(item['needs_review'])
-            self.assertEqual(item['confidence_basis'], 'uncalibrated_model_self_report')
-            self.assertTrue(item['evidence_refs'])
-            self.assertEqual(item['invocation_id'], 'CALL-role-1')
-        self.assertEqual(attribution['scope']['analysis_id'], manifest['analysis_id'])
-        self.assertTrue(attribution['scope']['speaker_output_revision'])
+            self.assertEqual(item['role'], 'unknown')
+            self.assertEqual(item['method'], 'none')
         invocation_artifacts = [a for a in manifest['artifacts']
                                if a['kind'] == 'provider_invocation']
-        self.assertTrue(any('attribution-invocations' in a['path'] for a in invocation_artifacts))
+        self.assertFalse(any('attribution-invocations' in a['path'] for a in invocation_artifacts))
 
-        # Roles reached Fusion, and no unfounded role confidence was published.
+        # Fusion keeps clusters but role-dependent outputs abstain.
         fused = docs['fused-segments']['data']
-        self.assertEqual(fused['status'], 'complete')
         for segment in fused['segments']:
-            self.assertIn(segment['speaker_role'], ('tester', 'device'))
+            self.assertEqual(segment['speaker_role'], 'unknown')
             self.assertIsNone(segment['role_attribution_confidence'])
-            self.assertEqual(segment['role_attribution']['method'], 'semantic_attribution')
-            self.assertTrue(segment['role_attribution']['needs_review'])
-        self.assertEqual({s['speaker_role'] for s in fused['segments']}, {'tester', 'device'})
-
-        # Turns, timeline and metrics follow from those roles.
-        turns = docs['turns']['data']['turns']
-        self.assertEqual(len(turns), 1)
-        self.assertIsNotNone(turns[0]['response_id'])
-        timeline = docs['timeline']['data']
-        self.assertTrue(timeline['events'])
-        metrics = docs['metrics']['data']['metrics']
-        self.assertTrue(metrics)
-        by_name = {m['name']: m for m in metrics}
-        self.assertEqual(by_name['first_speech_latency_ms']['status'], 'observed')
-        self.assertGreater(by_name['first_speech_latency_ms']['value'], 0)
-        self.assertEqual(by_name['turn_gap_ms']['status'], 'observed')
-        for metric in metrics:
-            self.assertEqual(schema_errors(metric, 'metric'), [], metric['name'])
-            self.assertEqual(metric_errors(metric, timeline), [], metric['name'])
+        for kind in ('turns', 'timeline', 'metrics'):
+            self.assertEqual(docs[kind]['status'], 'insufficient_evidence')
+            self.assertIsNone(docs[kind]['data'])
 
         # Provenance still resolves from metrics back to the original recording.
         self.assertEqual(manifest['status'] in ('partial', 'complete'), True)
@@ -179,15 +153,13 @@ class SemanticAttributionEndToEnd(unittest.TestCase):
                   json.loads(json.dumps(manifest['artifacts']))]
         self.assertTrue(errors)
 
-    def test_metrics_bind_to_the_run_identity_not_a_fabricated_case(self):
+    def test_abstaining_outputs_bind_to_run_identity_not_a_fabricated_case(self):
         directory, manifest = self.run_import()
         docs = self.documents(directory, manifest)
         self.assertIsNone(manifest['case_ref'])
-        for metric in docs['metrics']['data']['metrics']:
-            self.assertEqual(metric['run_id'], manifest['run_id'])
-            self.assertIsNone(metric['case_id'])
-            self.assertEqual(metric['execution_kind'], 'synthetic')
-            self.assertTrue(metric['prd_ref'])
+        for kind in ('attribution', 'turns', 'timeline', 'metrics'):
+            self.assertEqual(docs[kind]['run_id'], manifest['run_id'])
+            self.assertNotIn('case_id', docs[kind])
 
 
 if __name__ == '__main__':

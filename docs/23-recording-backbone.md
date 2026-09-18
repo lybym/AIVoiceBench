@@ -31,12 +31,12 @@ Ingestion
 
 ## 2026-09-18 File ASR 与对象存储决策
 
-Recording Analysis 的 P0 File ASR 继续采用火山**录音文件识别极速版 HTTP**，不切换到 Streaming ASR。
+Recording Analysis 的 P0 File ASR 不切换到 Streaming ASR。默认使用豆包 Seed ASR 2.0 `volc.seedasr.auc`，按异步 submit/query 处理；极速版 HTTP 仅保留显式兼容模式。
 
 三种火山录音文件识别形态的产品定位：
 
-- **极速版 HTTP**：当前 AIVoiceBench 默认；单次请求返回，适合交互式 Recording Analysis。
-- **标准版**：保留为未来高质量/长录音 Provider mode；异步 submit/query 生命周期，不进入 #87 当前实现。
+- **极速版 HTTP**：显式兼容模式；单次请求返回。
+- **Seed 标准版**：当前目标默认，resource `volc.seedasr.auc`；异步 submit/query，要求 request ID 先持久化、bounded polling、断点恢复且不得隐式重复 submit。
 - **闲时版**：保留为未来大规模历史回归/批处理 Provider mode；不适合当前“上传后立即看报告”的主流程。
 
 极速版目标 transport：
@@ -86,13 +86,13 @@ TOS 是第一对象存储 adapter，原因是与当前火山服务栈部署一�
 2. 保存原始 provider response；
 3. 将 provider speaker label 规范化为匿名 `speaker_0 / speaker_1 / ...`；
 4. speaker label 只作为 diarization evidence，不直接变成 tester/device；
-5. Attribution 层继续结合显式 mapping、语义提议、时序上下文和人工复核；
+5. Attribution 层只接受用户人工保存的 tester/device/unknown mapping；LLM 不判断角色；
 6. labels 缺失、冲突或质量不足时保持 `unknown` / `needs_review` / `insufficient_evidence`；
 7. 真实 AI 玩具录音上的 coverage/accuracy 达不到要求后，才进入独立 diarization Provider（例如 3D-Speaker/pyannote）评估。
 
 参考：火山语音识别产品说明 <https://www.volcengine.com/docs/6561/1354871?lang=zh>。
 
-> 旧实现说明中“读取返回 label 但不发送未核对 speaker-separation flag”的安全边界仍有效：在当前实际接口字段核对和测试完成前，不得凭旧 API 的 `with_speaker_info` 等字段直接修改新接口请求。
+> 2026-09-18 的 Seed standard 诊断调用已观察到 `enable_speaker_info` 对应的 speaker labels；这一字段只适用于已核对的 Seed standard contract，不能复制到其他 endpoint/resource，也不把 label 升级为角色真值。
 
 ## Acoustic boundary 路线
 
@@ -110,9 +110,9 @@ VAD 不作为 ASR 的强制前置。两者并行产生 evidence；Silero thresho
 
 ## Current Volcengine File ASR contract boundary
 
-当前代码实现过的极速 File ASR path 使用配置化 endpoint/model/resource 与后端凭据，但仍通过固定 URL/发布机制提交 canonical audio。旧审计曾核对 `volc.bigasr.auc_turbo` 极速接口以及 utterance/word timing；具体 endpoint/resource/请求字段属于 dated adapter contract，不是永久产品要求。
+`v0.5.0` 的极速 File ASR path 使用配置化 endpoint/model/resource、后端凭据与 `audio.data` / `audio.url` transport。修复候选增加封闭的 Seed standard endpoint/resource 契约、submit/query polling 与未完成 job 恢复。具体 endpoint/resource/请求字段属于 dated adapter contract，不是永久产品要求。
 
-#87 的目标是保留同一极速版 Provider 能力，同时把输入 transport 改成 provider 原生的 `audio.data` / `audio.url` 双路径，并把 endpoint/model/resource/transport policy 全部移入外置 provider 配置。固定 `AIVOICEBENCH_AUDIO_PUT_URL` / `AIVOICEBENCH_AUDIO_GET_URL` / `AIVOICEBENCH_AUDIO_HOST` 不再是目标生产依赖。
+#87 已把输入 transport 改成 provider 原生的 `audio.data` / `audio.url` 双路径，并把 endpoint/model/resource/transport policy 移入外置 provider 配置。固定 `AIVOICEBENCH_AUDIO_PUT_URL` / `AIVOICEBENCH_AUDIO_GET_URL` / `AIVOICEBENCH_AUDIO_HOST` 只保留 legacy 兼容。
 
 2026-09-16 起，speaker separation 接入必须以**当前启用的火山接口文档和真实服务响应**为准，不能仅凭旧文档/旧接口兼容字段推断。服务模型版本、speaker label 语义和准确率都要进入真实验收记录。
 
@@ -126,6 +126,12 @@ VAD 不作为 ASR 的强制前置。两者并行产生 evidence；Silero thresho
 4. speaker separation 与 ASR 尽量复用同一次原生响应，不为同一录音做无必要的第二次云识别。
 5. `diarization` route 指向 ASR-native labels 时，缺少 labels 应返回 `insufficient_evidence`，不静默造 cluster。
 6. Vosk 保留显式 offline fallback，但不冒充火山调用失败后的自动替代。
+
+## 2026-09-18 真实诊断结论
+
+单份授权私有录音通过 Seed standard 得到 67 个 timestamped utterances 和 5 个匿名 speaker clusters；1 个异常 word timing 被保留为 partial gap。语义处理器提出 3 个 tester clusters、2 个 device clusters，全部 `needs_review`。但 84 个 acoustic segments 没有 speaker-cluster/role evidence，最终 Timeline/metrics 因 `insufficient_evidence` 弃权。
+
+该结果验证了真实云调用和问题复现，不是质量验收。异步恢复/partial evidence/schema 修复由 [#93](https://github.com/lybym/AIVoiceBench/issues/93) 跟踪；acoustic↔ASR span 对齐和低音量设备 coverage 由 [#94](https://github.com/lybym/AIVoiceBench/issues/94) 跟踪；完整记录见 [27-real-recording-diagnostic.md](27-real-recording-diagnostic.md)。
 
 在 #87 合并前，当前 Web model management / SQLite 与固定 Signed URL publisher 仍可能是实际运行入口；不得把上述目标配置方式误写成当前版本已实现。
 
@@ -192,4 +198,4 @@ M1 真实验收至少需要：
 
 ## Stage states and evidence limits
 
-默认 Web/CLI 没有角色真值。Provider-estimated cluster boundaries 保留来源；ambiguous overlap 不强制分配。语义角色提议可以辅助人工审阅，但不能覆盖显式 evidence。`write_import_report()` 仍只是 import-stage 状态报告；完整 semantic report/findings/human revision 仍属于 M1 收口工作。
+默认 Web/CLI 没有角色真值。Provider-estimated cluster boundaries 保留来源；ambiguous overlap 不强制分配。用户必须人工确认每个 cluster；保存 mapping 前不生成 role-dependent 指标与正式测试报告。`write_import_report()` 只可作为 provisional import-stage 状态报告；人工确认、new revision、重分析和 final report 由 [#95](https://github.com/lybym/AIVoiceBench/issues/95) 跟踪。
