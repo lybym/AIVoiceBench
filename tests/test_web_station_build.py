@@ -240,7 +240,11 @@ class BrowserStationDeliveryContractTests(unittest.TestCase):
             with self.subTest(artifact=artifact):
                 response = self.client.get(f'/static/{artifact}')
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.text, (STATIC_DIR / artifact).read_text(encoding='utf-8'))
+                # Compare content, not checkout line endings: the working tree may
+                # hold CRLF while the served file comes from the git blob.
+                served = response.text.replace('\r\n', '\n')
+                built = (STATIC_DIR / artifact).read_text(encoding='utf-8').replace('\r\n', '\n')
+                self.assertEqual(served, built)
 
     def test_control_layer_contracts_survive_compilation(self):
         script = self.client.get('/static/voice_test.js').text
