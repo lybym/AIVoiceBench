@@ -1270,4 +1270,4 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **需求/追踪。** PRD 升级到 1.5.3，更新 F005/F015/F016、Roadmap、Architecture、Model Management、Docker/API、LLM、Recording Backbone、Streaming ASR 与 traceability；创建 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 负责实际 loader/validator、SQLite migration、inline/TOS transport、Docker mount 与测试。#22 继续负责真实 Volcengine File ASR + speaker separation 证据，#85 继续作为真实录音最终 Gate。
 - **外部契约核对。** 本轮沿用并复核火山官方录音文件识别极速版/标准版/闲时版文档入口与 TOS Presigned URL 机制；实现时仍须按 AGENTS 重新在线核对当前 Provider API，不把 dated endpoint/resource 当永久产品常量。
 - **验证边界。** 本轮只修改文档与 example config，并创建 Issue；未修改应用代码、未执行真实 Volcengine/TOS 调用、未声称 software/container/browser/real-recording 状态升级。合并前应检查 Markdown 本地链接、YAML parse 与 diff scope。
-\n
+
