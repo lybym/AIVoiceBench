@@ -118,9 +118,13 @@ class ASRNativeDiarizationProvider:
         self.api_version = api_version
         self.resource_id = resource_id
         # Whether the *request contract* for speaker separation is verified is a
-        # different fact from whether a real call returned labels. This provider
-        # only reads labels that a verified request already returned, so as of this
-        # revision the contract stays pending and must be reported as such.
+        # different fact from whether a real call returned labels. It is derived
+        # from the resolved diarization route's profile (see
+        # ``volcengine_asr.speaker_separation_contract_status``) rather than
+        # hard-coded, so a verified Seed-standard configuration does not publish an
+        # internally inconsistent `interface_contract_pending`. This provider only
+        # reads labels a verified request already returned; it never upgrades the
+        # contract from the labels it happens to observe.
         self.contract_status = contract_status
 
     def diarize_from_transcript(self, transcript, *, audio_sha256, invocation_id=None,
@@ -175,6 +179,7 @@ class ASRNativeDiarizationProvider:
             'native_response_sha256': native_response_sha256,
         }
         labeled = [s for s in segments if s.native_speaker_id is not None]
+        contract_verified = self.contract_status == 'verified'
         processor = {
             'provider': self.provider,
             'model': self.model,
@@ -185,10 +190,7 @@ class ASRNativeDiarizationProvider:
                        'cloud_call_performed': False,
                        'interface_contract_status': self.contract_status,
                        'labeled_utterances_observed': bool(labeled),
-                       'note': 'Derived from an existing ASR native response; no additional request. '
-                               'Whether the service needs an explicit request property to enable '
-                               'speaker separation is unverified, so this reads labels only when the '
-                               'verified request happened to return them.'},
+                       'note': self._derivation_note(contract_verified)},
         }
         invocation = {
             'invocation_id': invocation_id,
@@ -203,13 +205,20 @@ class ASRNativeDiarizationProvider:
                 source=source, processor=processor, invocation=invocation, scope=scope)
 
         if not labeled:
-            # Speaker information was absent, or the verified request did not ask
-            # for it and the request contract for asking is still unverified.
+            # Speaker information was absent. With a verified request contract the
+            # switch was really sent and the service simply returned no labels;
+            # with a pending contract no unverified property was sent at all.
+            if contract_verified:
+                reason = ('ASR native response carried no speaker labels even though the '
+                          'speaker-separation request contract is verified for this profile '
+                          '(enable_speaker_info was sent); no label was invented')
+            else:
+                reason = ('ASR native response carried no speaker labels; the request contract for '
+                          'enabling speaker separation is unverified (interface_contract_pending), '
+                          'so no unverified request property was sent')
             return DiarizationResult(
                 speaker_segments=[], status='insufficient_evidence',
-                reason='ASR native response carried no speaker labels; the request contract for '
-                       'enabling speaker separation is unverified (interface_contract_pending), '
-                       'so no unverified request property was sent',
+                reason=reason,
                 source=source, processor=processor, invocation=invocation, scope=scope)
 
         reason = None
@@ -220,6 +229,20 @@ class ASRNativeDiarizationProvider:
             speaker_segments=segments, status='complete' if not unknown_count else 'partial',
             reason=reason, source=source, processor=processor,
             invocation=invocation, scope=scope)
+
+    @staticmethod
+    def _derivation_note(contract_verified):
+        """Describe the derivation honestly for the resolved profile's contract."""
+        if contract_verified:
+            return ('Derived from an existing ASR native response; no additional request. '
+                    'The request contract for speaker separation is verified for this profile '
+                    '(enable_speaker_info was sent), so labels are read when the service returns '
+                    'them; a verified request still does not guarantee labels, and no label is '
+                    'invented when they are absent.')
+        return ('Derived from an existing ASR native response; no additional request. '
+                'Whether the service needs an explicit request property to enable '
+                'speaker separation is unverified, so this reads labels only when the '
+                'verified request happened to return them.')
 
 
 class MockDiarizationProvider:

@@ -129,7 +129,6 @@ def _asr_invocation(run):
     a second cloud request occurred.
     """
     info = {'invocation_id': None, 'native_response_sha256': None}
-    recorded = json.loads(run.manifest.get('provider_invocations', 'null') or 'null')
     directory = run.directory / 'provider-calls'
     if not directory.is_dir():
         return info

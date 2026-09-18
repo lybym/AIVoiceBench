@@ -19,7 +19,8 @@ import re
 from pathlib import Path
 
 from .model_settings import (CAPABILITIES, LEGACY_CAPABILITIES, PROTOCOLS,
-                              validate_profile, apply_route_defaults)
+                              check_diarization_route, validate_profile,
+                              apply_route_defaults)
 from .tos_adapter import validate_storage_store
 from .validation import load_document
 
@@ -70,6 +71,13 @@ def load_providers_config(path):
         if selected is not None and (not isinstance(selected, str) or selected not in by_id
                 or not by_id[selected]['enabled'] or role not in by_id[selected]['capabilities']):
             raise ValueError(f'route {role} references a non-existent, disabled or incompatible profile')
+    # Speaker clustering reads labels from the File ASR call itself (PRD-F006), so
+    # the two routes may not diverge or the published contract status would
+    # describe a profile that never transcribes.
+    try:
+        check_diarization_route(by_id, routes)
+    except ValueError as error:
+        raise ValueError(f'providers config is inconsistent: {error}') from None
     document = {'schema_version': version, 'profiles': validated, 'routes': routes}
     document, _added = apply_route_defaults(document)
     return document

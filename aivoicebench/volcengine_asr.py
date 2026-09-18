@@ -26,9 +26,69 @@ STANDARD_SUBMIT_API = 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/subm
 STANDARD_QUERY_API = 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/query'
 STANDARD_POLL_SECONDS = 2
 
+# Closed File ASR contracts. Each documented (endpoint, resource_id) pair maps to
+# exactly one mode. The operator-declared ``file_mode`` in the resolved ASR profile
+# must agree with that pair; it can confirm the contract but never silently change
+# which one is billed and parsed.
+FILE_ASR_CONTRACTS = {
+    (FLASH_API, 'volc.bigasr.auc_turbo'): 'flash',
+    (STANDARD_SUBMIT_API, 'volc.seedasr.auc'): 'seed_standard',
+}
+FILE_ASR_MODES = ('flash', 'seed_standard')
+
 
 class PendingStandardJob(ProviderFailure):
     """The submitted Seed job is still queryable and must not be resubmitted."""
+
+
+def resolve_file_asr_mode(endpoint, resource_id, model='bigmodel', file_mode=None):
+    """Resolve one closed File ASR contract mode, failing closed on disagreement.
+
+    ``file_mode`` is the operator's explicit declaration from the resolved ASR
+    profile (PRD-F005/F016). It is authoritative *and* cross-checked: a declaration
+    that contradicts the documented ``(endpoint, resource_id)`` contract is a
+    configuration error and is refused, never silently overridden by inference.
+    When ``file_mode`` is absent the declared contract is inferred from the
+    documented pair, so configurations written before the parameter existed keep
+    working.
+    """
+    inferred = FILE_ASR_CONTRACTS.get((endpoint, resource_id))
+    if model != 'bigmodel' or inferred is None:
+        raise ProviderFailure(
+            'Unsupported ASR contract; configure a documented flash or Seed standard endpoint/model/resource')
+    if file_mode is None:
+        return inferred
+    if file_mode not in FILE_ASR_MODES:
+        raise ProviderFailure(f'file_mode must be one of {FILE_ASR_MODES}')
+    if file_mode != inferred:
+        raise ProviderFailure(
+            f'file_mode={file_mode} contradicts the documented {inferred} contract for this '
+            f'endpoint/resource; refusing to run with a silently inferred {inferred} mode')
+    return file_mode
+
+
+def speaker_separation_contract_status(endpoint, resource_id, model='bigmodel', file_mode=None):
+    """Report whether this profile's speaker-separation *request* contract is verified.
+
+    Only the Seed ASR 2.0 standard contract documents a verified
+    ``enable_speaker_info`` request property, so that is the only profile for which
+    the derived diarization document may claim a verified interface contract. An
+    unrecognised or contradictory profile reports ``interface_contract_pending``:
+    the native-label derivation performs no cloud call, so it must not fail a Run
+    by itself, and it must never claim a contract it cannot point at.
+    """
+    try:
+        mode = resolve_file_asr_mode(endpoint, resource_id, model, file_mode)
+    except ProviderFailure:
+        return 'interface_contract_pending'
+    return 'verified' if mode == 'seed_standard' else 'interface_contract_pending'
+
+
+def _canonical_json_bytes(value):
+    """Encode exactly as ``immutable_json`` writes, for byte-level comparison."""
+    return (json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, indent=2)
+            + '\n').encode('utf-8')
+
 
 # The exact request properties this adapter is allowed to send, because each one
 # is backed by an official documented property or example we could verify.
@@ -73,17 +133,16 @@ class VolcengineASRProvider:
     def __init__(self, root, api_key, *, model='bigmodel', endpoint=API,
                  resource_id='volc.bigasr.auc_turbo', timeout=300,
                  publication=None, transport=None,
-                 transport_config=None, storage_adapter_factory=None):
+                 transport_config=None, storage_adapter_factory=None,
+                 file_mode=None):
         # These are deliberately closed, documented contracts rather than an
         # arbitrary URL/resource pass-through.  Seed ASR 2.0 standard mode is
-        # asynchronous (submit then query); flash is synchronous.
-        contracts = {
-            (FLASH_API, 'volc.bigasr.auc_turbo'): 'flash',
-            (STANDARD_SUBMIT_API, 'volc.seedasr.auc'): 'seed_standard',
-        }
-        self.mode = contracts.get((endpoint, resource_id))
-        if model != 'bigmodel' or self.mode is None:
-            raise ProviderFailure('Unsupported ASR contract; configure a documented flash or Seed standard endpoint/model/resource')
+        # asynchronous (submit then query); flash is synchronous.  ``file_mode``
+        # is the resolved profile's explicit declaration (PRD-F005/F016): when it
+        # is present it must agree with the documented pair or the call is refused
+        # before any request is built.
+        self.mode = resolve_file_asr_mode(endpoint, resource_id, model, file_mode)
+        self.declared_file_mode = file_mode
         self.root, self.key = Path(root), api_key
         self.transport = transport or HTTPTransport(timeout)
         # transport_config selects inline Base64 vs object-storage URL transport
@@ -116,20 +175,31 @@ class VolcengineASRProvider:
         # recognition until the synchronous service has consumed that object.
         from .run_lock import run_lock
         with run_lock(self.root.parent / 'cloud-publication'):
-            pending = self._pending_standard_audit()
+            pending = self._pending_standard_audit(mono_wav)
             if pending is not None:
                 return self._recover_standard_job(pending)
             return self._transcribe(mono_wav)
 
-    def _pending_standard_audit(self):
-        """Find one locally recorded Seed submission without a final result.
+    def _pending_standard_audit(self, mono_wav):
+        """Find one locally recorded Seed submission for **this** recording.
 
         Standard ASR is submit-then-poll.  If a worker is interrupted after the
         submit succeeds, recovering that request ID is safer than submitting the
         same recording again.
+
+        Recovery is scoped to the current input audio, not to the run directory.
+        ``start.json`` records the exact provider input (path + sha256) that was
+        submitted, so a match on the audio digest proves the pending job belongs to
+        the recording being transcribed now.  Matching on ``resource_id`` alone
+        would let a *different* recording's still-pending job be recovered and its
+        transcript filed as this recording's result — the recovered bytes really
+        are that other recording's speech.  A pending job for a different
+        recording is therefore skipped, not reused: this recording is submitted
+        normally and the other job stays queryable.
         """
         if self.mode != 'seed_standard':
             return None
+        audio_sha256 = hashlib.sha256(Path(mono_wav).read_bytes()).hexdigest()
         for directory in (self.root / 'provider-calls').glob('CALL-*'):
             request = directory / 'request.json'
             if (directory / 'result.json').exists() or not request.exists():
@@ -137,11 +207,39 @@ class VolcengineASRProvider:
             try:
                 snapshot = json.loads(request.read_text(encoding='utf-8'))
                 start = json.loads((directory / 'start.json').read_text(encoding='utf-8'))
-                if snapshot.get('request_id') and start.get('config', {}).get('resource_id') == self.config['resource_id']:
+                submitted = {artifact.get('sha256')
+                             for artifact in start.get('input_artifacts', [])
+                             if isinstance(artifact, dict)}
+                if (snapshot.get('request_id')
+                        and start.get('config', {}).get('resource_id') == self.config['resource_id']
+                        and audio_sha256 in submitted):
                     return directory, snapshot['request_id'], start
             except (OSError, ValueError, KeyError):
                 continue
         return None
+
+    def _record_recovery_evidence(self, path, content, outputs):
+        """File one recovery artifact idempotently; never overwrite different evidence.
+
+        A worker can be interrupted after a recovery wrote ``native-response.json``
+        (or the response-status record) but before the terminal ``result.json``
+        existed.  Re-querying the same request ID then returns the same bytes, so an
+        existing byte-identical file is accepted as idempotent success and is not
+        filed twice.  Different bytes mean the provider returned something other
+        than the retained evidence; replacing it would destroy that evidence, so the
+        mismatch fails explicitly instead.
+        """
+        path = Path(path)
+        if path.exists():
+            if path.read_bytes() != content:
+                raise ProviderFailure(
+                    'Existing recovery evidence differs from the re-queried provider response; '
+                    'refusing to overwrite it')
+        else:
+            with path.open('xb') as stream:
+                stream.write(content)
+        if path not in outputs:
+            outputs.append(path)
 
     def _recover_standard_job(self, pending):
         directory, request_id, record = pending
@@ -156,12 +254,10 @@ class VolcengineASRProvider:
             prior = len(list(directory.glob('native-query-*.json')))
             reply = self._poll_standard(headers, request_id, audit, outputs, prior)
             raw = directory / 'native-response.json'
-            with raw.open('xb') as stream:
-                stream.write(reply.body)
-            outputs.append(raw)
+            self._record_recovery_evidence(raw, reply.body, outputs)
             status = directory / 'response-status.json'
-            immutable_json(status, {'http_status': reply.status, 'status_code': reply.headers.get('x-api-status-code')})
-            outputs.append(status)
+            self._record_recovery_evidence(status, _canonical_json_bytes(
+                {'http_status': reply.status, 'status_code': reply.headers.get('x-api-status-code')}), outputs)
             audit.finish('complete', outputs)
             return ProviderOutput(self.profile, [reply.body.decode('utf-8')])
         except PendingStandardJob:
