@@ -1,5 +1,5 @@
 # AIVoiceBench Core Configuration
-# TARGET SCHEMA tracked by Issue #87, implemented by PR #90 in v0.5.0-alpha.1.
+# TARGET SCHEMA tracked by Issue #87, implemented by PR #90 in v0.5.0.
 # The code now consumes these external-file keys; real TOS path is pending main-line verification.
 # Provider/model and object-storage settings are deliberately externalized.
 # Copy the example files to server-owned runtime paths and mount them read-only.
