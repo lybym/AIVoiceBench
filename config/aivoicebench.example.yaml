@@ -1,4 +1,6 @@
 # AIVoiceBench Core Configuration
+# TARGET SCHEMA tracked by Issue #87. Current v0.4.0 code may not consume these
+# external-file keys until the implementation PR lands.
 # Provider/model and object-storage settings are deliberately externalized.
 # Copy the example files to server-owned runtime paths and mount them read-only.
 #
