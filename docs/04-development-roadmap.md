@@ -23,11 +23,11 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 ## 2. 当前基线
 
-代码实现基线仍是 `v0.4.0@9632844`；2026-09-16/17 的组件、部署和 Browser Station TypeScript 决策只更新路线，不自动升级实现状态。
+代码实现基线仍是 `v0.4.0@9632844`（稳定版）；`main` 已合入 #86/#89/#90（software_verified），正以 `release/v0.5.0-alpha.1` 准备预览版，稳定基线与真实验收状态不因预发布自动升级。
 
 | 范围 | 当前事实 | 明确缺口 |
 | --- | --- | --- |
-| Recording Analysis | 导入、标准化、云 File ASR、聚类/归属、融合，以及有角色证据时的 Turn/Event/Metric 主链已有 | 当前 Provider 配置仍由 SQLite/旧路径管理且 File ASR 仍依赖固定 URL publication；#87 外置配置 + inline/TOS transport、真实火山 speaker separation、Judge/Findings、人工修订、wavesurfer、完整报告和真实录音验收未闭环 |
+| Recording Analysis | 导入、标准化、云 File ASR、聚类/归属、融合，以及有角色证据时的 Turn/Event/Metric 主链已有 | #87 外置配置 + inline/TOS transport 已由 #90 实现（software_verified，真实 TOS 路径待 main 线验证）；真实火山 speaker separation（#22）、Judge/Findings、人工修订、wavesurfer、完整报告和真实录音验收（#85）未闭环 |
 | Browser Station implementation | 当前 `aivoicebench/static/` 使用 HTML/CSS/Vanilla JS，核心 JS 入口为 `app.js`、`models.js`、`voice_test.js`、`pcm_capture_worklet.js` | TypeScript toolchain、等价迁移、typecheck/build、Docker 静态交付与 browser/container 回归尚未完成（#84） |
 | Fixed Voice Test | 浏览器播放、麦克风、Control RMS VAD、WebSocket 控制、Turn ID、超时、停止和迟到事件防护已有 | TEN VAD Browser Adapter、Frozen Golden Voice、Measurement Audio、条件 Barge-in、设备设置快照和实体设备验收未闭环 |
 | Free Voice Test | AudioWorklet 在设备回答阶段把 PCM 送入 Streaming ASR；partial/final、Agent 下一轮和显式 File ASR fallback 已有 | 不是跨整次 Run 的 durable Measurement Audio；真实云/设备、预算、Coverage、Barge-in 与 Streaming TTS 未完成 |
