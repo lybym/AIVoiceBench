@@ -394,6 +394,7 @@ const VT = (function () {
     return Object.assign({}, integrity);
   }
 
+  /** Send one control/observation message for this run; false when it cannot be sent. */
   function wsSend(run: VoiceRun | null, payload: ControlObservationMessage): boolean {
     if (!run || !run.ws || run.ws.readyState !== WebSocket.OPEN) return false;
     try {
@@ -471,7 +472,7 @@ const VT = (function () {
     // or playback.
     fetch(`/api/voice-test/sessions/${run.sessionId}/stop`, { method: 'POST' }).catch(() => {});
     // Best effort only: a missing backend must never keep the UI from stopping.
-    wsSend(run, { type: 'capture_result', turn_id: run.turnId, stream_id: null, reason: 'user_stop' });
+    wsSend(run, { type: 'stop' });
     const socket = run.ws;
     setTimeout(() => { if (run.ws === socket) closeSocket(run); }, 250);
   }
@@ -1366,7 +1367,7 @@ const VT = (function () {
       run.socketState = 'open';
       setRunningButtons('fixed', true);
       updateStatus('正在启动…');
-      wsSend(run, { type: 'capture_result', turn_id: null, stream_id: null, reason: 'start' });
+      wsSend(run, { type: 'start' });
     };
 
     socket.onmessage = (event: MessageEvent) => {
@@ -1468,7 +1469,7 @@ const VT = (function () {
       run.socketState = 'open';
       setRunningButtons('free', true);
       updateStatus('正在生成第一句话术…');
-      wsSend(run, { type: 'capture_result', turn_id: null, stream_id: null, reason: 'start' });
+      wsSend(run, { type: 'start' });
     };
 
     socket.onmessage = (event: MessageEvent) => {

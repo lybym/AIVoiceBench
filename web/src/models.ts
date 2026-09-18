@@ -315,6 +315,8 @@ interface VadDiagnosticsMessage {
 
 /** Control events the page reports to the server for the turn it is observing. */
 type ControlObservationMessage =
+  | { type: 'start' }
+  | { type: 'stop' }
   | CaptureStartedMessage
   | CaptureStoppedMessage
   | { type: 'playback_started'; turn_id: string | null }
