@@ -39,9 +39,69 @@ DEFAULT_PRE_ROLL_MS = 0.0
 DEFAULT_POST_ROLL_MS = 0.0
 SILENCE_FLOOR = 1e-7  # guard against log(0) in a fully silent recording
 
+# Named acoustic sensitivity profiles. `canonical` IS the measurement policy used
+# for recorded metrics. Any other profile exists only to *evaluate* whether the
+# canonical threshold missed quiet device speech, and every document produced with
+# one carries an explicit `is_canonical_measurement_policy: false` marker so a
+# comparison run can never be mistaken for the canonical measurement.
+CANONICAL_SENSITIVITY = 'canonical'
+SENSITIVITY_PROFILES = {
+    'canonical': {
+        'threshold_factor': DEFAULT_THRESHOLD_FACTOR,
+        'min_speech_ms': DEFAULT_MIN_SPEECH_MS,
+        'min_silence_ms': DEFAULT_MIN_SILENCE_MS,
+        'merge_gap_ms': DEFAULT_MERGE_GAP_MS,
+        'pre_roll_ms': DEFAULT_PRE_ROLL_MS,
+        'post_roll_ms': DEFAULT_POST_ROLL_MS,
+    },
+    'quiet_device': {
+        # Diagnostic profile for low-volume device responses: a lower active-range
+        # threshold plus roll to keep a quiet onset that the canonical threshold
+        # would drop. Not a measurement policy.
+        'threshold_factor': 0.05,
+        'min_speech_ms': 60.0,
+        'min_silence_ms': 300.0,
+        'merge_gap_ms': 150.0,
+        'pre_roll_ms': 100.0,
+        'post_roll_ms': 150.0,
+    },
+}
+
 
 class AcousticError(ValueError):
     """A locally authored safe failure; native diagnostics stay in caller logs."""
+
+
+def resolve_sensitivity(profile=None, overrides=None):
+    """Resolve one named sensitivity profile plus explicit parameter overrides.
+
+    Returns the resolved parameters together with their provenance, so the
+    acoustic document records *why* these boundaries were produced and whether
+    they are the canonical measurement policy.
+    """
+    name = profile or CANONICAL_SENSITIVITY
+    if name not in SENSITIVITY_PROFILES:
+        raise AcousticError('Unknown acoustic sensitivity profile: ' + str(name))
+    parameters = dict(SENSITIVITY_PROFILES[name])
+    applied = {}
+    for key, value in (overrides or {}).items():
+        if key not in parameters:
+            raise AcousticError('Unknown acoustic sensitivity override: ' + str(key))
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise AcousticError('Acoustic sensitivity overrides must be finite and non-negative: ' + key)
+        parameters[key] = value
+        applied[key] = value
+    canonical = name == CANONICAL_SENSITIVITY and not applied
+    return {
+        'profile': name,
+        'parameters': parameters,
+        'overrides': applied,
+        'is_canonical_measurement_policy': canonical,
+        'note': ('Canonical acoustic measurement policy.' if canonical else
+                 'Non-canonical acoustic sensitivity: produced for evaluating quiet '
+                 'device coverage. Results from this profile must not be reported as '
+                 'the canonical measurement.'),
+    }
 
 
 @dataclass
@@ -219,7 +279,8 @@ class EnergyVadSegmenter:
                  min_silence_ms=DEFAULT_MIN_SILENCE_MS,
                  merge_gap_ms=DEFAULT_MERGE_GAP_MS,
                  pre_roll_ms=DEFAULT_PRE_ROLL_MS,
-                 post_roll_ms=DEFAULT_POST_ROLL_MS):
+                 post_roll_ms=DEFAULT_POST_ROLL_MS,
+                 sensitivity=None):
         if frame_ms <= 0 or hop_ms <= 0 or hop_ms > frame_ms:
             raise AcousticError('frame_ms must be positive and >= hop_ms')
         if not 0 < threshold_factor < 1:
@@ -236,6 +297,17 @@ class EnergyVadSegmenter:
         self.merge_gap_ms = merge_gap_ms
         self.pre_roll_ms = pre_roll_ms
         self.post_roll_ms = post_roll_ms
+        # Provenance of the sensitivity actually used. Defaults to the canonical
+        # measurement policy; a caller-supplied record marks a comparison run.
+        self.sensitivity = sensitivity or resolve_sensitivity(CANONICAL_SENSITIVITY)
+
+    @classmethod
+    def from_profile(cls, profile=None, overrides=None, frame_ms=DEFAULT_FRAME_MS,
+                     hop_ms=DEFAULT_HOP_MS):
+        """Build a segmenter from a named sensitivity profile (plus overrides)."""
+        resolved = resolve_sensitivity(profile, overrides)
+        return cls(frame_ms=frame_ms, hop_ms=hop_ms, sensitivity=resolved,
+                   **resolved['parameters'])
 
     @property
     def method(self):
@@ -291,6 +363,12 @@ class EnergyVadSegmenter:
             'method': self.method,
             'processor_version': self.processor_version,
             'parameters': params,
+            'sensitivity': {
+                'profile': self.sensitivity['profile'],
+                'overrides': dict(self.sensitivity['overrides']),
+                'is_canonical_measurement_policy': self.sensitivity['is_canonical_measurement_policy'],
+                'note': self.sensitivity['note'],
+            },
         }
 
         if not energies:

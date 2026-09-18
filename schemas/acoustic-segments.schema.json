@@ -115,6 +115,33 @@
             "min_silence_ms"
           ],
           "additionalProperties": false
+        },
+        "sensitivity": {
+          "description": "Which acoustic sensitivity produced these boundaries, and whether it is the canonical measurement policy. Optional and additive: documents written before this field existed remain valid, and a non-canonical profile is explicitly marked so a quiet-device comparison run is never mistaken for the canonical measurement.",
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "minLength": 1
+            },
+            "overrides": {
+              "type": "object"
+            },
+            "is_canonical_measurement_policy": {
+              "type": "boolean"
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "profile",
+            "overrides",
+            "is_canonical_measurement_policy",
+            "note"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
