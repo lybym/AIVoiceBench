@@ -183,12 +183,32 @@ def _fusion_with_speakers(run, acoustic_doc, transcript_doc, diarization_doc,
     """Fuse acoustic segments with ASR transcript, diarization and role attribution.
 
     speaker_id comes from diarization.
-    speaker_role comes from source attribution (explicit/semantic/human/none).
+    speaker_role comes from source attribution (explicit/human/none).
     They are separate fields — never conflated.
+
+    The acoustic↔speaker-span alignment is computed once from the real acoustic
+    document (so the low-energy diagnostics have frame statistics), validated
+    against its own schema, and published as a registered artifact. The
+    assignment or abstention of every fused segment is therefore traceable to
+    recorded overlap/coverage facts instead of an implicit calculation.
     """
+    from .alignment import align_speaker_spans
     from .fusion import fuse, apply_speakers
+    from .validation import schema_errors
+
+    alignment_doc = align_speaker_spans(acoustic_doc, diarization_doc,
+                                        transcript_doc=transcript_doc)
+    errors = schema_errors(alignment_doc, 'speaker-alignment')
+    if errors:
+        raise ValueError('Invalid speaker alignment document: ' + '\n'.join(errors))
+    alignment_path = run.analysis / 'alignment.json'
+    write_json(alignment_path, alignment_doc)
+    alignment_id = run.register(
+        alignment_path, 'speaker-alignment', parent_ids,
+        'alignment:' + alignment_doc['processor']['version'])
+
     fused_doc = fuse(acoustic_doc, transcript_doc)
-    apply_speakers(fused_doc, diarization_doc, attribution_doc)
+    apply_speakers(fused_doc, diarization_doc, attribution_doc, alignment_doc)
 
     status = fused_doc['status']
     output = run.envelope('fused-segments', status,
@@ -196,16 +216,33 @@ def _fusion_with_speakers(run, acoustic_doc, transcript_doc, diarization_doc,
                           _envelope_data(fused_doc, status), parent_ids)
     run.manifest['stages']['fusion']['processor'] = {
         'name': 'fusion', 'version': '1.0.0',
-        'strategy': fused_doc.get('attribution', {}).get('strategy', 'unknown')
+        'strategy': fused_doc.get('attribution', {}).get('strategy', 'unknown'),
+        'alignment': {
+            'document_id': alignment_doc['document_id'],
+            'status': alignment_doc['status'],
+            'policy_version': alignment_doc['policy']['policy_version'],
+            'processor_version': alignment_doc['processor']['version'],
+        },
     }
     reason = None if status == 'complete' else fused_doc.get('reason') or 'Speaker clusters unresolved'
-    return [output], fused_doc, reason
+    # The alignment document is published before the fusion envelope so a reader
+    # enumerating stage outputs finds the evidence behind the decision first.
+    return [alignment_id, output], fused_doc, reason
 
 
 def _acoustic(run, normalized_path, parent):
-    """Run energy VAD acoustic segmentation on the normalized audio."""
+    """Run energy VAD acoustic segmentation on the normalized audio.
+
+    The sensitivity profile is resolved from configuration and recorded in the
+    document. The default is the canonical measurement policy; a non-canonical
+    profile (for evaluating quiet device responses) is marked as such, so it can
+    never be silently presented as the canonical measurement.
+    """
+    import os
+
     from .acoustic import EnergyVadSegmenter
-    segmenter = EnergyVadSegmenter()
+    profile = os.environ.get('AIVOICEBENCH_ACOUSTIC_PROFILE') or None
+    segmenter = EnergyVadSegmenter.from_profile(profile)
     result = segmenter.segment(Path(normalized_path).resolve())
     doc = result.to_dict()
     status = doc['status']
@@ -214,7 +251,8 @@ def _acoustic(run, normalized_path, parent):
                           _envelope_data(doc, status), [parent])
     run.manifest['stages']['acoustic']['processor'] = {
         'name': 'energy_vad', 'version': '1.0.0',
-        'method': 'energy_vad', 'parameters': doc.get('processor', {}).get('parameters', {})
+        'method': 'energy_vad', 'parameters': doc.get('processor', {}).get('parameters', {}),
+        'sensitivity': doc.get('processor', {}).get('sensitivity'),
     }
     return [output], doc, None if doc['segments'] else 'No speech segments detected'
 

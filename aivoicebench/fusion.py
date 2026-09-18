@@ -256,7 +256,7 @@ def _role_lookup(attribution_doc):
     return lookup
 
 
-def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
+def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None, alignment_doc=None):
     """Attach diarization speaker clusters and attribution roles to fused segments.
 
     Speaker clustering (which segments share a speaker) and source attribution
@@ -264,16 +264,29 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
     copies evidence that exists; it never infers a role from speaker order,
     speaker count, or which cluster spoke first.
 
-    When one acoustic segment overlaps several speaker clusters, the segment is
-    split at the cluster boundaries so each part keeps its own speaker evidence.
-    If the overlapping clusters conflict in time (mutually exclusive labels for
-    the same instant), the segment abstains: speaker_id stays null and the
-    candidates are recorded for review. A whole segment is never blanket-assigned
-    to "the most overlapping" speaker, and the ASR text is never handed to a
-    speaker because that speaker's piece happened to be the longest.
+    The acoustic↔speaker-span decision is delegated to the deterministic
+    alignment policy in ``alignment.py``: every acoustic segment is classified as
+    ``unmatched``, ``single_cluster``, ``multi_cluster`` or ``conflict`` from its
+    overlap/coverage facts. This function only materialises that decision, so one
+    policy owns the overlap rule instead of two implementations drifting apart.
+
+    When one acoustic segment overlaps several clusters, the segment is split at
+    the cluster boundaries so each part keeps its own speaker evidence. If the
+    overlapping clusters conflict in time (mutually exclusive labels for the same
+    instant), the segment abstains: speaker_id stays null and the candidates are
+    recorded for review. A whole segment is never blanket-assigned to "the most
+    overlapping" speaker, and the ASR text is never handed to a speaker because
+    that speaker's piece happened to be the longest.
+
+    ``alignment_doc`` lets the caller pass the alignment computed against the real
+    acoustic document (which carries frame statistics for the low-energy
+    diagnostics). When omitted, an equivalent alignment is derived from the fused
+    segments so direct callers still use the same policy.
 
     Mutates and returns fused_doc.
     """
+    from .alignment import align_speaker_spans, alignment_for
+
     segments = fused_doc.get('segments', [])
     speaker_segments = (diarization_doc or {}).get('speaker_segments') or []
     roles = _role_lookup(attribution_doc)
@@ -298,6 +311,20 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
         'speaker_role from attribution. Multi-speaker acoustic segments are split or '
         'abstained, never assigned to the largest overlap.')
 
+    if alignment_doc is None:
+        alignment_doc = align_speaker_spans(
+            {'document_id': None,
+             'source': {'sha256': fused_doc.get('source', {}).get('audio_sha256')},
+             'segments': [{'segment_id': seg.get('acoustic_segment_id') or seg['segment_id'],
+                           'start_ms': seg['start_ms'], 'end_ms': seg['end_ms'],
+                           'confidence': seg.get('acoustic_boundary_confidence'),
+                           'uncertainty_ms': seg.get('acoustic_uncertainty_ms')}
+                          for seg in segments]},
+            diarization_doc)
+    entries = alignment_for(fused_doc, alignment_doc)
+    speaker_order = {speaker.get('segment_id'): index
+                     for index, speaker in enumerate(speaker_segments)}
+
     output = []
     abstained = 0
     unattributed = list(fused_doc.get('unattributed_texts') or [])
@@ -307,32 +334,26 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
             output.append(seg)
             continue
 
-        clipped = []
-        for speaker in speaker_segments:
-            overlap = min(end, speaker['end_ms']) - max(start, speaker['start_ms'])
-            if overlap > 0:
-                clipped.append({
-                    'start_ms': max(start, speaker['start_ms']),
-                    'end_ms': min(end, speaker['end_ms']),
-                    'speaker_id': speaker['speaker_id'],
-                    'confidence': speaker.get('confidence'),
-                })
-        if not clipped:
+        entry = entries.get(seg.get('acoustic_segment_id') or seg.get('segment_id'))
+        if entry is None or entry['state'] == 'unmatched':
             output.append(seg)
             continue
 
-        candidates = {}
-        for item in clipped:
-            key = item['speaker_id']
-            candidates[key] = max(candidates.get(key, 0.0), item['end_ms'] - item['start_ms'])
-        seg['speaker_candidates'] = [
-            {'speaker_id': key, 'overlap_ms': value}
-            for key, value in sorted(candidates.items(), key=lambda kv: (-kv[1], kv[0]))
-        ]
+        seg['speaker_candidates'] = [{'speaker_id': candidate['speaker_id'],
+                                      'overlap_ms': candidate['overlap_ms']}
+                                     for candidate in entry['speaker_candidates']]
+        # Rebuild the overlapping spans in speaker-output order: when one cluster
+        # covers the segment through several spans, the assignment keeps the
+        # provider confidence of that cluster's first reported span.
+        spans = sorted(({'start_ms': item['overlap_start_ms'], 'end_ms': item['overlap_end_ms'],
+                         'speaker_id': item['speaker_id'], 'confidence': item['cluster_confidence'],
+                         'alignment': item} for item in entry['speaker_matches']),
+                       key=lambda item: speaker_order.get(item['alignment']['speaker_segment_id'],
+                                                          len(speaker_order)))
 
-        if len(candidates) == 1:
-            speaker_id = next(iter(candidates))
-            _assign_speaker(seg, speaker_id, clipped[0]['confidence'], roles, 'single_overlap')
+        if entry['state'] == 'single_cluster':
+            speaker_id = entry['matched_speaker_id']
+            _assign_speaker(seg, speaker_id, spans[0]['confidence'], roles, 'single_overlap')
             if seg.get('text'):
                 seg['text_attribution'] = 'single_segment'
             output.append(seg)
@@ -340,13 +361,7 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
 
         # Conflicting clusters: two differently labeled speaker segments claim the
         # same instant. That is a clustering contradiction, not a close call.
-        ordered = sorted(clipped, key=lambda item: (item['start_ms'], item['end_ms']))
-        conflict = any(
-            ordered[i]['end_ms'] > ordered[i + 1]['start_ms']
-            and ordered[i]['speaker_id'] != ordered[i + 1]['speaker_id']
-            for i in range(len(ordered) - 1)
-        )
-        if conflict:
+        if entry['state'] == 'conflict':
             abstained += 1
             seg['speaker_id'] = None
             seg['speaker_role'] = 'unknown'
@@ -364,6 +379,8 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None):
             continue
 
         # Non-conflicting: split the acoustic segment at cluster boundaries.
+        ordered = sorted(spans, key=lambda item: (item['start_ms'], item['end_ms'],
+                                                  item['speaker_id']))
         pieces, attribution, text = _split_by_speaker(seg, ordered, roles, native_to_local)
         if text and attribution == 'ambiguous_spans_speakers':
             unattributed.append(_unattributed(seg))
