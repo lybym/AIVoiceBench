@@ -23,7 +23,7 @@ Online Event Producer                 Offline Event Producer
 
 ## 当前实现边界
 
-`v0.5.0-alpha.1` 预览版在 `v0.4.0` 稳定版之上合入 #86（Audio QA 条件）、#89（录音 Artifact 链隔离）与 #90（外置配置 + File ASR transport），均 software_verified；`v0.4.0` 正式版本身收敛基于 `v0.4.0-alpha.6` 候选、语义角色归属与 main 的双正式测量 Pipeline 文档：
+`v0.5.0` 在 `v0.4.0` 稳定版之上合入 #86（Audio QA 条件）、#89（录音 Artifact 链隔离）与 #90（外置配置 + File ASR transport），均 software_verified；`v0.4.0` 正式版本身收敛基于 `v0.4.0-alpha.6` 候选、语义角色归属与 main 的双正式测量 Pipeline 文档：
 
 - Recording Analysis 已具备录音导入、标准化、部分声学/ASR/归属/融合、待复核的语义角色提议，以及有足够角色证据时的 Timeline 和 canonical metrics；Judge、Findings、人工修订、完整报告与真实录音验收仍未闭环。
 - Active Voice Test 已具备浏览器播放、Control RMS VAD、Streaming ASR、Fixed/Free 控制与 execution record 基础；跨整次 Active Run 的 durable Measurement Audio、Stimulus Alignment、Streaming Acoustic Measurement、Canonical Live Timeline 和正式 Active MetricResult 仍为 planned。
@@ -45,9 +45,9 @@ Online Event Producer                 Offline Event Producer
 
 ## 交付形态
 
-当前正式交付为 Docker 后端与前端，通过 Windows 浏览器访问；不要求 Windows EXE/安装包。Docker 内包含媒体处理依赖，运行数据通过持久卷保存。Browser Station 的 TypeScript 目标仍编译为普通浏览器 JavaScript 静态产物，由现有 FastAPI/Docker 交付链服务，不改变 `Linux Server + Docker Backend + Remote Chrome Browser Station` 的正式拓扑。`v0.4.0` 稳定版的启动命令、附件和 SHA-256 以 [Docker/API 文档](docs/20-docker-api.md) 与 [发布说明](docs/releases/0.4.0.md) 为准；`v0.5.0-alpha.1` 预览版见 [发布说明](docs/releases/0.5.0-alpha.1.md)（预览版不接管 `Latest`）。
+当前正式交付为 Docker 后端与前端，通过 Windows 浏览器访问；不要求 Windows EXE/安装包。Docker 内包含媒体处理依赖，运行数据通过持久卷保存。Browser Station 的 TypeScript 目标仍编译为普通浏览器 JavaScript 静态产物，由现有 FastAPI/Docker 交付链服务，不改变 `Linux Server + Docker Backend + Remote Chrome Browser Station` 的正式拓扑。`v0.5.0` 稳定版的启动命令、附件和 SHA-256 以 [Docker/API 文档](docs/20-docker-api.md) 与 [发布说明](docs/releases/0.5.0.md) 为准；`v0.5.0-alpha.1` 预览版仍保留为历史候选记录。
 
-默认部署面向可信单用户 localhost。模型和语音服务凭据只由后端持有，不进入浏览器、Git、运行快照或报告；保存配置不等于服务连通或真实效果已经验证。2026-09-18 的目标配置进一步把 Judge/LLM、File ASR、Streaming ASR、TTS 的非敏感参数外置到服务器 `providers.yaml`，把对象存储参数外置到独立 `storage.yaml`，长期 secret 只保留 env/secret reference；该迁移由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 跟踪并已由 PR #90 在 `v0.5.0-alpha.1` 实现（software_verified）；真实 TOS 路径待 main 线验证，SQLite/固定 Signed URL 仅作 legacy 兼容层。
+默认部署面向可信单用户 localhost。模型和语音服务凭据只由后端持有，不进入浏览器、Git、运行快照或报告；保存配置不等于服务连通或真实效果已经验证。2026-09-18 的目标配置进一步把 Judge/LLM、File ASR、Streaming ASR、TTS 的非敏感参数外置到服务器 `providers.yaml`，把对象存储参数外置到独立 `storage.yaml`，长期 secret 只保留 env/secret reference；该迁移由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 跟踪并已由 PR #90 在 `v0.5.0` 实现（software_verified）；真实 TOS 路径待后续真实验收，SQLite/固定 Signed URL 仅作 legacy 兼容层。
 
 ## 验证原则
 
