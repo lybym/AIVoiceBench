@@ -126,8 +126,8 @@ def validate_profile(p):
     # transport parameter cannot silently change a TTS or judge request.
     if p['protocol']=='volcengine_asr':
         file_mode=params.get('file_mode','flash')
-        if file_mode!='flash':
-            raise SettingsError('当前只支持极速版 File ASR（file_mode=flash）')
+        if file_mode not in ('flash','seed_standard'):
+            raise SettingsError('File ASR 的 file_mode 必须为 flash 或 seed_standard')
         audio_transport=params.get('audio_transport','auto')
         if audio_transport not in AUDIO_TRANSPORT_MODES:
             raise SettingsError('audio_transport 必须为 inline、object_storage 或 auto')

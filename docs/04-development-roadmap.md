@@ -19,7 +19,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 - Speaker separation：优先使用火山 ASR 原生 speaker labels，当前不接 3D-Speaker；
 - Evidence UI：wavesurfer.js；
 - Windows Native：不作为正式交付方向。
-- Provider/Storage 配置：目标改为服务器侧外置 `providers.yaml` + `storage.yaml`，由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 实现；File ASR P0 默认极速版 HTTP，小文件 inline Base64，大文件私有 TOS + Presigned GET。
+- Provider/Storage 配置：服务器侧外置 `providers.yaml` + `storage.yaml` 已由 #87/PR #90 实现；Recording File ASR 目标默认豆包 Seed ASR 2.0 `volc.seedasr.auc` 异步 submit/query，小文件 inline Base64，大文件私有 TOS + Presigned GET。
 
 ## 2. 当前基线
 
@@ -44,7 +44,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 4. File ASR 极速版实现 `inline | object_storage | auto`：默认 `auto`，初始 inline 阈值 15 MiB 且可配置；
 5. 小文件使用 `audio.data` Base64，不要求 Storage；大文件由 Backend 直接上传私有 TOS，生成短期 Presigned GET 作为 `audio.url`，完成后清理并保留 lifecycle backstop；
 6. 移除生产路径对 `AIVOICEBENCH_AUDIO_PUT_URL/GET_URL/HOST` 的依赖；SQLite model settings 与外置配置不得形成两个静默 source of truth；
-7. 标准版/闲时版仅保留未来 Provider mode 扩展点，不在本切片实现。
+7. #87 本切片不实现标准版/闲时版；后续 Seed standard 异步恢复与 partial evidence 由 #93 独立跟踪，闲时版仍保留未来扩展点。
 
 阶段出口：fresh Docker deployment 可仅凭外置 provider/storage 配置和 backend secret env 完成配置解析；小 File ASR 不配置 TOS 也可运行 inline，大文件明确选择 TOS URL transport；所有配置冲突、缺失与 secret redaction 可审计。
 
@@ -55,6 +55,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 3. Attribution 继续把 `speaker_N` 映射到 tester/device/unknown，禁止按顺序猜角色；
 4. 真实 5–20 分钟 AI 玩具录音验证 speaker coverage、冲突、abstention 和角色复核工作量；
 5. 未达到要求再建立独立 diarization Provider 选型任务；当前不引入 3D-Speaker。
+6. #93 完成 Seed standard submit/query、既有 job 恢复和 partial transcript/speaker evidence 传播；#94 完成 acoustic segment ↔ ASR speaker span 的可审计对齐、低音量设备 coverage 与无指标解释；#95 提供用户人工角色确认、revision、重分析和正式报告 Gate，禁止 LLM 角色判断。
 
 阶段出口：至少一批真实录音可以从 File ASR speaker labels 进入 Attribution/Fusion，且 unknown/conflict 行为可审计。
 

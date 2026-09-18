@@ -20,5 +20,10 @@
 - Evidence first: no invented timing, speaker roles, semantic proof, internal latency or verified root cause. Separate synthetic, imported and physical-device evidence.
 - One logical Issue/branch/PR; minimize dependency chains. Do not merge without explicit user authorization. Preserve unrelated worktrees/rebases and user changes.
 - Never commit credentials, real private recordings or generated personal reports. Verify current official provider APIs before implementation; no hard-coded historical model/voice assumptions.
+- For asynchronous paid providers, persist the provider request/job ID before polling. Resume an unfinished invocation by querying that ID before any resubmission; never hide a second billable submit behind retry/restart behavior.
+- Poll-window exhaustion for an asynchronous job is a recoverable pending state, not a terminal failure. Keep the job queryable across resume/restart until the provider returns a terminal status or an explicit user action authorizes a new submit.
+- A `partial` ASR result may still contain valid utterance, timestamp and anonymous speaker-label evidence. Preserve usable evidence plus explicit gaps; do not discard the whole transcript or block downstream diarization solely because the stage is not `complete`.
+- Recording Analysis must not use an LLM to assign tester/device roles. Preserve anonymous speaker clusters, wait for an explicit user mapping, store it as a new revision, and run role-dependent metrics/final reporting only after that manual decision.
+- Acoustic boundaries and ASR speaker spans remain independent evidence. Alignment must record overlap/coverage and retain unmatched, conflict and unknown states; never copy the nearest role merely to populate metrics.
 - Run checks appropriate to the change, document results/limitations in docs/06-work-log.md, commit/push and open a PR. Do not claim an unrun test or deployment. Documentation-only changes need link/requirement-ID/evidence-reference checks, not redundant audio tests or a Docker release.
 - Deliver Docker backend/frontend for Windows-browser use, not a Windows executable. Product acceptance remains the PRD gate.

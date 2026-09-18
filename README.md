@@ -25,7 +25,8 @@ Online Event Producer                 Offline Event Producer
 
 `v0.5.0` 在 `v0.4.0` 稳定版之上合入 #86（Audio QA 条件）、#89（录音 Artifact 链隔离）与 #90（外置配置 + File ASR transport），均 software_verified；`v0.4.0` 正式版本身收敛基于 `v0.4.0-alpha.6` 候选、语义角色归属与 main 的双正式测量 Pipeline 文档：
 
-- Recording Analysis 已具备录音导入、标准化、部分声学/ASR/归属/融合、待复核的语义角色提议，以及有足够角色证据时的 Timeline 和 canonical metrics；Judge、Findings、人工修订、完整报告与真实录音验收仍未闭环。
+- Recording Analysis 已具备录音导入、标准化、部分声学/ASR/归属/融合，以及有足够角色证据时的 Timeline 和 canonical metrics。最新产品决定要求 tester/device 角色全部由用户人工确认，不再由 LLM 判断；人工确认与重分析 UI 尚未闭环，见 [#95](https://github.com/lybym/AIVoiceBench/issues/95)。
+- 2026-09-18 的授权诊断录音已验证火山 Seed ASR 2.0 标准版可返回时间戳和匿名 speaker clusters，并暴露出异步任务恢复、部分转写传播与低音量设备声学对齐问题。修复候选与证据见 [真实录音诊断记录](docs/27-real-recording-diagnostic.md)；当前指标仍因声学片段缺少可用 speaker/人工角色对齐而弃权，不得据此声明 M1 或真实录音验收完成。
 - Active Voice Test 已具备浏览器播放、Control RMS VAD、Streaming ASR、Fixed/Free 控制与 execution record 基础；当前 TTS 实现仍是火山 V3 HTTP SSE one-shot adapter。2026-09-18 已确定目标 TTS 路线：**Fixed 使用 V3 单向 WebSocket，先流式合成并冻结为固定 Stimulus Artifact 后再执行测试；Free 使用 V3 双向 WebSocket，形成 LLM Streaming → TTS Streaming → 浏览器流式播放链路**。该迁移由 [Issue #98](https://github.com/lybym/AIVoiceBench/issues/98) 跟踪，在实现与验证完成前不得写成 implemented。跨整次 Active Run 的 durable Measurement Audio、Stimulus Alignment、Streaming Acoustic Measurement、Canonical Live Timeline 和正式 Active MetricResult 仍为 planned。
 - Browser Station 当前仍由 `aivoicebench/static/` 下的 HTML/CSS/Vanilla JS 实现；2026-09-17 已确定后续浏览器侧目标实现语言为 **TypeScript**，以约束 AudioWorklet、PCM frame/sample counter、WebSocket、Control VAD、capture integrity 与 Run state。该迁移由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪；在代码、测试、浏览器和容器验证完成前不得写成 implemented。此次决策不要求 React/Vue 等框架重写。
 - 软件验证、浏览器验证、容器验证、真实设备验证和 Measurement Equivalence 验证是不同状态。当前没有 `measurement_equivalence_verified` 声明。
@@ -39,6 +40,7 @@ Online Event Producer                 Offline Event Producer
 - [测试方法](docs/02-test-methodology.md)
 - [指标定义](docs/03-metric-definition.md)
 - [Development Roadmap](docs/04-development-roadmap.md)
+- [2026-09-18 真实录音诊断与遗留问题](docs/27-real-recording-diagnostic.md)
 - [完整文档导航](docs/README.md)
 
 根目录 [AGENTS.md](AGENTS.md) 规定开发和状态声明规则。旧产品文件位于 `docs/product/archive/`，只作历史证据，不是当前要求。

@@ -88,6 +88,8 @@ For Fixed, the provider stream and final Stimulus Artifact both use **MP3**. The
 
 The OpenAI-compatible Judge path remains Chat Completions-compatible. File ASR, Streaming ASR and the two TTS lifecycle families use protocol-specific adapters. Provider configuration does not prove connectivity or paid-service readiness.
 
+The `judge` route is not a speaker-role route. Recording Analysis must not call any LLM to assign tester/device; anonymous clusters wait for a user-saved manual mapping and reanalysis under [#95](https://github.com/lybym/AIVoiceBench/issues/95).
+
 ## 3. Object-storage configuration
 
 `storage.yaml` is separate from provider configuration because object storage is an **audio transport adapter**, not an ASR model.
@@ -112,7 +114,7 @@ Object storage is not required by Streaming ASR and is not required for every Fi
 
 ## 4. File ASR transport policy
 
-Recording Analysis keeps Volcengine **录音文件识别极速版 HTTP** as the P0 File ASR path.
+Recording Analysis defaults to Doubao Seed ASR 2.0 standard with `file_mode: seed_standard`, resource `volc.seedasr.auc`, and asynchronous submit/query. Flash remains an explicit compatibility mode.
 
 Target modes:
 
@@ -140,7 +142,7 @@ inline_max_bytes = 15728640   # 15 MiB
 
 The threshold is configurable and must be captured in the Run's non-secret configuration provenance; it is not a permanent product constant.
 
-Standard/Idle File ASR may be added later as additional provider modes. They are not required by #87 and do not replace the default Flash path.
+`seed_standard` is asynchronous: persist the provider request ID before polling, retain bounded query evidence, and resume the existing job before considering any new submit. It enables documented speaker information for the ASR-native diarization route. Idle File ASR remains a future mode. Seed recovery and partial-evidence regression coverage are tracked by [#93](https://github.com/lybym/AIVoiceBench/issues/93); Flash runs only when the external profile explicitly selects its endpoint/resource.
 
 The existing fixed publication variables:
 
