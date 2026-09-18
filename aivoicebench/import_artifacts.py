@@ -6,6 +6,7 @@ import time
 import uuid
 
 from .audio_processing import AudioProcessingError, FORMATS, MAX_INPUT_BYTES
+from .providers import ProviderFailure
 from .runner import digest, write_json, contained_file
 from .validation import schema_errors
 
@@ -115,7 +116,17 @@ class ImportRun:
             return result
         except Exception as error:
             # Native providers may put request secrets in exception strings. Never reflect those here.
-            reason = str(error) if isinstance(error, AudioProcessingError) else f'{type(error).__name__}: processor failed; retained local artifacts'
+            # ``ProviderFailure`` is the adapters' deliberate public error contract —
+            # "safe public error, never embeds provider exceptions or credentials" —
+            # so its message is the diagnosable cause (an unsupported contract, a
+            # declared file_mode that contradicts its endpoint, a rejected request)
+            # and must survive into the stage reason.  Replacing it with a generic
+            # sentence hides a configuration error the operator has to act on.
+            # Unknown exception types are still reduced to their type name.
+            if isinstance(error, (AudioProcessingError, ProviderFailure)):
+                reason = str(error)
+            else:
+                reason = f'{type(error).__name__}: processor failed; retained local artifacts'
             stage.update(status='failed', reason=reason)
             return None
         finally:

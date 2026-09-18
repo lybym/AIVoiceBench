@@ -165,6 +165,41 @@ class ConfigLoaderTests(unittest.TestCase):
         with self.assertRaises(SettingsError):
             load_providers_config(self.providers_path)
 
+    def test_divergent_asr_and_diarization_routes_rejected(self):
+        """``providers.yaml`` may not split the two routes (PRD-F006, Issue #22).
+
+        Speaker labels come out of the File ASR request, so a diarization route that
+        points elsewhere would publish a contract status for a call that never ran.
+        Both directions are refused, and the error names both profiles.
+        """
+        def file_asr(pid, endpoint, resource_id, file_mode):
+            return {'id': pid, 'name': pid, 'provider': 'volcengine',
+                    'protocol': 'volcengine_asr', 'model': 'bigmodel', 'base_url': endpoint,
+                    'enabled': True, 'credential_env': 'VOLCENGINE_SPEECH_API_KEY',
+                    'capabilities': ['asr', 'diarization'],
+                    'parameters': {'resource_id': resource_id, 'file_mode': file_mode}}
+        flash = file_asr('volc-flash', 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash',
+                         'volc.bigasr.auc_turbo', 'flash')
+        seed = file_asr('volc-seed', STANDARD_SUBMIT_API, 'volc.seedasr.auc', 'seed_standard')
+        for asr_id, diarization_id in (('volc-flash', 'volc-seed'), ('volc-seed', 'volc-flash')):
+            with self.subTest(asr=asr_id, diarization=diarization_id):
+                data = _providers_yaml()
+                data['profiles'] = [data['profiles'][0], flash, seed]
+                data['routes'] = {'tts': None, 'asr': asr_id, 'streaming_asr': None,
+                                  'diarization': diarization_id, 'judge': 'judge'}
+                _write_yaml(self.providers_path, data)
+                with self.assertRaises(ValueError) as caught:
+                    load_providers_config(self.providers_path)
+                self.assertIn(asr_id, str(caught.exception))
+                self.assertIn(diarization_id, str(caught.exception))
+        # The same profile on both routes still loads.
+        data = _providers_yaml()
+        data['profiles'] = [data['profiles'][0], seed]
+        data['routes'] = {'tts': None, 'asr': 'volc-seed', 'streaming_asr': None,
+                          'diarization': 'volc-seed', 'judge': 'judge'}
+        _write_yaml(self.providers_path, data)
+        self.assertEqual(load_providers_config(self.providers_path)['routes']['diarization'], 'volc-seed')
+
     def test_inline_max_bytes_must_be_positive_int(self):
         data = _providers_yaml()
         data['profiles'][1]['parameters']['inline_max_bytes'] = 0
@@ -377,6 +412,40 @@ class SeedStandardProfileResolutionTests(unittest.TestCase):
                        side_effect=AssertionError('a refused contract must not send a request')):
                 with self.assertRaises(ProviderFailure):
                     providers.asr(self.root / 'evidence')
+
+    def test_file_mode_contradiction_reaches_the_run_stage_reason(self):
+        """A configuration error must stay readable in the Run, not be genericised away.
+
+        The cause is raised while the ASR provider is constructed inside the stage
+        operation.  Every stage reason used to be rewritten to
+        ``'ProviderFailure: processor failed; retained local artifacts'``, which
+        described the *type* of failure and hid the contradiction the operator has
+        to fix.  No request is built and nothing is billed.
+        """
+        from aivoicebench.import_pipeline import import_recording
+        from aivoicebench.model_settings import RunProviders
+
+        data = _seed_standard_providers_yaml()
+        profile = next(p for p in data['profiles'] if p['id'] == 'volc-file-asr')
+        profile['base_url'] = 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash'
+        profile['parameters']['resource_id'] = 'volc.bigasr.auc_turbo'  # file_mode stays seed_standard
+        _write_yaml(self.providers_path, data)
+
+        with self._external_env():
+            snapshot, providers = self.store.capture()
+            _directory, manifest = import_recording(
+                self.audio, self.root / 'runs', synthetic=True, model_snapshot=snapshot,
+                providers=RunProviders(asr=providers.asr, diarization=providers.diarization))
+
+        stage = manifest['stages']['asr']
+        self.assertEqual(stage['status'], 'failed')
+        self.assertNotIn('processor failed', stage['reason'])
+        self.assertIn('file_mode=seed_standard', stage['reason'])
+        self.assertIn('flash', stage['reason'])
+        self.assertEqual(list((self.root / 'runs').rglob('provider-calls/CALL-*')), [],
+                         'a contract refused before the request must not file an invocation')
+        # The report is still produced, so the reason is inspectable in the Run.
+        self.assertTrue((_directory / 'analysis' / manifest['analysis_id'] / 'report.md').is_file())
 
 
 if __name__ == '__main__':

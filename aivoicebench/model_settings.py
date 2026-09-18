@@ -144,6 +144,35 @@ def validate_profile(p):
     return p
 
 
+def check_diarization_route(by_id, routes):
+    """Enforce the speaker-clustering dependency on the File ASR route.
+
+    Speaker labels are not produced by a diarization endpoint: they are read out
+    of the **ASR invocation's own native response** (PRD-F006).  The published
+    ``interface_contract_status`` therefore describes whether *that* recognition
+    request carried ``enable_speaker_info``.  Two configurations break that
+    guarantee and are refused rather than silently mis-described:
+
+    - ``asr`` and ``diarization`` pointing at different profiles, because the
+      contract status would then be derived from a profile that never transcribes;
+    - ``diarization`` configured with no usable ``asr`` route, because no request
+      exists to derive labels from at all.
+
+    Failing closed here is free: no request has been built yet, so no billable
+    call is placed and no evidence is created.
+    """
+    asr_id, diarization_id = routes.get('asr'), routes.get('diarization')
+    if diarization_id is None:
+        return
+    if asr_id != diarization_id:
+        raise SettingsError(
+            '说话人分析的契约状态来自实际执行识别的 File ASR 用途：asr 与 diarization 必须指向同一模型'
+            f'（当前 asr={asr_id or "未配置"}、diarization={diarization_id}）')
+    selected = by_id.get(asr_id)
+    if not selected or not adapter_available(selected, 'diarization'):
+        raise SettingsError('说话人分析需要可用的 File ASR 用途；请先配置支持 diarization 的语音识别模型')
+
+
 def apply_route_defaults(document):
     """Fill purposes added after this document was written.
 
@@ -255,6 +284,10 @@ class ModelSettings:
         for role,selected in routes.items():
             if selected is not None and (not isinstance(selected,str) or selected not in by_id or not by_id[selected]['enabled'] or role not in by_id[selected]['capabilities']):
                 raise SettingsError('默认模型不存在、未启用或不支持对应用途')
+        # Speaker clustering depends on the File ASR route that really runs
+        # (PRD-F006); a divergent pair would publish a contract status for a call
+        # that was never made.  Refused before anything is persisted.
+        check_diarization_route(by_id, routes)
         secrets=payload.get('secrets',{})
         if not isinstance(secrets,dict) or set(secrets)-set(by_id) or any(v is not None and (not isinstance(v,str) or not v.strip() or len(v)>8192) for v in secrets.values()):
             raise SettingsError('无效的密钥更新')
@@ -330,6 +363,12 @@ def build_run_providers(doc, keys, storage_config=None):
     the snapshot.
     """
     by_id={p['id']:p for p in doc['profiles']}
+    # The diarization provider reads speaker labels out of the File ASR call's own
+    # native response.  A divergent route would make its published
+    # ``interface_contract_status`` a claim about a profile that never transcribes,
+    # so the pair is rejected here (the single chokepoint shared by the SQLite and
+    # external-config paths) before any provider request can be built.
+    check_diarization_route(by_id, doc['routes'])
     from .llm import UnavailableLLMProvider
     from .llm_provider import OpenAICompatibleProvider
     provider=UnavailableLLMProvider()
@@ -397,21 +436,31 @@ def build_run_providers(doc, keys, storage_config=None):
             ('AIVOICEBENCH_AUDIO_PUT_URL','AIVOICEBENCH_AUDIO_GET_URL','AIVOICEBENCH_AUDIO_HOST'))
         # Diarization reuses the same configured ASR profile: the cloud call
         # already returns speaker labels, so no separate endpoint or second
-        # recognition submission is required.
+        # recognition submission is required.  ``doc['routes']['diarization']`` is
+        # asserted equal to the ``asr`` route above, so it is the profile whose
+        # invocation really produced the transcript.
         diarization=by_id.get(doc['routes']['diarization'])
         if diarization and diarization['enabled'] and diarization['protocol']=='volcengine_asr':
             from .diarization import ASRNativeDiarizationProvider
             from .volcengine_asr import speaker_separation_contract_status
-            _dia_params=diarization['parameters']
-            # The speaker-separation *request* contract status is a property of the
-            # selected profile, not a constant: a Seed-standard route really does
-            # send enable_speaker_info, so publishing `interface_contract_pending`
-            # for it would contradict the transcript's own provider profile
-            # (PRD-F006). Real-call verification stays a separate fact.
+            # The profile the recognition request is actually built from — the same
+            # object ``asr_factory`` captured above.  ``check_diarization_route``
+            # guarantees this route is configured and adapter-ready whenever the
+            # diarization route is, so ``asr`` cannot be None here.
+            _dia_profile=asr
+            _dia_params=_dia_profile['parameters']
+            # The speaker-separation *request* contract status is a property of
+            # that profile, not a constant: a Seed-standard route really does send
+            # enable_speaker_info, so publishing `interface_contract_pending` for it
+            # would contradict the transcript's own provider profile (PRD-F006).
+            # Deriving it from this profile is what makes
+            # ``interface_contract_status == 'verified'`` hold if and only if the
+            # request that ran really carried ``enable_speaker_info``.  Real-call
+            # verification stays a separate fact.
             _dia_contract=speaker_separation_contract_status(
-                diarization['base_url'], _dia_params.get('resource_id','volc.bigasr.auc_turbo'),
-                diarization['model'] or 'bigmodel', _dia_params.get('file_mode'))
-            def diarization_factory(root, _dia=diarization, _status=_dia_contract):
+                _dia_profile['base_url'], _dia_params.get('resource_id','volc.bigasr.auc_turbo'),
+                _dia_profile['model'] or 'bigmodel', _dia_params.get('file_mode'))
+            def diarization_factory(root, _dia=_dia_profile, _status=_dia_contract):
                 return ASRNativeDiarizationProvider(
                     provider_name=_dia['provider'] or 'volcengine',
                     model=_dia['model'] or 'bigmodel',

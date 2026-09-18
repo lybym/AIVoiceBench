@@ -17,10 +17,22 @@ _TMP_ROOT = Path(__file__).resolve().parent.parent / '.test-tmp'
 _TMP_ROOT.mkdir(exist_ok=True)
 
 
-def _canonical_wav(path):
+def _canonical_wav(path, amplitude=0):
+    """Write one second of canonical PCM16/16 kHz/mono WAV.
+
+    ``amplitude`` distinguishes two otherwise identical-length recordings by
+    content, which is what the recording-identity guard compares.
+    """
     with wave.open(str(path), 'wb') as audio:
         audio.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
-        audio.writeframes(b'\x00\x00' * 1600)
+        if amplitude:
+            import array
+            import math
+            samples = array.array('h', (int(amplitude * math.sin(2 * math.pi * 440 * i / 16000))
+                                        for i in range(16000)))
+            audio.writeframes(samples.tobytes())
+        else:
+            audio.writeframes(b'\x00\x00' * 1600)
 
 
 class SeedTransport:
@@ -225,6 +237,84 @@ class SeedStandardRecoveryIdempotencyTests(unittest.TestCase):
         self.assertEqual((call_dir / 'native-response.json').read_bytes(), stale,
                          'differing retained evidence must never be overwritten')
         self.assertEqual(json.loads((call_dir / 'result.json').read_text())['status'], 'failed')
+
+
+class SeedStandardCrossRecordingRecoveryTests(unittest.TestCase):
+    """Resume must recover this recording's job, never another recording's.
+
+    ``_pending_standard_audit`` originally matched a pending call on
+    ``resource_id`` alone, so a still-pending submission for recording A could be
+    recovered while transcribing recording B and A's transcript would be filed as
+    B's result — real speech from the wrong audio.  ``start.json`` records the
+    submitted input's sha256, so recovery is now scoped to the current input.
+    """
+
+    def setUp(self):
+        self.root = _TMP_ROOT / uuid.uuid4().hex
+        self.root.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.audio_a = self.root / 'recording-a.wav'
+        _canonical_wav(self.audio_a)
+        self.audio_b = self.root / 'recording-b.wav'
+        _canonical_wav(self.audio_b, amplitude=1200)
+        self.response_a = HTTPReply(200, {'x-api-status-code': '20000000'}, json.dumps({
+            'result': {'text': '这是录音 A 的识别结果', 'utterances': [{
+                'text': '这是录音 A 的识别结果', 'start_time': 0, 'end_time': 100,
+                'words': [], 'additions': {'speaker': '1'}}]},
+        }, ensure_ascii=False).encode())
+        self.response_b = HTTPReply(200, {'x-api-status-code': '20000000'}, json.dumps({
+            'result': {'text': '这是录音 B 的识别结果', 'utterances': [{
+                'text': '这是录音 B 的识别结果', 'start_time': 0, 'end_time': 100,
+                'words': [], 'additions': {'speaker': '2'}}]},
+        }, ensure_ascii=False).encode())
+
+    def _provider(self, transport):
+        return VolcengineASRProvider(
+            self.root, 'test-key', endpoint=STANDARD_SUBMIT_API,
+            resource_id='volc.seedasr.auc', timeout=2, transport=transport,
+            transport_config={'audio_transport': 'inline', 'inline_max_bytes': 1_000_000})
+
+    def _leave_recording_a_pending(self):
+        """Submit A and lose the query reply, exactly as an interrupted worker does."""
+        interrupted = SeedTransport([
+            HTTPReply(200, {'x-api-status-code': '20000000'}, b'{}'), KeyboardInterrupt()])
+        with self.assertRaises(KeyboardInterrupt):
+            self._provider(interrupted).transcribe(self.audio_a)
+        call_dir = next((self.root / 'provider-calls').glob('CALL-*'))
+        self.assertFalse((call_dir / 'result.json').exists())
+        start = json.loads((call_dir / 'start.json').read_text(encoding='utf-8'))
+        submitted = [a for a in start['input_artifacts'] if a['path'].endswith('recording-a.wav')]
+        self.assertEqual(len(submitted), 1, 'the pending call must record which audio was submitted')
+        return call_dir, json.loads(
+            (call_dir / 'request.json').read_text(encoding='utf-8'))['request_id']
+
+    def test_other_recording_is_submitted_instead_of_reusing_the_pending_result(self):
+        a_call_dir, a_request_id = self._leave_recording_a_pending()
+        transport = SeedTransport([
+            HTTPReply(200, {'x-api-status-code': '20000000'}, b'{}'), self.response_b])
+
+        output = self._provider(transport).transcribe(self.audio_b)
+
+        # B is submitted and polled under its own request id; A's job is never queried.
+        self.assertEqual([call[1] for call in transport.calls],
+                         [STANDARD_SUBMIT_API, STANDARD_QUERY_API])
+        self.assertNotIn(a_request_id, [call[2].get('X-Api-Request-Id') for call in transport.calls])
+        self.assertEqual(json.loads(output.raw_messages[0])['result']['text'], '这是录音 B 的识别结果')
+        self.assertNotIn('录音 A', output.raw_messages[0])
+        # A's pending job stays pending and queryable for its own recording.
+        self.assertFalse((a_call_dir / 'result.json').exists())
+
+    def test_same_recording_still_resumes_the_pending_job(self):
+        """The guard must not break the recovery it exists to protect."""
+        a_call_dir, a_request_id = self._leave_recording_a_pending()
+        transport = SeedTransport([self.response_a])
+
+        output = self._provider(transport).transcribe(self.audio_a)
+
+        self.assertEqual([call[1] for call in transport.calls], [STANDARD_QUERY_API])
+        self.assertEqual(transport.calls[0][2]['X-Api-Request-Id'], a_request_id)
+        self.assertEqual(json.loads(output.raw_messages[0])['result']['text'], '这是录音 A 的识别结果')
+        self.assertEqual(json.loads((a_call_dir / 'result.json').read_text())['status'], 'complete')
 
 
 class FileASRContractModeTests(unittest.TestCase):

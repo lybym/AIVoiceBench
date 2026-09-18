@@ -110,6 +110,35 @@ class ModelSettingsTests(unittest.TestCase):
         with patch('requests.post',side_effect=AssertionError('Unexpected network')):
             self.store.update(payload());self.store.describe();self.store.capture()
 
+    def test_divergent_asr_and_diarization_routes_are_refused_at_save(self):
+        """Speaker clustering reads labels from the File ASR call itself (PRD-F006).
+
+        Distinct ``asr``/``diarization`` profiles used to be accepted, which let the
+        diarization document claim a speaker-contract status derived from a profile
+        that never transcribed.  The stored configuration is now rejected before it
+        is persisted, so an API caller cannot save the inconsistent pair.
+        """
+        def asr_profile(pid,endpoint,resource_id,file_mode):
+            return {'id':pid,'name':pid,'provider':'volcengine','protocol':'volcengine_asr',
+                    'model':'bigmodel','base_url':endpoint,'enabled':True,'credential_env':'',
+                    'capabilities':['asr','diarization'],
+                    'parameters':{'resource_id':resource_id,'file_mode':file_mode,
+                                  'audio_transport':'inline'}}
+        flash=asr_profile('flash','https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash',
+                          'volc.bigasr.auc_turbo','flash')
+        seed=asr_profile('seed','https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit',
+                         'volc.seedasr.auc','seed_standard')
+        for asr_id,diarization_id in (('flash','seed'),('seed','flash')):
+            with self.subTest(asr=asr_id,diarization=diarization_id):
+                self.assertEqual(self.store.describe()['revision'],0)
+                with self.assertRaises(SettingsError):
+                    self.store.update({'expected_revision':0,'profiles':[flash,seed],
+                        'routes':{'tts':None,'asr':asr_id,'diarization':diarization_id,'judge':None}})
+        # A matching pair is still accepted and persisted.
+        self.store.update({'expected_revision':0,'profiles':[flash,seed],
+            'routes':{'tts':None,'asr':'seed','diarization':'seed','judge':None}})
+        self.assertEqual(self.store.describe()['revision'],1)
+
     def test_web_run_freezes_selected_profile_without_secret(self):
         import io,wave
         from aivoicebench.runner import digest

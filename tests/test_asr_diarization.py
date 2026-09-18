@@ -14,7 +14,11 @@ Verifies:
 import unittest
 
 from aivoicebench.diarization import ASRNativeDiarizationProvider
+from aivoicebench.model_settings import SettingsError, build_run_providers
 from aivoicebench.validation import schema_errors
+from aivoicebench.volcengine_asr import STANDARD_SUBMIT_API
+
+FLASH_API = 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash'
 
 
 def transcript(segments, duration_ms=5000, sha='a' * 64):
@@ -173,15 +177,33 @@ class DiarizationContractStatusTests(unittest.TestCase):
     """
 
     def test_verified_status_is_published_and_never_claimed_from_labels(self):
-        provider = ASRNativeDiarizationProvider(
-            resource_id='volc.seedasr.auc', contract_status='verified')
-        result = provider.diarize_from_transcript(
+        # The request contract, not the observed labels: a Seed-standard profile
+        # really sends enable_speaker_info, which is *why* the status may be
+        # verified. What a caller may not do is infer the contract from labels.
+        seed = ASRNativeDiarizationProvider(resource_id='volc.seedasr.auc', contract_status='verified')
+        seed_result = seed.diarize_from_transcript(
             transcript([seg(0, 0, 500, 1)]), audio_sha256='a' * 64)
-        config = result.to_dict()['processor']['config']
-        self.assertEqual(config['interface_contract_status'], 'verified')
-        self.assertTrue(config['labeled_utterances_observed'])
-        self.assertFalse(config['cloud_call_performed'])
-        self.assertNotIn('real_call', config)
+        seed_config = seed_result.to_dict()['processor']['config']
+        self.assertEqual(seed_config['interface_contract_status'], 'verified')
+        self.assertTrue(seed_config['labeled_utterances_observed'])
+        self.assertFalse(seed_config['cloud_call_performed'])
+        self.assertNotIn('real_call', seed_config)
+
+        # The same provider parameterised as an unverified profile publishes
+        # `interface_contract_pending` while observing exactly the same labels.
+        # Observed labels are therefore not what promotes the status.
+        pending = ASRNativeDiarizationProvider(contract_status='interface_contract_pending')
+        pending_config = pending.diarize_from_transcript(
+            transcript([seg(0, 0, 500, 1)]), audio_sha256='a' * 64).to_dict()['processor']['config']
+        self.assertEqual(pending_config['interface_contract_status'], 'interface_contract_pending')
+        self.assertEqual(pending_config['labeled_utterances_observed'], True)
+
+        # Emitting labels is all this derivation may claim. It performs no cloud
+        # call, so no published field may assert that a real call was verified —
+        # that fact stays in the ASR profile's capability contract, which follows
+        # the resolved mode rather than the labels a response happened to carry.
+        self.assertNotIn('real_call', pending_config)
+        self.assertNotIn('real_call', seed_result.to_dict())
 
     def test_verified_profile_without_labels_does_not_claim_unverified_contract(self):
         provider = ASRNativeDiarizationProvider(
@@ -192,40 +214,93 @@ class DiarizationContractStatusTests(unittest.TestCase):
         self.assertNotIn('unverified', result.reason)
         self.assertIn('verified', result.reason)
 
+    def _asr_profile(self, profile_id, endpoint, resource_id, file_mode):
+        parameters = {'resource_id': resource_id}
+        if file_mode:
+            parameters['file_mode'] = file_mode
+        return {'id': profile_id, 'name': profile_id, 'provider': 'volcengine',
+                'protocol': 'volcengine_asr', 'model': 'bigmodel', 'base_url': endpoint,
+                'enabled': True, 'credential_env': '', 'capabilities': ['asr', 'diarization'],
+                'parameters': parameters}
+
+    def _snapshot(self, asr_profile, diarization_profile=None):
+        """One snapshot whose File ASR and diarization routes may pick different profiles.
+
+        The SQLite and external-config paths both funnel through
+        ``build_run_providers``, so this is the shared chokepoint for the rule.
+        """
+        profiles = [asr_profile] + ([diarization_profile] if diarization_profile else [])
+        return {'schema_version': '1.0.0', 'revision': 1, 'profiles': profiles,
+                'routes': {'asr': asr_profile['id'],
+                           'diarization': (diarization_profile or asr_profile)['id'],
+                           'judge': None, 'tts': None, 'streaming_asr': None}}
+
     def test_resolved_profile_decides_the_reported_status(self):
-        """Derive the status from the diarization route's resolved profile."""
-        from aivoicebench.model_settings import build_run_providers
-        from aivoicebench.volcengine_asr import STANDARD_SUBMIT_API
-
-        def snapshot(endpoint, resource_id, file_mode):
-            parameters = {'resource_id': resource_id}
-            if file_mode:
-                parameters['file_mode'] = file_mode
-            profile = {'id': 'file-asr', 'name': 'File ASR', 'provider': 'volcengine',
-                       'protocol': 'volcengine_asr', 'model': 'bigmodel', 'base_url': endpoint,
-                       'enabled': True, 'credential_env': '', 'capabilities': ['asr', 'diarization'],
-                       'parameters': parameters}
-            return {'schema_version': '1.0.0', 'revision': 1, 'profiles': [profile],
-                    'routes': {'asr': 'file-asr', 'diarization': 'file-asr',
-                               'judge': None, 'tts': None, 'streaming_asr': None}}
-
+        """Derive the status from the profile whose request really runs."""
         cases = (
             (STANDARD_SUBMIT_API, 'volc.seedasr.auc', 'seed_standard', 'verified'),
-            ('https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash',
-             'volc.bigasr.auc_turbo', 'flash', 'interface_contract_pending'),
-            ('https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash',
-             'volc.bigasr.auc_turbo', None, 'interface_contract_pending'),
+            (FLASH_API, 'volc.bigasr.auc_turbo', 'flash', 'interface_contract_pending'),
+            (FLASH_API, 'volc.bigasr.auc_turbo', None, 'interface_contract_pending'),
         )
         for endpoint, resource_id, file_mode, expected in cases:
             with self.subTest(file_mode=file_mode):
-                _, providers = build_run_providers(snapshot(endpoint, resource_id, file_mode),
-                                                   {'file-asr': 'test-key'})
+                profile = self._asr_profile('file-asr', endpoint, resource_id, file_mode)
+                _, providers = build_run_providers(self._snapshot(profile), {'file-asr': 'test-key'})
                 diarizer = providers.diarization(None)
                 result = diarizer.diarize_from_transcript(
                     transcript([seg(0, 0, 500, 1)]), audio_sha256='a' * 64)
                 self.assertEqual(
                     result.to_dict()['processor']['config']['interface_contract_status'], expected)
                 self.assertEqual(diarizer.contract_status, expected)
+
+    def test_divergent_routes_are_refused_in_both_directions(self):
+        """``verified`` must be impossible when a different profile transcribes.
+
+        The diarization document used to take its contract status from its own
+        route while the transcript came from the ``asr`` route.  An operator could
+        therefore point ``asr`` at the Flash contract (which never sends
+        ``enable_speaker_info``) and ``diarization`` at a Seed-standard profile and
+        get a ``verified`` interface contract published for a request that never
+        carried the switch.  Both routes are now required to agree, so the false
+        provenance claim cannot be configured at all.
+        """
+        flash = self._asr_profile('flash-asr', FLASH_API, 'volc.bigasr.auc_turbo', 'flash')
+        seed = self._asr_profile('seed-asr', STANDARD_SUBMIT_API, 'volc.seedasr.auc', 'seed_standard')
+        for asr_profile, diarization_profile in ((flash, seed), (seed, flash)):
+            with self.subTest(asr=asr_profile['id'], diarization=diarization_profile['id']):
+                snapshot = self._snapshot(asr_profile, diarization_profile)
+                with self.assertRaises(SettingsError) as caught:
+                    build_run_providers(snapshot, {'flash-asr': 'test-key', 'seed-asr': 'test-key'})
+                message = str(caught.exception)
+                self.assertIn(asr_profile['id'], message)
+                self.assertIn(diarization_profile['id'], message)
+
+    def test_identical_route_keeps_the_truthful_status_for_both_modes(self):
+        """The same-profile case still reports the mode that really runs."""
+        for endpoint, resource_id, file_mode, expected in (
+                (FLASH_API, 'volc.bigasr.auc_turbo', 'flash', 'interface_contract_pending'),
+                (STANDARD_SUBMIT_API, 'volc.seedasr.auc', 'seed_standard', 'verified')):
+            with self.subTest(file_mode=file_mode):
+                profile = self._asr_profile('file-asr', endpoint, resource_id, file_mode)
+                _, providers = build_run_providers(self._snapshot(profile), {'file-asr': 'test-key'})
+                self.assertEqual(providers.diarization(None).contract_status, expected)
+
+    def test_diarization_without_a_usable_asr_route_is_refused(self):
+        """No ASR route means no request to read labels from, so nothing to claim."""
+        seed = self._asr_profile('seed-asr', STANDARD_SUBMIT_API, 'volc.seedasr.auc', 'seed_standard')
+        snapshot = self._snapshot(seed)
+        snapshot['routes']['asr'] = None
+        with self.assertRaises(SettingsError):
+            build_run_providers(snapshot, {'seed-asr': 'test-key'})
+
+    def test_unconfigured_diarization_route_is_still_allowed(self):
+        """A File ASR route with no speaker-clustering purpose keeps working."""
+        flash = self._asr_profile('flash-asr', FLASH_API, 'volc.bigasr.auc_turbo', 'flash')
+        snapshot = self._snapshot(flash)
+        snapshot['routes']['diarization'] = None
+        _, providers = build_run_providers(snapshot, {'flash-asr': 'test-key'})
+        self.assertIsNone(providers.diarization)
+        self.assertIsNotNone(providers.asr)
 
 
 if __name__ == '__main__':

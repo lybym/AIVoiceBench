@@ -175,20 +175,31 @@ class VolcengineASRProvider:
         # recognition until the synchronous service has consumed that object.
         from .run_lock import run_lock
         with run_lock(self.root.parent / 'cloud-publication'):
-            pending = self._pending_standard_audit()
+            pending = self._pending_standard_audit(mono_wav)
             if pending is not None:
                 return self._recover_standard_job(pending)
             return self._transcribe(mono_wav)
 
-    def _pending_standard_audit(self):
-        """Find one locally recorded Seed submission without a final result.
+    def _pending_standard_audit(self, mono_wav):
+        """Find one locally recorded Seed submission for **this** recording.
 
         Standard ASR is submit-then-poll.  If a worker is interrupted after the
         submit succeeds, recovering that request ID is safer than submitting the
         same recording again.
+
+        Recovery is scoped to the current input audio, not to the run directory.
+        ``start.json`` records the exact provider input (path + sha256) that was
+        submitted, so a match on the audio digest proves the pending job belongs to
+        the recording being transcribed now.  Matching on ``resource_id`` alone
+        would let a *different* recording's still-pending job be recovered and its
+        transcript filed as this recording's result — the recovered bytes really
+        are that other recording's speech.  A pending job for a different
+        recording is therefore skipped, not reused: this recording is submitted
+        normally and the other job stays queryable.
         """
         if self.mode != 'seed_standard':
             return None
+        audio_sha256 = hashlib.sha256(Path(mono_wav).read_bytes()).hexdigest()
         for directory in (self.root / 'provider-calls').glob('CALL-*'):
             request = directory / 'request.json'
             if (directory / 'result.json').exists() or not request.exists():
@@ -196,7 +207,12 @@ class VolcengineASRProvider:
             try:
                 snapshot = json.loads(request.read_text(encoding='utf-8'))
                 start = json.loads((directory / 'start.json').read_text(encoding='utf-8'))
-                if snapshot.get('request_id') and start.get('config', {}).get('resource_id') == self.config['resource_id']:
+                submitted = {artifact.get('sha256')
+                             for artifact in start.get('input_artifacts', [])
+                             if isinstance(artifact, dict)}
+                if (snapshot.get('request_id')
+                        and start.get('config', {}).get('resource_id') == self.config['resource_id']
+                        and audio_sha256 in submitted):
                     return directory, snapshot['request_id'], start
             except (OSError, ValueError, KeyError):
                 continue
