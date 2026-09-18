@@ -1,6 +1,7 @@
 """Honest ingestion/status report. Full conversation findings remain a later processor."""
 
 from html import escape
+import json
 from urllib.parse import quote
 
 from .runner import write_json
@@ -8,6 +9,66 @@ from .runner import write_json
 
 def _text(value):
     return escape(str(value)).replace('|', '&#124;').replace('\r', ' ').replace('\n', ' ').replace('`', '&#96;')
+
+
+def _alignment_section(run):
+    """Explain why role-dependent metrics are absent, using the recorded evidence.
+
+    A blank metric table must be traceable to a count of unmatched acoustic
+    duration, an unmatched speaker duration or an unconfirmed role — never left to
+    look like the report simply omitted data.
+    """
+    analysis = run.analysis
+    alignment = None
+    path = analysis / 'alignment.json'
+    if path.is_file():
+        alignment = json.loads(path.read_text(encoding='utf-8'))
+    fused = None
+    fused_path = analysis / 'fused-segments.json'
+    if fused_path.is_file():
+        envelope = json.loads(fused_path.read_text(encoding='utf-8'))
+        fused = envelope.get('data')
+    metrics_path = analysis / 'metrics.json'
+    metrics = None
+    if metrics_path.is_file():
+        envelope = json.loads(metrics_path.read_text(encoding='utf-8'))
+        metrics = envelope.get('data')
+    timeline_path = analysis / 'timeline.json'
+    timeline = None
+    if timeline_path.is_file():
+        envelope = json.loads(timeline_path.read_text(encoding='utf-8'))
+        timeline = envelope.get('data')
+
+    from .alignment import explain_metric_gap
+    gap = explain_metric_gap(fused, timeline, metrics, alignment)
+    lines = ['', '## 指标可用性', '']
+    if gap['status'] == 'observed':
+        lines.append(f'本次分析产生 {gap["observed_metric_count"]} 个已观测指标。')
+        return lines
+    lines.append('本次没有已观测指标。原因与计数如下，均可回溯到证据文件，不是报告漏字段：')
+    lines.append('')
+    lines.append('| 原因 | 涉及片段数 | 说明 |')
+    lines.append('| --- | --- | --- |')
+    for reason in gap['reasons']:
+        lines.append(f'| {_text(reason["code"])} | {reason["count"]} | {_text(reason["detail"])} |')
+    if alignment:
+        diagnostics = alignment.get('diagnostics', {})
+        lines += ['', '对齐诊断（acoustic segment ↔ ASR speaker span）：', '',
+                  '| 指标 | 值 |', '| --- | --- |',
+                  f'| acoustic 片段数 | {diagnostics.get("acoustic_segment_count")} |',
+                  f'| speaker span 数 | {diagnostics.get("speaker_span_count")} |',
+                  f'| 未匹配 acoustic 时长 (ms) | {diagnostics.get("unmatched_acoustic_ms")} |',
+                  f'| 未匹配 speaker 时长 (ms) | {diagnostics.get("unmatched_speaker_ms")} |',
+                  f'| 冲突片段数 | {len(diagnostics.get("conflicted_acoustic_segment_ids") or [])} |']
+        low = diagnostics.get('low_energy') or {}
+        if low:
+            lines.append(f'| 低能量片段数 / 未匹配 (ms) | {low.get("segment_count")} / {low.get("unmatched_ms")} |')
+        lines += ['', '逐聚类覆盖：', '', '| 聚类 | 原生标签 | speaker 时长 (ms) | 已覆盖 (ms) | 覆盖率 |',
+                  '| --- | --- | --- | --- | --- |']
+        for cluster in diagnostics.get('per_cluster') or []:
+            lines.append(f'| {_text(cluster["speaker_id"])} | {_text(cluster.get("native_speaker_id"))} | '
+                         f'{cluster["speaker_speech_ms"]} | {cluster["matched_ms"]} | {cluster.get("coverage_ratio")} |')
+    return lines
 
 
 def write_import_report(run):
@@ -30,6 +91,7 @@ def write_import_report(run):
     lines += [f'| {_text(key)} | {_text(value) if value is not None else "未知"} |' for key, value in manifest['profile'].items()]
     lines += ['', '| 阶段 | 状态 | 说明 |', '| --- | --- | --- |']
     lines += [f'| {key} | {stage["status"]} | {_text(stage["reason"] or "已完成本阶段处理")} |' for key, stage in stages.items()]
+    lines += _alignment_section(run)
     lines += ['', '## 本地证据文件', '', '| Artifact | 文件 | SHA256 |', '| --- | --- | --- |']
     for item in manifest['artifacts']:
         link = quote('../../' + item['path'], safe='/')

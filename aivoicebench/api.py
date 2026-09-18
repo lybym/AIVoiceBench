@@ -86,6 +86,13 @@ class AnalysisResponse(BaseModel):
     speaker_segments: list = []
     diarization_scope: dict = {}
     attribution: dict = {}
+    # Acoustic↔ASR-speaker-span alignment: the deterministic overlap/coverage facts
+    # behind every assignment or abstention, including unmatched duration, per-cluster
+    # coverage and the low-energy distribution. It never maps a cluster to a role.
+    alignment: dict = {}
+    # Why role-dependent metrics are unavailable, with counts. Present so an empty
+    # metric list is explainable instead of looking like dropped UI data.
+    metrics_gap: dict = {}
     # Audio QA for the canonical artifact: measurements plus validity conditions and
     # the envelope's own evidence status. It never carries a recognition, accuracy or
     # acceptance claim. Empty when the Run never produced QA.
@@ -185,6 +192,16 @@ def _load_run(directory):
         if isinstance(doc, dict) and unified:
             return doc.get('data') or {}
         return doc if isinstance(doc, dict) else {}
+    def published(name):
+        """Read a registered document that is not a stage envelope.
+
+        The alignment artifact is published as its own schema-validated document
+        (like the Audio QA conditions), so it has no `data` member to unwrap.
+        Reading it through the envelope helper would silently report an empty
+        alignment next to a Run that has one.
+        """
+        doc = _read(root / (name + '.json'))
+        return doc if isinstance(doc, dict) else {}
     def audio_qa():
         """QA facts for the canonical artifact, across the Run's AnalysisRevisions.
 
@@ -251,19 +268,34 @@ def _load_run(directory):
     if unified:
         timeline = timeline.get('data') or {}
     diarization_doc = document('speaker-assignments')
+    alignment_doc = published('alignment')
+    fused_segments = items('fused-segments', 'segments', 'fused_segments')
+    metrics_items = items('metrics', 'metrics', 'metrics')
+    # A blank metric list must be explainable from evidence, with counts, instead of
+    # looking like the UI dropped fields. This is computed from the same documents
+    # the reader can open, and it never invents a measurement.
+    from .alignment import explain_metric_gap
+    metrics_gap = explain_metric_gap(
+        {'segments': fused_segments}, timeline, {'metrics': metrics_items}, alignment_doc)
     result = dict(transcript=(_read(root / 'transcript.json').get('data') or {}) if unified else {},
         stages=manifest.get('stages', {}), analysis_id=manifest.get('analysis_id', ''),
         invocation_refs=[a for a in manifest.get('artifacts', []) if a['kind']=='provider_invocation'],
         run_id=directory.name, status=status, reason=status_doc.get('reason'),
         profile=_read(root / 'profile.json') or manifest.get('profile', {}),
-        fused_segments=items('fused-segments', 'segments', 'fused_segments'),
+        fused_segments=fused_segments,
         acoustic_segments=items('acoustic-segments', 'segments', 'acoustic_segments'),
         speaker_segments=diarization_doc.get('speaker_segments', []),
         diarization_scope=diarization_doc.get('scope', {}),
         attribution=document('attribution'),
+        alignment={'status': alignment_doc.get('status'), 'reason': alignment_doc.get('reason'),
+                   'document_id': alignment_doc.get('document_id'),
+                   'policy': alignment_doc.get('policy'),
+                   'processor': alignment_doc.get('processor'),
+                   'diagnostics': alignment_doc.get('diagnostics')} if alignment_doc else {},
+        metrics_gap=metrics_gap,
         audio_qa=audio_qa(),
         turns=items('turns', 'turns', 'turns'), events=timeline.get('events', []),
-        timeline=timeline, metrics=items('metrics', 'metrics', 'metrics'),
+        timeline=timeline, metrics=metrics_items,
         judge_results=items('judge-results', 'results', 'judge_results'),
         findings=items('findings', 'findings', 'findings'),
         report_md=(root / 'report.md').read_text(encoding='utf-8') if (root / 'report.md').exists() else '',
