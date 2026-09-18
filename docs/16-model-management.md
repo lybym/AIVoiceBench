@@ -77,6 +77,11 @@ Active Voice Test must not use one ambiguous TTS profile to infer transport at r
 
 Both profiles are server-owned. Browser code receives audio/control data but never Provider credentials and never connects directly to Volcengine. A failure on the bidirectional path does not silently select SSE or the unidirectional route.
 
+Contract sources (implementation must re-check these current official pages before coding):
+
+- [Volcengine V3 WebSocket unidirectional streaming TTS](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-websocket?lang=zh)
+- [Volcengine V3 WebSocket bidirectional streaming TTS](https://docs.volcengine.com/docs/DoubaoVoice/bidirectional-streaming-text-to-speech-websocket?lang=zh)
+
 TTS profile parameters must use the provider's **current official V3 field semantics**, not legacy aliases inferred from the existing SSE adapter. Common configurable parameters include speaker/voice, output encoding/format, sample rate and speech rate; loudness/volume and pitch are exposed only where the selected protocol/model/voice officially supports them. Unsupported combinations are configuration errors or explicit `unsupported` capability results, never silent no-ops. The Run snapshot records only non-secret resolved values and the actual transport.
 
 For Fixed, provider stream encoding and final Stimulus Artifact encoding are separate concerns. The official streaming API does not imply that the wire stream is WAV; the Backend may wrap/normalize supported provider audio (for example PCM) into the project's frozen WAV asset after synthesis and before formal playback.
