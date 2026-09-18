@@ -39,6 +39,8 @@ RUN mkdir -p /data/recordings /data/output /data/cache
 # For openai: set OPENAI_API_KEY and AIVOICEBENCH_LLM_MODEL=gpt-4o
 ENV AIVOICEBENCH_OUTPUT=/data/output \
     AIVOICEBENCH_CACHE=/data/cache \
+    AIVOICEBENCH_PROVIDERS_CONFIG=/app/config/providers.yaml \
+    AIVOICEBENCH_STORAGE_CONFIG=/app/config/storage.yaml \
     AIVOICEBENCH_LLM_PROVIDER=none \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

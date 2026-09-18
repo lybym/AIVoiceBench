@@ -26,10 +26,18 @@ services:
     environment:
       - AIVOICEBENCH_OUTPUT=/data/output
       - AIVOICEBENCH_CACHE=/data/cache
-      # Optional signed publication for the selected cloud ASR (local .env only).
-      - AIVOICEBENCH_AUDIO_PUT_URL=${AIVOICEBENCH_AUDIO_PUT_URL:-}
-      - AIVOICEBENCH_AUDIO_GET_URL=${AIVOICEBENCH_AUDIO_GET_URL:-}
-      - AIVOICEBENCH_AUDIO_HOST=${AIVOICEBENCH_AUDIO_HOST:-}
+      # External provider/storage configuration (PRD-F015, Issue #87).
+      # Copy config/providers.example.yaml and config/storage.example.yaml to
+      # the runtime files below and edit them with real endpoint/model/resource.
+      # These variables hold file PATHS only; secrets stay in env references.
+      - AIVOICEBENCH_PROVIDERS_CONFIG=/app/config/providers.yaml
+      - AIVOICEBENCH_STORAGE_CONFIG=/app/config/storage.yaml
+      # Legacy signed-URL publication is no longer required in the production
+      # path (Issue #87).  Inline Base64 transport works without object storage;
+      # TOS is used only for over-threshold files when configured.
+      # - AIVOICEBENCH_AUDIO_PUT_URL=${AIVOICEBENCH_AUDIO_PUT_URL:-}
+      # - AIVOICEBENCH_AUDIO_GET_URL=${AIVOICEBENCH_AUDIO_GET_URL:-}
+      # - AIVOICEBENCH_AUDIO_HOST=${AIVOICEBENCH_AUDIO_HOST:-}
       # === LLM Provider ===
       # "none" = 未配置语义评估 (默认), "volcengine" = 火山引擎豆包, "openai" = OpenAI
       - AIVOICEBENCH_LLM_PROVIDER=none

@@ -8,7 +8,7 @@
 | F002 | 原始/标准化/派生资产不可变，记录 Hash、元数据、父引用、转换器与参数 | ✅ implemented（限定导入资产） |
 | F003 | 统一标准化与 Audio QA；格式、时长、空音频、解码失败等须明确诊断 | ✅ implemented；QA 不等于准确率保证 |
 | F004 | 可恢复分阶段编排，阶段输入输出、失败、重试与审计可追溯 | 🟡 partial；Judge/Findings 尚未接入主链 |
-| F005 | File ASR 的完整录音识别、原生响应审计与时间戳；P0 默认火山极速版 HTTP，按配置选择 inline Base64 或私有对象存储 + 短期 Presigned GET URL，Storage 只作为 transport | 🟡 partial；当前代码仍依赖固定 Signed URL publication，#87 负责重构，真实服务与质量待验收 |
+| F005 | File ASR 的完整录音识别、原生响应审计与时间戳；P0 默认火山极速版 HTTP，按配置选择 inline Base64 或私有对象存储 + 短期 Presigned GET URL，Storage 只作为 transport | 🟡 partial；#87 已实现 inline/object_storage/auto transport + 外置配置 loader/TOS adapter，software_verified；真实服务与质量待验收 |
 | F006 | Speaker/source attribution：近期优先消费火山 File ASR 自动说话人分离的匿名 speaker labels；角色证据不足时保持 unknown；可选语义处理器只提出待复核角色，不按先后猜 tester/device | 🟡 partial；软件验证已覆盖提议、弃权、冲突和 provenance，真实 speaker separation / 角色识别待验收 |
 | F007 | Turn/Response 关联必须有可解释角色和时序证据；歧义可弃权 | 🟡 partial |
 | F008 | 自动 EventTimeline 由 Canonical Event 组成，并可追溯音频/转写/归属 Evidence | 🟡 partial |
@@ -18,8 +18,8 @@
 | F012 | 人工修订为新 revision，不覆盖机器原件；可重算并显示差异 | 🟡 partial |
 | F013 | 生成 Markdown/JSON 报告，保留结论至证据的回溯路径 | 🟡 partial |
 | F014 | Web/CLI 统一分析工作台；Web Evidence Workbench 使用 wavesurfer.js 展示 waveform、Regions/Timeline 与点击证据定位，不自研 waveform renderer | 🟡 partial；wavesurfer.js 集成 planned |
-| F015 | 后端托管的 Provider 配置、路由、快照与调用审计；目标由服务器侧外置 `providers.yaml` / `storage.yaml` 提供非敏感配置，密钥仅以 env/secret reference 解析 | 🟡 partial；现有 SQLite model settings 已实现，#87 负责外置文件迁移 |
-| F016 | File ASR、Streaming ASR 与 TTS 按生命周期分家族；File ASR 支持 `inline | object_storage | auto`，Streaming ASR 不经过对象存储；浏览器不持有长期凭据 | 🟡 partial；#87 + 真实云/设备待验收 |
+| F015 | 后端托管的 Provider 配置、路由、快照与调用审计；目标由服务器侧外置 `providers.yaml` / `storage.yaml` 提供非敏感配置，密钥仅以 env/secret reference 解析 | 🟡 partial；#87 已实现外置 YAML loader/validator + SQLite migration/conflict + Docker read-only mount，software_verified；真实部署验收待完成 |
+| F016 | File ASR、Streaming ASR 与 TTS 按生命周期分家族；File ASR 支持 `inline | object_storage | auto`，Streaming ASR 不经过对象存储；浏览器不持有长期凭据 | 🟡 partial；#87 已实现 transport selection + TOS adapter，software_verified；真实云/设备待验收 |
 | F017 | 同一原件可产生新 AnalysisRevision；旧产物、配置和差异可追溯 | 🟡 partial |
 | F018 | Compare 仅在 case/audio/policy/model/环境可比时报告差异，条件不兼容须拒绝比较 | ⬜ planned |
 | F019 | Frozen Golden Voice：冻结刺激资产及 Hash/参数/精确静音；不等于设备真值 | ⬜ planned |
