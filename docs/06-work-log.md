@@ -1269,5 +1269,5 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **配置样例。** 新增 `config/providers.example.yaml` 与 `config/storage.example.yaml`；`config/aivoicebench.example.yaml` 只保留核心应用设置与两份外置配置文件路径。样例不包含真实 secret。
 - **需求/追踪。** PRD 升级到 1.5.3，更新 F005/F015/F016、Roadmap、Architecture、Model Management、Docker/API、LLM、Recording Backbone、Streaming ASR 与 traceability；创建 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 负责实际 loader/validator、SQLite migration、inline/TOS transport、Docker mount 与测试。#22 继续负责真实 Volcengine File ASR + speaker separation 证据，#85 继续作为真实录音最终 Gate。
 - **外部契约核对。** 本轮沿用并复核火山官方录音文件识别极速版/标准版/闲时版文档入口与 TOS Presigned URL 机制；实现时仍须按 AGENTS 重新在线核对当前 Provider API，不把 dated endpoint/resource 当永久产品常量。
-- **验证边界。** 本轮只修改文档与 example config，并创建 Issue；未修改应用代码、未执行真实 Volcengine/TOS 调用、未声称 software/container/browser/real-recording 状态升级。合并前应检查 Markdown 本地链接、YAML parse 与 diff scope。
+- **验证。** PR #88 当前只修改 18 个文档/example-config 文件，无应用运行时代码；新增/修改 Markdown 中本轮新增的 8 个本地链接均解析到当前分支已有文件，新增 diff 无字面量 `\\n` 转义残留；三份 YAML example 仅含占位符/credential env reference，不含真实 secret。未执行真实 Volcengine/TOS 调用、应用/browser/container 测试，也未声称 software/container/browser/real-recording 状态升级。
 
