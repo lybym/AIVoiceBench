@@ -21,7 +21,8 @@
 | 轮询超时 | job 仍在处理中但本地 poll window 耗尽，若写成 failed，后续可能误发新 submit | 保持 recoverable pending；resume 继续 query 原 request ID |
 | 角色判断 | LLM role JSON 曾被 generic JudgeResult schema 拒绝，且机器提议无法作为角色真值 | 产品决定改为用户人工确认；Recording Analysis 不再调用 LLM 归因，见 #95 |
 | 角色确认闭环 | 当前 Web/API 没有 cluster 播放、人工 tester/device/unknown mapping、revision 与重分析 Gate | 尚未实现；[#95](https://github.com/lybym/AIVoiceBench/issues/95) |
-| 指标 | ASR 有 speaker labels，但声学 segments 无 speaker/role，指标为空 | 尚未修复；需确定性 acoustic↔ASR span alignment、coverage 诊断和低音量样本评估；[#94](https://github.com/lybym/AIVoiceBench/issues/94) |
+| 指标 | ASR 有 speaker labels，但声学 segments 无 speaker/role，指标为空 | 已实现软件修复：确定性 acoustic↔ASR span alignment、coverage/low-energy 诊断与 `metrics_gap` 解释；真实样本覆盖率与分母量化仍待 #85 |
+| 指标解释 | 空白指标表曾被误读为 UI 丢字段 | 已修复：Run API `alignment`/`metrics_gap`、报告“指标可用性”与 Web 对齐面板给出原因代码与涉及片段数 |
 
 ## 已观察到的证据边界
 
@@ -34,6 +35,6 @@
 ## Issue 映射
 
 - [#93](https://github.com/lybym/AIVoiceBench/issues/93)：Seed standard 异步任务恢复、partial transcript/speaker evidence 传播与测试。
-- [#94](https://github.com/lybym/AIVoiceBench/issues/94)：低音量设备场景下 acoustic segments 与 ASR speaker spans 的证据安全对齐，以及“为何无指标”的可解释输出。
+- [#94](https://github.com/lybym/AIVoiceBench/issues/94)：低音量设备场景下 acoustic segments 与 ASR speaker spans 的证据安全对齐，以及“为何无指标”的可解释输出。软件验收已实现（`SpeakerAlignment 1.0.0`、`metrics_gap`、可选 acoustic sensitivity profile）；真实录音的 speaker-span coverage 与低音量 miss 量化仍属 #85。
 - [#95](https://github.com/lybym/AIVoiceBench/issues/95)：用户人工确认 speaker roles，保存新 revision 后重跑下游并生成正式测试报告；禁止 LLM 角色判断。
 - 父任务保持 [#22](https://github.com/lybym/AIVoiceBench/issues/22)、[#24](https://github.com/lybym/AIVoiceBench/issues/24)、[#25](https://github.com/lybym/AIVoiceBench/issues/25)、[#27](https://github.com/lybym/AIVoiceBench/issues/27)；最终真实验收仍是 [#85](https://github.com/lybym/AIVoiceBench/issues/85)。

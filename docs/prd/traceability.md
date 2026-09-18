@@ -16,7 +16,7 @@ Issue 定义工作单元，PR 定义一次可审阅变更，工作日志记录�
 | [#24](https://github.com/lybym/AIVoiceBench/issues/24) | F006–F008、N001/N003/N005 | speaker evidence → tester/device/unknown Attribution → Turn/Response → Canonical EventTimeline；冲突与未知必须保留 |
 | [#95](https://github.com/lybym/AIVoiceBench/issues/95) | F006–F009、F012–F014、F017、N001–N006 | 用户人工 speaker-role 确认 Gate、新 AnalysisRevision、重分析与正式报告；禁止 LLM 角色判断 |
 | [#25](https://github.com/lybym/AIVoiceBench/issues/25) | F009、M001–M010、N001/N003/N007 | 唯一 Canonical Metric Engine、MetricResult、证据资格与 denominator/abstention 语义 |
-| [#94](https://github.com/lybym/AIVoiceBench/issues/94) | F006–F009、M001–M010、N001/N003/N005/N007 | 低音量设备场景的 acoustic segment ↔ ASR speaker span 对齐、coverage 诊断与无指标解释；#24/#25 子任务 |
+| [#94](https://github.com/lybym/AIVoiceBench/issues/94) | F006–F009、M001–M010、N001/N003/N005/N007 | 低音量设备场景的 acoustic segment ↔ ASR speaker span 对齐、coverage 诊断与无指标解释；#24/#25 子任务。软件验收已实现（SpeakerAlignment 1.0.0 + `metrics_gap` + acoustic sensitivity profile）；真实录音量化仍属 #85 |
 | [#10](https://github.com/lybym/AIVoiceBench/issues/10) | F010–F011、M003/M006、N001/N003/N004/N005 | Structured Judge、语义证据与 evidence-linked Findings；不得发明时间、角色或已验证根因 |
 | [#26](https://github.com/lybym/AIVoiceBench/issues/26) | F012、F017、N001/N002/N006 | append-only 人工修订、AnalysisRevision、重算与 revision diff；不覆盖机器原件 |
 | [#11](https://github.com/lybym/AIVoiceBench/issues/11) | F013–F014、N001/N002/N006 | wavesurfer.js Evidence Workbench、Finding/Metric/Event 音频定位与 evidence-linked JSON/Markdown 报告 |

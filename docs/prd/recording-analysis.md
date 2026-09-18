@@ -10,9 +10,9 @@
 | F004 | 可恢复分阶段编排，阶段输入输出、失败、重试与审计可追溯 | 🟡 partial；Judge/Findings 尚未接入主链 |
 | F005 | File ASR 的完整录音识别、原生响应审计与时间戳；默认豆包 Seed ASR 2.0 `volc.seedasr.auc` 异步 submit/query，极速版为兼容模式；部分时间戳缺陷不得删除其余有效证据 | 🟡 partial；#87 已实现 transport，#93 跟踪 Seed recovery/partial evidence；真实质量待验收 |
 | F006 | Speaker/source attribution：消费火山 File ASR 匿名 speaker labels；tester/device/unknown 只由用户人工确认，不使用 LLM 角色判断，不按先后猜角色 | 🟡 partial；匿名聚类已有，人工确认与 revision gate 由 #95 跟踪 |
-| F007 | Turn/Response 关联必须有可解释角色和时序证据；歧义可弃权 | 🟡 partial |
-| F008 | 自动 EventTimeline 由 Canonical Event 组成，并可追溯音频/转写/归属 Evidence | 🟡 partial |
-| F009 | 唯一确定性 Metric Engine 产出 MetricResult；不并行计算同名公式 | 🟡 partial |
+| F007 | Turn/Response 关联必须有可解释角色和时序证据；歧义可弃权 | 🟡 partial；#94 已提供确定性 acoustic↔speaker-span 对齐与覆盖诊断，真实混音打断判定待验收 |
+| F008 | 自动 EventTimeline 由 Canonical Event 组成，并可追溯音频/转写/归属 Evidence | 🟡 partial；对齐证据已可追溯，真实场景验收待完成 |
+| F009 | 唯一确定性 Metric Engine 产出 MetricResult；不并行计算同名公式 | 🟡 partial；指标不可用时的原因与计数已在 API/报告/Web 显式输出（#94） |
 | F010 | Structured LLM Harness/Judge 受 schema、Evidence、版本与失败状态约束 | 🟡 partial；ImportRun 未执行完整 Judge |
 | F011 | Findings 必须关联指标、证据、置信度、影响和复核状态 | 🟡 partial |
 | F012 | 人工修订为新 revision，不覆盖机器原件；可重算并显示差异 | 🟡 partial |
@@ -77,8 +77,9 @@ wavesurfer.js 不产生 Event，不改变 Artifact，也不是声学时间真值
 - File ASR 的 timestamp 与 transcript 是文字/语义证据，不自动成为声学真值。
 - ASR-native speaker labels 是 diarization evidence，不是 tester/device role truth。
 - `partial` ASR 若仍含有效 utterance/speaker evidence，必须把有效部分与显式 gap 一并传给 diarization/attribution；状态不是 `complete` 不能成为整份证据被丢弃的理由。
-- acoustic boundary 与 ASR speaker span 的对齐必须记录 overlap/coverage、未匹配和冲突；不得为填充指标而就近复制 speaker/role。低音量设备对齐缺口由 #94 跟踪。
+- acoustic boundary 与 ASR speaker span 的对齐必须记录 overlap/coverage、未匹配和冲突；不得为填充指标而就近复制 speaker/role。低音量设备对齐缺口由 #94 跟踪，已实现确定性对齐（`unmatched | single_cluster | multi_cluster | conflict`、双方区间与有符号偏移、两个方向重叠比例、逐聚类 coverage、low-energy 分布、boundary drift）与 `metrics_gap` 原因计数；诊断用 acoustic sensitivity profile 必须显式标记为非 canonical measurement policy。
+- 指标为空时必须能从证据解释：API `metrics_gap`、报告“指标可用性”与 Web 面板给出原因代码与涉及片段数，不用 0 或成功占位符填充。
 - 未保存人工角色 mapping 前，role-dependent Turns、Timeline、Metrics 与正式测试报告不运行；可展示的仅是明确标注为 provisional 的导入/诊断状态。人工 mapping 变更必须创建新 AnalysisRevision，不能覆盖机器原件或旧结论。
 - 真实录音、真实云服务、人工标注和实体设备验收必须与软件/容器/浏览器验证分开记录。
 
-详细技术边界见 [录音导入](../14-recording-import.md)、[Recording backbone](../23-recording-backbone.md)、[声学分段](../17-acoustic-segmentation.md)、[融合/Turn/Event](../18-fusion-turns-events.md) 与 [确定性引擎](../12-deterministic-engine.md)。
+详细技术边界见 [录音导入](../14-recording-import.md)、[Recording backbone](../23-recording-backbone.md)、[声学分段](../17-acoustic-segmentation.md)、[融合/Turn/Event](../18-fusion-turns-events.md)、[契约版本](../07-contract-versions.md) 与 [确定性引擎](../12-deterministic-engine.md)。

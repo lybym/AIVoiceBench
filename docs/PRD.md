@@ -1,6 +1,6 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.5.6
+prd_version: 1.5.7
 status: modularized_for_owner_review
 updated: 2026-09-18
 implementation_baseline: v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd
@@ -131,6 +131,6 @@ P0/P1 表示开发先后，不表示产品可选性。M1 是 Recording Analysis 
 
 ## 5. 当前审计与历史入口
 
-当前**实现基线**仍是 `v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd`；本次 1.5.5 在既有 V3 WebSocket 协议分工上进一步固定 Active TTS 输出为 MP3，并移除 format/encoding 配置面；PRD 1.5.6 记录 Recording Analysis 的 Seed standard 默认异步处理、partial evidence、acoustic↔ASR 对齐和“角色只由用户人工确认”的产品约束。以上都不升级代码实现状态，也不把工作树修复候选或单份诊断录音升级为正式实现/真实验收。历史提交、预发布、Issue/PR 和工作日志仍作为审计证据。当前追踪和主要缺口见 [Requirement 追踪与审计结论](prd/traceability.md)，版本演进见 [PRD 变更历史](prd/changelog.md)。
+当前**实现基线**仍是 `v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd`；本次 1.5.5 在既有 V3 WebSocket 协议分工上进一步固定 Active TTS 输出为 MP3，并移除 format/encoding 配置面；PRD 1.5.6 记录 Recording Analysis 的 Seed standard 默认异步处理、partial evidence、acoustic↔ASR 对齐和“角色只由用户人工确认”的产品约束。PRD 1.5.7 落实该对齐约束的确定性实现口径（显式未匹配/冲突状态、覆盖率分母、指标为空原因计数、非 canonical sensitivity 标注）。以上都不升级代码实现状态，也不把工作树修复候选或单份诊断录音升级为正式实现/真实验收。历史提交、预发布、Issue/PR 和工作日志仍作为审计证据。当前追踪和主要缺口见 [Requirement 追踪与审计结论](prd/traceability.md)，版本演进见 [PRD 变更历史](prd/changelog.md)。
 
 技术专题文件不构成平行 PRD：例如 [Active Measurement 设计](25-active-measurement.md) 说明实现边界，[组件策略](26-remote-browser-component-strategy.md) 记录 2026-09-16 的技术决策，[指标定义](03-metric-definition.md) 说明契约与公式，[Roadmap](04-development-roadmap.md) 说明实施顺序。
