@@ -43,6 +43,15 @@ Issue 定义工作单元，PR 定义一次可审阅变更，工作日志记录�
 
 `#87` 负责配置 ownership 与 File ASR transport，不能用其软件测试替代 #22 的真实云识别/speaker separation 或 #85 的真实录音验收。`#27` 证明集成链路、持久化、失败恢复和 Docker/Web 行为；它的关闭本身不等于 `real_recording_verified`。`#85` 独立承担 M1 的授权真实录音、真实云服务与人工复核门槛，避免 CI、mock、synthetic fixture、容器 smoke 或浏览器演示被误认为正式验收。
 
+## 当前 M2 / M3 Active Voice Test Issue 映射
+
+| Issue | PRD 编号 | 追踪重点 |
+| --- | --- | --- |
+| [#84](https://github.com/lybym/AIVoiceBench/issues/84) | F023/F025、N002/N003/N007 | Browser Station TypeScript 等价迁移、audio frame/sample timebase/WebSocket/control state 类型化；不改变 Measurement semantics |
+| [#98](https://github.com/lybym/AIVoiceBench/issues/98) | F015/F016、F020–F021、F023 | Active TTS V3 WebSocket：Fixed 单向 WS asset synthesis + frozen Stimulus；Free Streaming LLM → 双向 WS TTS → streaming playback；protocol-specific TTS config 与 cancel/stale lifecycle |
+
+#98 是 TTS/交互 transport 实现任务，不替代 F025 的 durable Measurement Audio、Stimulus Alignment、Canonical Live Timeline 或真实设备 Measurement 验收。其 provider integration evidence 也不自动构成 physical-device / measurement-equivalence verification。
+
 ## 审计结论
 
 当前 M1 的主要缺口按上述工作单元收敛为：Provider/Object Storage 外置配置与 File ASR transport 重构、真实火山 File ASR speaker separation 与调用证据、Silero 声学边界真实标注评估、角色/Turn/Event 的可审计归属、完整 PRD-M001–M010 证据资格、Structured Judge/Findings、不可变人工修订与重分析、wavesurfer Evidence Workbench/完整报告，以及最终授权真实录音与人工复核验收。
