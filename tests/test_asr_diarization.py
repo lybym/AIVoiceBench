@@ -164,5 +164,69 @@ class ASRNativeDiarizationTests(unittest.TestCase):
         self.assertEqual(segs[0]['raw_message_index'], 0)
 
 
+class DiarizationContractStatusTests(unittest.TestCase):
+    """The published contract status must match the resolved profile (Issue #22 item 2).
+
+    A Seed-standard profile really sends ``enable_speaker_info``, so reporting
+    ``interface_contract_pending`` for it contradicts the transcript's own provider
+    profile. Whether a *real call* returned labels remains a separate fact.
+    """
+
+    def test_verified_status_is_published_and_never_claimed_from_labels(self):
+        provider = ASRNativeDiarizationProvider(
+            resource_id='volc.seedasr.auc', contract_status='verified')
+        result = provider.diarize_from_transcript(
+            transcript([seg(0, 0, 500, 1)]), audio_sha256='a' * 64)
+        config = result.to_dict()['processor']['config']
+        self.assertEqual(config['interface_contract_status'], 'verified')
+        self.assertTrue(config['labeled_utterances_observed'])
+        self.assertFalse(config['cloud_call_performed'])
+        self.assertNotIn('real_call', config)
+
+    def test_verified_profile_without_labels_does_not_claim_unverified_contract(self):
+        provider = ASRNativeDiarizationProvider(
+            resource_id='volc.seedasr.auc', contract_status='verified')
+        result = provider.diarize_from_transcript(
+            transcript([seg(0, 0, 500, None)]), audio_sha256='a' * 64)
+        self.assertEqual(result.status, 'insufficient_evidence')
+        self.assertNotIn('unverified', result.reason)
+        self.assertIn('verified', result.reason)
+
+    def test_resolved_profile_decides_the_reported_status(self):
+        """Derive the status from the diarization route's resolved profile."""
+        from aivoicebench.model_settings import build_run_providers
+        from aivoicebench.volcengine_asr import STANDARD_SUBMIT_API
+
+        def snapshot(endpoint, resource_id, file_mode):
+            parameters = {'resource_id': resource_id}
+            if file_mode:
+                parameters['file_mode'] = file_mode
+            profile = {'id': 'file-asr', 'name': 'File ASR', 'provider': 'volcengine',
+                       'protocol': 'volcengine_asr', 'model': 'bigmodel', 'base_url': endpoint,
+                       'enabled': True, 'credential_env': '', 'capabilities': ['asr', 'diarization'],
+                       'parameters': parameters}
+            return {'schema_version': '1.0.0', 'revision': 1, 'profiles': [profile],
+                    'routes': {'asr': 'file-asr', 'diarization': 'file-asr',
+                               'judge': None, 'tts': None, 'streaming_asr': None}}
+
+        cases = (
+            (STANDARD_SUBMIT_API, 'volc.seedasr.auc', 'seed_standard', 'verified'),
+            ('https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash',
+             'volc.bigasr.auc_turbo', 'flash', 'interface_contract_pending'),
+            ('https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash',
+             'volc.bigasr.auc_turbo', None, 'interface_contract_pending'),
+        )
+        for endpoint, resource_id, file_mode, expected in cases:
+            with self.subTest(file_mode=file_mode):
+                _, providers = build_run_providers(snapshot(endpoint, resource_id, file_mode),
+                                                   {'file-asr': 'test-key'})
+                diarizer = providers.diarization(None)
+                result = diarizer.diarize_from_transcript(
+                    transcript([seg(0, 0, 500, 1)]), audio_sha256='a' * 64)
+                self.assertEqual(
+                    result.to_dict()['processor']['config']['interface_contract_status'], expected)
+                self.assertEqual(diarizer.contract_status, expected)
+
+
 if __name__ == '__main__':
     unittest.main()

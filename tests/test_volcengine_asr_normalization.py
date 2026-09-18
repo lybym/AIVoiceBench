@@ -8,6 +8,7 @@ import wave
 from pathlib import Path
 
 from aivoicebench.cloud_transport import HTTPReply
+from aivoicebench.providers import ProviderFailure, read_invocation
 from aivoicebench.volcengine_asr import VolcengineASRProvider
 from aivoicebench.volcengine_asr import STANDARD_QUERY_API, STANDARD_SUBMIT_API
 
@@ -161,6 +162,188 @@ class SeedStandardLifecycleTests(unittest.TestCase):
         self.assertEqual([call[1] for call in recovered.calls], [STANDARD_QUERY_API])
         self.assertEqual(recovered.calls[0][2]['X-Api-Request-Id'], request_id)
         self.assertEqual(json.loads((call_dir / 'result.json').read_text())['status'], 'complete')
+
+
+class SeedStandardRecoveryIdempotencyTests(unittest.TestCase):
+    """A partial recovery must be re-runnable without failing or destroying evidence.
+
+    A worker interrupted after the recovery wrote ``native-response.json`` but
+    before the terminal ``result.json`` used to make every later re-run raise
+    ``FileExistsError`` and flip the audit to failed (Issue #22 item 5).
+    """
+
+    def setUp(self):
+        self.root = _TMP_ROOT / uuid.uuid4().hex
+        self.root.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.audio = self.root / 'input.wav'
+        _canonical_wav(self.audio)
+        self.success = HTTPReply(200, {'x-api-status-code': '20000000'}, json.dumps({
+            'result': {'text': '你好', 'utterances': [{
+                'text': '你好', 'start_time': 0, 'end_time': 100,
+                'words': [], 'additions': {'speaker': '1'},
+            }]},
+        }, ensure_ascii=False).encode())
+
+    def _provider(self, transport):
+        return VolcengineASRProvider(
+            self.root, 'test-key', endpoint=STANDARD_SUBMIT_API,
+            resource_id='volc.seedasr.auc', timeout=2, transport=transport,
+            transport_config={'audio_transport': 'inline', 'inline_max_bytes': 1_000_000})
+
+    def _interrupted_submission(self):
+        """Leave one submitted job with no terminal record, as a crash would."""
+        interrupted = SeedTransport([
+            HTTPReply(200, {'x-api-status-code': '20000000'}, b'{}'), KeyboardInterrupt()])
+        with self.assertRaises(KeyboardInterrupt):
+            self._provider(interrupted).transcribe(self.audio)
+        call_dir = next((self.root / 'provider-calls').glob('CALL-*'))
+        self.assertFalse((call_dir / 'result.json').exists())
+        return call_dir
+
+    def test_partial_recovery_with_identical_bytes_is_idempotent_success(self):
+        call_dir = self._interrupted_submission()
+        (call_dir / 'native-response.json').write_bytes(self.success.body)
+        recovered = SeedTransport([self.success])
+
+        output = self._provider(recovered).transcribe(self.audio)
+
+        self.assertEqual([call[1] for call in recovered.calls], [STANDARD_QUERY_API])
+        self.assertEqual((call_dir / 'native-response.json').read_bytes(), self.success.body)
+        self.assertEqual(json.loads((call_dir / 'result.json').read_text())['status'], 'complete')
+        self.assertEqual(json.loads(output.raw_messages[0])['result']['text'], '你好')
+
+    def test_partial_recovery_with_different_bytes_fails_without_overwriting(self):
+        call_dir = self._interrupted_submission()
+        stale = b'{"result": {"text": "stale-evidence"}}'
+        (call_dir / 'native-response.json').write_bytes(stale)
+        recovered = SeedTransport([self.success])
+
+        with self.assertRaises(ProviderFailure):
+            self._provider(recovered).transcribe(self.audio)
+
+        self.assertEqual((call_dir / 'native-response.json').read_bytes(), stale,
+                         'differing retained evidence must never be overwritten')
+        self.assertEqual(json.loads((call_dir / 'result.json').read_text())['status'], 'failed')
+
+
+class FileASRContractModeTests(unittest.TestCase):
+    """``file_mode`` is authoritative-and-cross-checked (Issue #22 item 1)."""
+
+    def test_absent_mode_still_infers_from_endpoint_and_resource(self):
+        flash = VolcengineASRProvider('/tmp', 'test-key')
+        self.assertEqual(flash.mode, 'flash')
+        self.assertNotIn('enable_speaker_info', flash.config)
+
+        standard = VolcengineASRProvider('/tmp', 'test-key', endpoint=STANDARD_SUBMIT_API,
+                                        resource_id='volc.seedasr.auc')
+        self.assertEqual(standard.mode, 'seed_standard')
+        self.assertIs(standard.config['enable_speaker_info'], True)
+
+    def test_matching_explicit_mode_is_accepted(self):
+        flash = VolcengineASRProvider('/tmp', 'test-key', file_mode='flash')
+        self.assertEqual(flash.mode, 'flash')
+        self.assertNotIn('enable_speaker_info', flash.config)
+
+        standard = VolcengineASRProvider('/tmp', 'test-key', endpoint=STANDARD_SUBMIT_API,
+                                        resource_id='volc.seedasr.auc', file_mode='seed_standard')
+        self.assertEqual(standard.mode, 'seed_standard')
+        self.assertIs(standard.config['enable_speaker_info'], True)
+
+    def test_explicit_seed_standard_with_flash_endpoint_is_refused(self):
+        with self.assertRaises(ProviderFailure) as caught:
+            VolcengineASRProvider('/tmp', 'test-key', file_mode='seed_standard')
+        message = str(caught.exception)
+        self.assertIn('seed_standard', message)
+        self.assertIn('flash', message)
+
+    def test_explicit_flash_with_standard_endpoint_is_refused(self):
+        with self.assertRaises(ProviderFailure) as caught:
+            VolcengineASRProvider('/tmp', 'test-key', endpoint=STANDARD_SUBMIT_API,
+                                  resource_id='volc.seedasr.auc', file_mode='flash')
+        self.assertIn('flash', str(caught.exception))
+
+    def test_unknown_mode_value_is_refused(self):
+        with self.assertRaises(ProviderFailure):
+            VolcengineASRProvider('/tmp', 'test-key', file_mode='seed_standard_v2')
+
+
+class FileASRFailureStateTests(unittest.TestCase):
+    """Acceptance criterion 5 for File ASR: provider failure states stay inspectable.
+
+    The equivalent Streaming ASR cases live in ``tests/test_streaming_asr.py``;
+    these assert the persisted invocation record itself, with no API run.
+    """
+
+    def setUp(self):
+        self.root = _TMP_ROOT / uuid.uuid4().hex
+        self.root.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.audio = self.root / 'input.wav'
+        _canonical_wav(self.audio)
+
+    def _provider(self, transport, key='test-key'):
+        return VolcengineASRProvider(
+            self.root, key, transport=transport,
+            transport_config={'audio_transport': 'inline', 'inline_max_bytes': 1_000_000})
+
+    def _only_failed_call(self):
+        directories = list((self.root / 'provider-calls').glob('CALL-*'))
+        self.assertEqual(len(directories), 1)
+        record = read_invocation(directories[0], self.root)
+        self.assertEqual(record['status'], 'failed')
+        self.assertEqual(record['failure_code'], 'provider_error')
+        self.assertIsNotNone(record['finished_at'])
+        return directories[0], record
+
+    def test_missing_credential_persists_failed_invocation_without_request(self):
+        transport = SeedTransport([])
+        with self.assertRaises(ProviderFailure):
+            self._provider(transport, key='').transcribe(self.audio)
+
+        # The public message is deliberately generic (no provider text is echoed);
+        # the inspectable evidence is the persisted invocation itself.
+        self.assertEqual(transport.calls, [], 'a missing credential must not reach the network')
+        directory, record = self._only_failed_call()
+        self.assertTrue((directory / 'start.json').exists())
+        self.assertEqual([artifact['path'] for artifact in record['input_artifacts']],
+                         ['input.wav'])
+        self.assertEqual(record['config']['model_name'], 'bigmodel')
+        self.assertNotIn('api_key', record['config'])
+
+    def test_status_code_rejection_persists_native_evidence_and_failure(self):
+        transport = SeedTransport([
+            HTTPReply(200, {'x-api-status-code': '45000001'},
+                      b'{"code":45000001,"message":"request rejected"}')])
+        with self.assertRaises(ProviderFailure):
+            self._provider(transport).transcribe(self.audio)
+
+        self.assertEqual([call[0] for call in transport.calls], ['POST'])
+        directory, record = self._only_failed_call()
+        self.assertEqual(json.loads((directory / 'native-response.json').read_text())['code'], 45000001)
+        self.assertEqual(json.loads((directory / 'response-status.json').read_text())['status_code'], '45000001')
+        persisted = {artifact['path'] for artifact in record['output_artifacts']}
+        self.assertIn('native-response.json', ' '.join(persisted))
+
+    def test_unavailable_resource_failure_is_persisted(self):
+        transport = SeedTransport([
+            HTTPReply(403, {'x-api-status-code': '45000002'},
+                      b'{"code":45000002,"message":"resource not granted"}')])
+        with self.assertRaises(ProviderFailure):
+            self._provider(transport).transcribe(self.audio)
+
+        directory, _record = self._only_failed_call()
+        self.assertEqual(json.loads((directory / 'response-status.json').read_text())['http_status'], 403)
+
+    def test_unsupported_contract_is_refused_before_any_call(self):
+        transport = SeedTransport([])
+        with self.assertRaises(ProviderFailure):
+            VolcengineASRProvider(self.root, 'test-key',
+                                  endpoint='https://example.invalid/api/v3/auc/bigmodel/submit',
+                                  transport=transport)
+        self.assertEqual(transport.calls, [])
+        self.assertFalse((self.root / 'provider-calls').exists(),
+                         'a refused contract must not create an invocation at all')
 
 
 if __name__ == '__main__':

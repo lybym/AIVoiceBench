@@ -8,16 +8,21 @@ secret redaction, and SQLite migration/conflict rules.
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
+from aivoicebench.cloud_transport import HTTPReply
 from aivoicebench.config_loaders import (load_providers_config, load_storage_config,
     resolve_credentials, resolve_external_config, resolve_runtime,
     PROVIDERS_SCHEMA_VERSION, STORAGE_SCHEMA_VERSION)
 from aivoicebench.model_settings import ModelSettings, SettingsError, DEFAULT_INLINE_MAX_BYTES
+from aivoicebench.providers import ProviderFailure
 from aivoicebench.tos_adapter import validate_storage_store, TOSStorageConfig
+from aivoicebench.volcengine_asr import STANDARD_QUERY_API, STANDARD_SUBMIT_API
 
 # Workspace-rooted temp so the file sandbox permits writes.
 _TMP_ROOT = Path(__file__).resolve().parent.parent / '.test-tmp'
@@ -73,6 +78,25 @@ def _write_yaml(path, data):
     import yaml
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.dump(data, allow_unicode=True, sort_keys=False), encoding='utf-8')
+
+
+def _seed_standard_providers_yaml():
+    """A providers.yaml whose File ASR profile is the Seed ASR 2.0 standard contract."""
+    data = _providers_yaml()
+    profile = next(p for p in data['profiles'] if p['id'] == 'volc-file-asr')
+    profile['name'] = 'Doubao Seed ASR 2.0 Standard'
+    profile['base_url'] = STANDARD_SUBMIT_API
+    profile['parameters'].update({'resource_id': 'volc.seedasr.auc',
+                                  'file_mode': 'seed_standard',
+                                  'audio_transport': 'inline'})
+    profile['parameters'].pop('object_storage_ref', None)
+    return data
+
+
+def _canonical_wav(path):
+    with wave.open(str(path), 'wb') as audio:
+        audio.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
+        audio.writeframes(b'\x00\x00' * 1600)
 
 
 class ConfigLoaderTests(unittest.TestCase):
@@ -278,6 +302,81 @@ class MigrationConflictTests(unittest.TestCase):
             self.assertTrue(desc['config_source'].startswith('external:'))
             self.assertFalse(desc['editable'])
             self.assertIn('storage_stores', desc)
+
+
+class SeedStandardProfileResolutionTests(unittest.TestCase):
+    """Issue #22 items 1 and 4: the Seed standard path is asserted, not just documented.
+
+    The profile is resolved through the real external-config path
+    (``ModelSettings.capture()`` with an external ``providers.yaml``) and the
+    resulting ASR provider runs against a scripted transport: no network, no real
+    credentials.
+    """
+
+    def setUp(self):
+        self.tmp_dir = _mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp_dir, ignore_errors=True)
+        self.root = Path(self.tmp_dir)
+        self.providers_path = self.root / 'providers.yaml'
+        self.store = ModelSettings(self.root / 'settings')
+        self.evidence = self.root / 'evidence'
+        self.evidence.mkdir()
+        self.audio = self.evidence / 'input.wav'
+        _canonical_wav(self.audio)
+        self.success = json.dumps({'result': {'text': '你好', 'utterances': [
+            {'text': '你好', 'start_time': 0, 'end_time': 100, 'words': [],
+             'additions': {'speaker': '1'}}]}}, ensure_ascii=False).encode()
+
+    def _external_env(self):
+        return patch.dict(os.environ, {
+            'AIVOICEBENCH_PROVIDERS_CONFIG': str(self.providers_path),
+            'AIVOICEBENCH_STORAGE_CONFIG': str(self.root / 'absent-storage.yaml'),
+            'TEST_JUDGE_KEY': '', 'VOLCENGINE_SPEECH_API_KEY': 'test-api-key'})
+
+    def test_external_seed_standard_profile_runs_in_standard_mode(self):
+        _write_yaml(self.providers_path, _seed_standard_providers_yaml())
+        calls = []
+        replies = iter([HTTPReply(200, {'x-api-status-code': '20000000'}, b'{}'),
+                        HTTPReply(200, {'x-api-status-code': '20000000'}, self.success)])
+
+        def scripted_request(method, url, headers, body=None, **kwargs):
+            calls.append((method, url, headers, body))
+            return next(replies)
+
+        with self._external_env():
+            snapshot, providers = self.store.capture()
+            self.assertTrue(snapshot['config_source'].startswith('external:'))
+            self.assertIsNotNone(providers.asr)
+            with patch('aivoicebench.cloud_transport.HTTPTransport.request',
+                       side_effect=scripted_request):
+                provider = providers.asr(self.root / 'evidence')
+                output = provider.transcribe(self.audio)
+
+        self.assertEqual(provider.mode, 'seed_standard')
+        self.assertEqual([call[1] for call in calls], [STANDARD_SUBMIT_API, STANDARD_QUERY_API])
+        request_body = json.loads(calls[0][3])
+        self.assertIs(request_body['request']['enable_speaker_info'], True)
+        self.assertEqual(calls[0][2]['X-Api-Resource-Id'], 'volc.seedasr.auc')
+        self.assertIn('enable_speaker_info', output.profile['interface_contract_verified'])
+        self.assertEqual(output.profile['capability_contract_pending']
+                         ['speaker_separation']['interface_contract'], 'verified')
+        self.assertNotIn('test-api-key', json.dumps(snapshot))
+
+    def test_file_mode_contradicting_the_endpoint_fails_closed(self):
+        """A declared file_mode that the endpoint cannot honour is refused, not inferred."""
+        data = _seed_standard_providers_yaml()
+        profile = next(p for p in data['profiles'] if p['id'] == 'volc-file-asr')
+        profile['base_url'] = 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash'
+        profile['parameters']['resource_id'] = 'volc.bigasr.auc_turbo'
+        # file_mode stays seed_standard while the endpoint is the flash contract.
+        _write_yaml(self.providers_path, data)
+
+        with self._external_env():
+            _snapshot, providers = self.store.capture()
+            with patch('aivoicebench.cloud_transport.HTTPTransport.request',
+                       side_effect=AssertionError('a refused contract must not send a request')):
+                with self.assertRaises(ProviderFailure):
+                    providers.asr(self.root / 'evidence')
 
 
 if __name__ == '__main__':

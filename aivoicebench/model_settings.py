@@ -384,7 +384,10 @@ def build_run_providers(doc, keys, storage_config=None):
                 endpoint=_profile['base_url'], resource_id=_params.get('resource_id','volc.bigasr.auc_turbo'),
                 timeout=_params.get('timeout_seconds',300),
                 transport_config=_transport, storage_adapter_factory=storage_adapter,
-                publication=publication)
+                publication=publication,
+                # The resolved profile's declaration is cross-checked against the
+                # (endpoint, resource_id) contract inside the provider.
+                file_mode=_params.get('file_mode'))
         doc['asr_transport_config']=dict(_transport_config)
         doc['asr_object_storage_ref']=_storage_ref or None
         # Legacy publication variables are no longer required in the production
@@ -398,11 +401,22 @@ def build_run_providers(doc, keys, storage_config=None):
         diarization=by_id.get(doc['routes']['diarization'])
         if diarization and diarization['enabled'] and diarization['protocol']=='volcengine_asr':
             from .diarization import ASRNativeDiarizationProvider
-            def diarization_factory(root, _dia=diarization):
+            from .volcengine_asr import speaker_separation_contract_status
+            _dia_params=diarization['parameters']
+            # The speaker-separation *request* contract status is a property of the
+            # selected profile, not a constant: a Seed-standard route really does
+            # send enable_speaker_info, so publishing `interface_contract_pending`
+            # for it would contradict the transcript's own provider profile
+            # (PRD-F006). Real-call verification stays a separate fact.
+            _dia_contract=speaker_separation_contract_status(
+                diarization['base_url'], _dia_params.get('resource_id','volc.bigasr.auc_turbo'),
+                diarization['model'] or 'bigmodel', _dia_params.get('file_mode'))
+            def diarization_factory(root, _dia=diarization, _status=_dia_contract):
                 return ASRNativeDiarizationProvider(
                     provider_name=_dia['provider'] or 'volcengine',
                     model=_dia['model'] or 'bigmodel',
-                    resource_id=_dia['parameters'].get('resource_id','volc.bigasr.auc_turbo'))
+                    resource_id=_dia['parameters'].get('resource_id','volc.bigasr.auc_turbo'),
+                    contract_status=_status)
     # Streaming ASR for Active Voice Test. Separate from the file ASR route:
     # different lifecycle, different evidence class (PRD-F016).
     streaming=by_id.get(doc['routes'].get('streaming_asr'))
