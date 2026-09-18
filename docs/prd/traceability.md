@@ -9,7 +9,8 @@ Issue 定义工作单元，PR 定义一次可审阅变更，工作日志记录�
 | Issue | PRD 编号 | 追踪重点 |
 | --- | --- | --- |
 | [#21](https://github.com/lybym/AIVoiceBench/issues/21) | F001–F003、N001–N002 | Recording import、不可变 Artifact、标准化与 Audio QA；真实 5–20 分钟录音导入验收 |
-| [#87](https://github.com/lybym/AIVoiceBench/issues/87) | F005、F015–F016、N004/N006 | Provider/Object Storage 外置配置；File ASR 极速版 `inline | object_storage | auto` transport；移除固定 PUT/GET/HOST 生产依赖 |\n| [#22](https://github.com/lybym/AIVoiceBench/issues/22) | F005–F006、F016、N001/N004/N005 | Volcengine File ASR、原生 speaker separation、Provider provenance 与真实云调用证据；当前不接 3D-Speaker |
+| [#87](https://github.com/lybym/AIVoiceBench/issues/87) | F005、F015–F016、N004/N006 | Provider/Object Storage 外置配置；File ASR 极速版 `inline | object_storage | auto` transport；移除固定 PUT/GET/HOST 生产依赖 |
+| [#22](https://github.com/lybym/AIVoiceBench/issues/22) | F005–F006、F016、N001/N004/N005 | Volcengine File ASR、原生 speaker separation、Provider provenance 与真实云调用证据；当前不接 3D-Speaker |
 | [#23](https://github.com/lybym/AIVoiceBench/issues/23) | F003、F008–F009、N001/N003/N007 | Silero VAD server acoustic-boundary baseline、Measurement Policy、边界不确定性与真实标注样本评估 |
 | [#24](https://github.com/lybym/AIVoiceBench/issues/24) | F006–F008、N001/N003/N005 | speaker evidence → tester/device/unknown Attribution → Turn/Response → Canonical EventTimeline；冲突与未知必须保留 |
 | [#25](https://github.com/lybym/AIVoiceBench/issues/25) | F009、M001–M010、N001/N003/N007 | 唯一 Canonical Metric Engine、MetricResult、证据资格与 denominator/abstention 语义 |
