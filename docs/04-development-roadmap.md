@@ -84,11 +84,11 @@ AIVoiceBench 同时推进两条一级正式测量链：
 ### R3.5 — Active TTS V3 WebSocket split (#98)
 
 1. 保留 `tts` 作为 Fixed/asset synthesis route，目标协议改为火山 V3 WebSocket 单向流式；新增 `streaming_tts` route 专用于 Free 的 V3 WebSocket 双向流式；不允许一个模糊 profile 静默猜 transport；
-2. Fixed：完整 Case 文本经单向 WS 流式返回 Provider audio，完成校验/规范化后冻结为 Stimulus Artifact，记录 SHA-256、sample metadata、speaker/voice、resource/model 与 non-secret config snapshot；正式 Run 仅播放冻结资产；
-3. Free：LLM Provider/Agent 增加 streaming output，按安全可播边界顺序送入双向 TTS session；audio chunks 按 Turn identity 流式送到 Browser Station 播放；
+2. Fixed：完整 Case 文本经单向 WS **固定流式返回 MP3**，完成校验后直接冻结为 MP3 Stimulus Artifact，记录 SHA-256、sample metadata、speaker/voice、resource/model 与 non-secret config snapshot；正式 Run 仅播放冻结资产，不做 WAV 转换；
+3. Free：LLM Provider/Agent 增加 streaming output，按安全可播边界顺序送入双向 TTS session；**MP3 audio chunks** 按 Turn identity 流式送到 Browser Station 播放；
 4. Stop/cancel/stale Turn/断连必须终止 session 或丢弃迟到 chunk；不得把上一 Turn 音频串入下一 Turn，也不得在失败时静默退回旧 SSE/单向接口；
-5. `providers.yaml` 暴露官方 V3 文档实际支持的 speaker、format/encoding、sample rate、speech rate，以及协议/音色支持时的 loudness/pitch 等参数；unsupported 参数组合显式失败；
-6. 流式 Provider 编码与 Frozen WAV Stimulus 分层：不得要求 Provider 直接流式返回 WAV；必要时由服务端在 Fixed 准备阶段封装/转码；
+5. `providers.yaml` **不暴露 TTS format/encoding**；Active TTS 输出格式固定为 MP3。仅暴露官方 V3 文档实际支持且有必要调整的 speaker/voice、sample rate、speech rate，以及协议/音色支持时的 loudness/pitch 等参数；unsupported 参数组合显式失败；
+6. Fixed 直接冻结 Provider 返回的 MP3 Stimulus，不再增加 WAV 封装/转码层，减少格式分支和配置面；
 7. 单向/双向协议、鉴权、binary frames、session lifecycle 与错误处理必须基于当前官方文档建立 contract tests，并分别完成真实云 provider integration evidence。
 
 阶段出口：Fixed 的正式播放资产可冻结、可 hash、可复现；Free 可在 LLM 完整 response 结束前开始收到并播放 TTS 音频；两者保持 credential/backend boundary 与 Control/Measurement Evidence 分层。
