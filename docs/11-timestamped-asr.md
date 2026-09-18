@@ -4,7 +4,9 @@
 
 Provider boundary 独立于 hardware/controller。File ASR Provider 返回原生响应、provider/model/config fingerprint，并规范化到 Transcript contract。Local operation 不要求 TTS/ASR/Judge 全部离线。
 
-2026-09-16 路线决定：Recording Analysis 当前优先把 **火山 File ASR 的自动说话人分离**用完整，暂不把 3D-Speaker 作为必要依赖。ASR-native speaker label 是匿名 cluster evidence，不是 tester/device role truth。\n\n2026-09-18 配置/transport 决策：P0 File ASR 默认使用火山录音文件识别极速版 HTTP。目标由外置 `providers.yaml` 定义 endpoint/model/resource 与 `audio_transport`；`auto` 模式下小文件使用 Base64 `audio.data`，大文件才通过外置 `storage.yaml` 选择私有 TOS + 短期 Presigned GET 的 `audio.url`。对象存储是 transport adapter，不是所有 File ASR 的强制前置。
+2026-09-16 路线决定：Recording Analysis 当前优先把 **火山 File ASR 的自动说话人分离**用完整，暂不把 3D-Speaker 作为必要依赖。ASR-native speaker label 是匿名 cluster evidence，不是 tester/device role truth。
+
+2026-09-18 配置/transport 决策：P0 File ASR 默认使用火山录音文件识别极速版 HTTP。目标由外置 `providers.yaml` 定义 endpoint/model/resource 与 `audio_transport`；`auto` 模式下小文件使用 Base64 `audio.data`，大文件才通过外置 `storage.yaml` 选择私有 TOS + 短期 Presigned GET 的 `audio.url`。对象存储是 transport adapter，不是所有 File ASR 的强制前置。
 
 ## Run locally — explicit offline fallback
 
