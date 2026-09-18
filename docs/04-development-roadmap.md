@@ -29,8 +29,8 @@ AIVoiceBench 同时推进两条一级正式测量链：
 | --- | --- | --- |
 | Recording Analysis | 导入、标准化、云 File ASR、聚类/归属、融合，以及有角色证据时的 Turn/Event/Metric 主链已有 | #87 外置配置 + inline/TOS transport 已由 #90 实现（software_verified，真实 TOS 路径待 main 线验证）；真实火山 speaker separation（#22）、Judge/Findings、人工修订、wavesurfer、完整报告和真实录音验收（#85）未闭环 |
 | Browser Station implementation | 当前 `aivoicebench/static/` 使用 HTML/CSS/Vanilla JS，核心 JS 入口为 `app.js`、`models.js`、`voice_test.js`、`pcm_capture_worklet.js` | TypeScript toolchain、等价迁移、typecheck/build、Docker 静态交付与 browser/container 回归尚未完成（#84） |
-| Fixed Voice Test | 浏览器播放、麦克风、Control RMS VAD、WebSocket 控制、Turn ID、超时、停止和迟到事件防护已有 | TEN VAD Browser Adapter、Frozen Golden Voice、Measurement Audio、条件 Barge-in、设备设置快照和实体设备验收未闭环 |
-| Free Voice Test | AudioWorklet 在设备回答阶段把 PCM 送入 Streaming ASR；partial/final、Agent 下一轮和显式 File ASR fallback 已有 | 不是跨整次 Run 的 durable Measurement Audio；真实云/设备、预算、Coverage、Barge-in 与 Streaming TTS 未完成 |
+| Fixed Voice Test | 浏览器播放、麦克风、Control RMS VAD、WebSocket 控制、Turn ID、超时、停止和迟到事件防护已有；当前 TTS 仍为 V3 HTTP SSE | #98 的 V3 单向 WS asset synthesis、冻结 Stimulus、TEN VAD Browser Adapter、Frozen Golden Voice、Measurement Audio、条件 Barge-in、设备设置快照和实体设备验收未闭环 |
+| Free Voice Test | AudioWorklet 在设备回答阶段把 PCM 送入 Streaming ASR；partial/final、Agent 下一轮和显式 File ASR fallback 已有；当前仍等待完整 LLM/TTS 音频资产 | #98 的 Streaming LLM → V3 双向 WS TTS → streaming playback 未完成；另有 durable Measurement Audio、真实云/设备、预算、Coverage、Barge-in 缺口 |
 | Canonical metrics | `compute_timeline_metrics(...)` 输出 MetricResult 3.0.0 | 只由 Recording Timeline 调用；Active Measurement 尚无 Canonical Timeline，不得另建平行公式 |
 | Measurement Equivalence | 产品/方法概念已定义 | 没有真实配对实验；保持 validation_pending |
 
@@ -81,6 +81,18 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 阶段出口：Browser Station 以 TypeScript 作为主要手写源码语言，typecheck/build 与现有浏览器行为验证通过；控制链可以在不依赖 server receive timestamp 的情况下产生 sample-indexed provisional speech events。
 
+### R3.5 — Active TTS V3 WebSocket split (#98)
+
+1. 保留 `tts` 作为 Fixed/asset synthesis route，目标协议改为火山 V3 WebSocket 单向流式；新增 `streaming_tts` route 专用于 Free 的 V3 WebSocket 双向流式；不允许一个模糊 profile 静默猜 transport；
+2. Fixed：完整 Case 文本经单向 WS 流式返回 Provider audio，完成校验/规范化后冻结为 Stimulus Artifact，记录 SHA-256、sample metadata、speaker/voice、resource/model 与 non-secret config snapshot；正式 Run 仅播放冻结资产；
+3. Free：LLM Provider/Agent 增加 streaming output，按安全可播边界顺序送入双向 TTS session；audio chunks 按 Turn identity 流式送到 Browser Station 播放；
+4. Stop/cancel/stale Turn/断连必须终止 session 或丢弃迟到 chunk；不得把上一 Turn 音频串入下一 Turn，也不得在失败时静默退回旧 SSE/单向接口；
+5. `providers.yaml` 暴露官方 V3 文档实际支持的 speaker、format/encoding、sample rate、speech rate，以及协议/音色支持时的 loudness/pitch 等参数；unsupported 参数组合显式失败；
+6. 流式 Provider 编码与 Frozen WAV Stimulus 分层：不得要求 Provider 直接流式返回 WAV；必要时由服务端在 Fixed 准备阶段封装/转码；
+7. 单向/双向协议、鉴权、binary frames、session lifecycle 与错误处理必须基于当前官方文档建立 contract tests，并分别完成真实云 provider integration evidence。
+
+阶段出口：Fixed 的正式播放资产可冻结、可 hash、可复现；Free 可在 LLM 完整 response 结束前开始收到并播放 TTS 音频；两者保持 credential/backend boundary 与 Control/Measurement Evidence 分层。
+
 ### R4 — wavesurfer.js Evidence Workbench
 
 1. 引入 wavesurfer.js core + Regions + Timeline；
@@ -107,8 +119,8 @@ AIVoiceBench 同时推进两条一级正式测量链：
 ## 5. 与既有产品里程碑的映射
 
 - **M1 Recording Analysis**：R0、R1、R2、R4 优先收口配置/transport 与真实录音证据链。
-- **M2 Fixed Voice Test**：A、B、C、D 完成普通 turn-taking 最小闭环；Browser Station TypeScript 等价迁移属于 A 的工程基础，不新增产品能力。
-- **M3 Free Voice Test Agent**：复用相同 Browser Station/Measurement Plane，完成 E、F 的实时展示/最终化。
+- **M2 Fixed Voice Test**：A、B、C、D 完成普通 turn-taking 最小闭环；#98 完成 V3 单向 WS stimulus synthesis + frozen asset；Browser Station TypeScript 等价迁移属于 A 的工程基础，不新增产品能力。
+- **M3 Free Voice Test Agent**：#98 完成 Streaming LLM → V3 双向 WS TTS → streaming playback，再复用相同 Browser Station/Measurement Plane 完成 E、F 的实时展示/最终化。
 - **M4 关联与验证**：完成 G；外部录音关联服务于复测/方法验证，不承担 Active Result 转正。
 - **M5 Compare / Regression**：只比较兼容 case/asset/metric/policy 版本；H 在证据与硬件条件成熟后进入。
 
