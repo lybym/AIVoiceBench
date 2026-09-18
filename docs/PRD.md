@@ -1,6 +1,6 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.5.4
+prd_version: 1.5.5
 status: modularized_for_owner_review
 updated: 2026-09-18
 implementation_baseline: v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd
@@ -73,7 +73,7 @@ Linux Server + Docker Backend
 - 网络 RTT 与服务器调度延迟可以影响交互控制，但不得进入正式声学指标；核心原则是：**计算可以远，音频时间轴必须在现场生成。**
 - 当前浏览器主目标仍是 Chrome；正式远端部署必须满足浏览器安全上下文要求并记录实际音频 constraints/settings。
 - **Provider 与对象存储配置必须外置。** LLM / File ASR / Streaming ASR / TTS 的 endpoint、model/resource、voice、route 与协议参数由服务器侧外置 provider 配置文件提供；对象存储 endpoint/region/bucket/prefix/TTL/cleanup 由独立 storage 配置文件提供。长期密钥只通过后端 secret/environment reference 解析，不写入配置文件、Git、浏览器、Run snapshot 或报告。该目标由 [Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 实现；当前 SQLite model settings 与固定 Signed URL publisher 在迁移完成前只属于现状兼容层。
-- **Active TTS 按生命周期拆分。** Fixed Case Runner 使用火山 V3 WebSocket 单向流式接口：完整话术一次提交、音频流式返回，在正式执行前规范化并冻结为带 Hash/sample metadata/provider snapshot 的 Stimulus Artifact；正式 Run 只播放冻结资产。Free Test Agent 使用火山 V3 WebSocket 双向流式接口：LLM 文本流实时送入 TTS、音频流实时回传并播放。目标 provider route 区分 `tts`（asset/one-shot text）与 `streaming_tts`（streaming text/audio）；音色、采样率、编码、语速以及协议实际支持的音量/音调等参数必须按官方 V3 字段外置配置，unsupported 组合不得静默忽略。实现由 [Issue #98](https://github.com/lybym/AIVoiceBench/issues/98) 跟踪；当前 HTTP SSE TTS 不因本决策被写成已迁移。
+- **Active TTS 按生命周期拆分。** Fixed Case Runner 使用火山 V3 WebSocket 单向流式接口：完整话术一次提交、MP3 音频流式返回，在正式执行前校验并直接冻结为 MP3 Stimulus Artifact；正式 Run 只播放冻结资产。Free Test Agent 使用火山 V3 WebSocket 双向流式接口：LLM 文本流实时送入 TTS、MP3 音频流实时回传并播放。目标 provider route 区分 `tts`（asset/one-shot text）与 `streaming_tts`（streaming text/audio）；**TTS 输出格式固定为 MP3，不属于可配置项，也不再转换为 WAV**。音色、采样率、语速以及协议实际支持的音量/音调等参数按官方 V3 字段外置配置，unsupported 组合不得静默忽略。实现由 [Issue #98](https://github.com/lybym/AIVoiceBench/issues/98) 跟踪；当前 HTTP SSE TTS 不因本决策被写成已迁移。
 - Recording Analysis 的 P0 File ASR 默认选择火山**录音文件识别极速版 HTTP**：小文件优先通过 `audio.data` Base64 直传；超过可配置阈值时才使用私有对象存储 + 短期 Presigned GET URL。对象存储不是所有 File ASR 的强制依赖，Streaming ASR 也不经过该文件发布层。
 
 普通电脑扬声器与麦克风是 M2 的基础能力；专业 HIL、同步校准、loopback 和低层声卡接口是 P3 扩展。Recording Analysis 使用 File ASR；Active 控制使用 Streaming ASR。二者的 provider timestamp 都不直接充当正式声学边界。
@@ -130,6 +130,6 @@ P0/P1 表示开发先后，不表示产品可选性。M1 是 Recording Analysis 
 
 ## 5. 当前审计与历史入口
 
-当前**实现基线**仍是 `v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd`；本次 1.5.4 收敛 Active TTS 的 V3 WebSocket 协议分工与配置边界，不升级代码实现状态。历史提交、预发布、Issue/PR 和工作日志仍作为审计证据。当前追踪和主要缺口见 [Requirement 追踪与审计结论](prd/traceability.md)，版本演进见 [PRD 变更历史](prd/changelog.md)。
+当前**实现基线**仍是 `v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd`；本次 1.5.5 在既有 V3 WebSocket 协议分工上进一步固定 Active TTS 输出为 MP3，并移除 format/encoding 配置面，不升级代码实现状态。历史提交、预发布、Issue/PR 和工作日志仍作为审计证据。当前追踪和主要缺口见 [Requirement 追踪与审计结论](prd/traceability.md)，版本演进见 [PRD 变更历史](prd/changelog.md)。
 
 技术专题文件不构成平行 PRD：例如 [Active Measurement 设计](25-active-measurement.md) 说明实现边界，[组件策略](26-remote-browser-component-strategy.md) 记录 2026-09-16 的技术决策，[指标定义](03-metric-definition.md) 说明契约与公式，[Roadmap](04-development-roadmap.md) 说明实施顺序。
