@@ -38,6 +38,30 @@ Linux Server：
 
 正式远端访问需要 TLS/secure context，并应通过反向代理或等效机制提供认证、HTTPS/WSS、连接超时和上传限制。当前 v0.4.0 的 localhost 单用户安全假设不能直接扩展成公网部署安全结论。
 
+## 外置 Provider / Storage 配置
+
+2026-09-18 的目标部署把所有模型/语音 Provider 与对象存储的非敏感参数移出镜像和应用代码：
+
+```text
+host
+├─ /etc/aivoicebench/providers.yaml
+└─ /etc/aivoicebench/storage.yaml
+          │
+          └─ read-only mount
+                 ↓
+          Linux Docker Backend
+```
+
+仓库只提供 `config/providers.example.yaml` 和 `config/storage.example.yaml`。运行时可用
+`AIVOICEBENCH_PROVIDERS_CONFIG` / `AIVOICEBENCH_STORAGE_CONFIG` 指定文件位置，但这两个
+环境变量只保存**路径**；endpoint/model/resource/voice/route、TOS endpoint/region/bucket/prefix/TTL
+等实际配置应写在外置文件。长期 API Key / AK / SK 仍通过文件中的 env reference 在后端解析，
+不得写进 YAML。
+
+当前 `main` 的 SQLite model-settings 与 `AIVOICEBENCH_AUDIO_PUT_URL/GET_URL/HOST` 仍是
+代码事实；[Issue #87](https://github.com/lybym/AIVoiceBench/issues/87) 负责迁移。文档中的外置
+配置不能在 #87 合并前被宣称为已实现。
+
 ## 接口与边界
 
 | 方法 | 路径 | 当前用途 |
@@ -84,11 +108,21 @@ browser / OS
 
 对 AEC/NS/AGC 的 request 不代表浏览器实际遵守；最终应读取可获得的 `MediaTrackSettings` 并进入 Run provenance。
 
-## Cloud provider and speaker separation
+## Cloud provider, File ASR transport and speaker separation
 
-云 ASR 需要服务路由、凭据和对应音频 transport 配置。Recording Analysis 当前优先验证火山 File ASR 原生 speaker separation；ASR-native labels 仍是匿名 speaker clusters，必须进入 Attribution 才能得到 tester/device/unknown。
+云 Provider 需要外置服务路由与后端凭据引用。Recording Analysis 当前优先验证火山 File ASR 原生 speaker separation；ASR-native labels 仍是匿名 speaker clusters，必须进入 Attribution 才能得到 tester/device/unknown。
 
-当前阶段不要求 3D-Speaker。详见 [Recording Backbone](23-recording-backbone.md) 与 [组件策略](26-remote-browser-component-strategy.md)。
+File ASR P0 默认使用火山极速版 HTTP，并支持：
+
+```text
+auto
+├─ small canonical WAV → Base64 audio.data
+└─ large canonical WAV → private TOS → short-lived Presigned GET → audio.url
+```
+
+因此对象存储是大文件 URL transport 的可选基础设施，不是所有 File ASR 的启动前置，也不参与 Streaming ASR。Backend 已持有文件时直接使用 Storage Adapter 上传，不再要求人为预先生成固定 PUT URL。私有对象完成识别后应删除，并用 bucket lifecycle 作为兜底清理。
+
+当前阶段不要求 3D-Speaker。详见 [Recording Backbone](23-recording-backbone.md)、[模型/配置管理](16-model-management.md) 与 [组件策略](26-remote-browser-component-strategy.md)。
 
 ## Evidence UI
 
@@ -99,7 +133,7 @@ Web Evidence Workbench 目标使用 wavesurfer.js。音频 Artifact 仍由 Serve
 - 浏览器不持有长期 ASR/LLM/TTS secret；
 - 远端部署使用 HTTPS/WSS；
 - 不把当前 localhost 明文模型配置假设直接搬到公网；
-- 音频上传/发布 URL、对象存储凭据和 Provider key 不写入 Issues、报告、URL query 或前端 bundle；
+- Provider key、对象存储 AK/SK、完整 Presigned URL 不写入 Issues、报告、Run snapshot、普通日志、URL query 或前端 bundle；
 - reverse proxy、authentication、rate/size limits 与 server hardening 属于远端正式部署的验收项。
 
 ## Validation boundary
