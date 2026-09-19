@@ -61,6 +61,8 @@ Issue 定义工作单元，PR 定义一次可审阅变更，工作日志记录�
 
 Recording Analysis 的实现完成、软件验证、容器验证、浏览器验证、真实云调用和 `real_recording_verified` 必须分别记录，不得相互替代。M1 最终是否通过以 #85 的真实证据 Gate 为准。
 
+`#85` 的证据契约已由 `AcceptanceRecord 1.0.0`（`schemas/acceptance-evidence.schema.json`）与 `aivoicebench acceptance init|check` 落盘（software_verified）：五个 gate 必须分别带证据状态化，未授权输入不得写成 `real_recording_verified`，分母不得只报成功，人工层必须与机器原件分离。**该契约只是记录与检查工具，本身不产生任何真实录音证据，也不表示 M1 已通过。**
+
 Active Measurement 继续按 M2–M4 独立推进；Browser Station TypeScript、Frozen Golden Voice、TEN VAD、Live Measurement Audio、Stimulus Alignment、Active Canonical Timeline、Active MetricResult、Measurement Equivalence 与专业 HIL 不进入本表的 M1 / P0 主链。它们仍由各自 Requirement ID、Roadmap 与对应 Issue 跟踪。
 
 历史已关闭或被吸收的 Issue（包括早期 schema/runner/provider 元任务）保留为审计证据，不再作为当前 P0 的平行需求入口；旧 Issue、PR、发布标签和归档记录均不能覆盖当前 PRD Requirement 与验收状态。
