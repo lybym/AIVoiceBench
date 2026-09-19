@@ -58,6 +58,9 @@ python -m aivoicebench acceptance check <record.json> \
 - 未达到的 gate 必须写明缺口；**没有真实验收记录时不得把任何 gate 写成已验证**。blocking gap 未清零时记录不得判为 `complete`。
 - 判为 `verified` 的 gate 必须带 `verified_at` 时间戳；不能定位在时间轴上的验证不可审计。
 - 暴露扫描读取被遍历根下**每个可解码为文本的文件**，无法解码的文件作为未覆盖项报出而不是当作干净；同一个根被重复声明时只遍历一次。扫描**不做降级遍历**的目录（`dist`/`build`/`node_modules`/`.git`/`.venv`/`__pycache__`/缓存目录等环境与构建产物）逐条记入 `repository_directories_skipped`，其内容**不在本次扫描覆盖范围内**；二进制后缀、超过 8 MiB 的文件也分别记入 `repository_files_unread`。上述排除项与“定义/验证检测模式本身的策略源码”是扫描的**全部**排除项，且全部出现在结果与 Markdown 报告中——"clean" 不得表示"没有看过"。
+- **记录自己声明的 exposure finding 会被读取。** `exposure_scan.findings` 非空即表示该次扫描检出了不得提交的材料，此时记录不得被判为验收证据（与 `clean: true` 并存时明确报出二者矛盾）；`clean` 为真的唯一形态是 `findings` 为空。检查器自己扫出的材料与记录自报的材料同等处理。
+- **分母不得与已声明的 evaluation 矛盾。** 除「任何已声明 evaluation 都必须有其 stage 分母」外，其**对偶**同样成立：声明为 `measured` 的 evaluation，其 stage 的 `expected_total` 不得为 0——把 15 个 stage 全部报成空分母虽然「交代了每个 stage」，却一条失败/未知/弃权都没计入。非 `measured`（如 `not_attempted`）的 evaluation 允许其 stage 为 0 记录。
+- **验证时间必须落在可重建的时间轴上。** 判为 `verified` 的 gate 除必须带 `verified_at` 外，该时间不得晚于记录写入时间（`recorded_at`），也不得早于授权样本的 `authorization.authorized_at`；无法解析的时间戳不会被当作「顺序正确」，但仍须满足存在性要求。
 - **声明的时长/采样率/声道/编码与声明的 artifact 尺寸必须自洽。** 对未被压缩的 raw PCM 编码（`PCM_S16LE` 等），记录自身声明的 `duration_ms × sample_rate_hz × channels × 每样本字节数` 即为 artifact 应有的大小；与 `byte_length` 不符判为 error（1 ms 容差）。对 mp3/m4a/opus 等压缩或容器格式**不发明**任何尺寸算术，只做文件尺寸对账。**这道算术是否行使必须被具名披露**：`encoding` 是自由文本，未识别拼写（如 `wav`）或压缩编码会让该对照不适用，因此结果给出 `audio_size_arithmetic_applied` 与 `audio_size_arithmetic_not_applicable`，Markdown 报告列出 “Audio size arithmetic NOT applied to …”。控制未行使时**不得**读作已行使——这是 `repository_directories_skipped`/`repository_files_unread`/`detection_policy_sources_skipped` 同一原则在此处的落实。
 
 检查器本身只是工具，其通过不等于 M1 通过；它只能证明声明摘要与本地文件一致、声明之间互相授权，**不能证明某个声明样本确实是授权真实录音**。区间、来源与授权等只能与记录自身对账的条件已在结果 `declared_only_controls` 中逐项列出，不得据此声称检查器测量过录音。M1 仍以真实证据记录为准。

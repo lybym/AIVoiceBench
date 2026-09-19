@@ -570,6 +570,31 @@ class ClaimAuthorizationTest(unittest.TestCase):
             result = validate_complete(document)
         self.assertEqual(result['status'], STATUS_COMPLETE)
 
+    def test_a_verification_before_the_recording_was_authorized_is_rejected(self):
+        # P2 hardening: the timestamp was only required to exist, so a gate verified
+        # before the sample was authorized still read as a reconstructible acceptance.
+        document = record()
+        gate(document, 'real_recording_verified')['verified_at'] = '2026-09-19T08:00:00+00:00'
+        result = validate(document)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertIn('before sample SAMPLE-0001 was authorized', ' '.join(result['errors']))
+
+    def test_a_verification_after_the_record_was_written_is_rejected(self):
+        document = record()
+        gate(document, 'browser_verified')['verified_at'] = '2026-09-19T13:00:00+00:00'
+        result = validate(document)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertIn('after the record was written', ' '.join(result['errors']))
+
+    def test_an_unparseable_timestamp_is_not_treated_as_ordered(self):
+        # An unparseable timestamp is not silently accepted as in-order; it simply
+        # cannot be compared, and the presence requirement still applies.
+        document = record()
+        gate(document, 'software_verified')['verified_at'] = 'not-a-timestamp'
+        result = validate(document)
+        self.assertNotIn('after the record was written', ' '.join(result['errors']))
+        self.assertNotIn('was authorized', ' '.join(result['errors']))
+
 
 class VerificationControlTest(unittest.TestCase):
     """A gate may not be authorized while its own controls were not exercised."""
@@ -1616,6 +1641,84 @@ class ContractTest(unittest.TestCase):
                 self.assertIn('Audio size arithmetic NOT applied to', text)
                 self.assertIn('`SAMPLE-0001`', text)
 
+    def test_a_record_declaring_its_own_exposure_finding_is_not_clean(self):
+        # P1 regression: `exposure_scan.findings` was never read, so a record could
+        # record a committed private recording AND declare `clean: true` and still be
+        # reported complete — authorized by exactly the condition PRD-N004 forbids.
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            document['exposure_scan']['findings'] = [{
+                'location': 'recordings/private-session.wav',
+                'category': 'real_recording_in_git',
+                'detail': 'committed private recording',
+                'resolution': None,
+            }]
+            document['exposure_scan']['clean'] = True
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertFalse(result['real_recording_verified'])
+        self.assertIn('the record itself declares 1 exposure finding(s)',
+                      ' '.join(result['errors']))
+        self.assertIn('declares `clean: true` at the same time', ' '.join(result['errors']))
+
+    def test_an_exposure_finding_without_a_clean_claim_is_still_not_evidence(self):
+        # The record cannot be acceptance evidence even when it does not also claim
+        # clean: a recorded finding means the scan it rests on found prohibited material.
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            document['exposure_scan']['clean'] = False
+            document['exposure_scan']['findings'] = [{
+                'location': 'recordings/private-session.wav',
+                'category': 'real_recording_in_git',
+            }]
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertIn('real_recording_in_git', ' '.join(result['errors']))
+
+    def test_an_empty_findings_list_still_reports_clean(self):
+        # The refusal must not reject the normal clean record.
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            self.assertEqual(document['exposure_scan']['findings'], [])
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_COMPLETE)
+        self.assertNotIn('exposure finding', ' '.join(result['errors']))
+
+    def test_a_measured_evaluation_on_a_zero_total_stage_is_rejected(self):
+        # P1 regression: every M1 stage reported with expected_total = 0 accounted for
+        # every stage while measuring none, and a `measured` evaluation still passed.
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            for entry in document['denominators']:
+                entry['counters'] = {key: 0 for key in entry['counters']}
+                entry['expected_total'] = 0
+                entry['evidence'] = []
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertFalse(result['real_recording_verified'])
+        self.assertIn('reports a denominator of 0 records', ' '.join(result['errors']))
+
+    def test_a_non_measured_evaluation_on_a_zero_total_stage_is_allowed(self):
+        # A stage that did not apply may legitimately be evaluated against nothing, as
+        # long as the record does not also claim a measurement on it.
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            document['evaluations'][0]['status'] = 'not_attempted'
+            document['evaluations'][0]['reason'] = 'stage did not apply to this recording'
+            for entry in document['denominators']:
+                entry['counters'] = {key: 0 for key in entry['counters']}
+                entry['counters']['not_applicable'] = 1
+                entry['expected_total'] = 1
+                entry['evidence'] = []
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertNotIn('reports a denominator of 0 records', ' '.join(result['errors']))
+        self.assertNotIn('denominator of 0', ' '.join(result['errors']))
+
     def test_a_pcm_sample_reports_that_the_size_arithmetic_ran(self):
         with tempfile.TemporaryDirectory() as directory:
             document = materialize(record(), directory)
@@ -1625,6 +1728,20 @@ class ContractTest(unittest.TestCase):
         self.assertEqual([item['encoding'] for item in result['audio_size_arithmetic_applied']],
                          ['PCM_S16LE'])
         self.assertNotIn('Audio size arithmetic NOT applied to', render_report(result))
+
+    def test_a_pcm_sample_whose_audio_declares_no_size_is_named_as_not_applied(self):
+        # P2 regression: `applied` used to name the sample as soon as *any* audio
+        # artifact declared a size, so a sample whose audio declared none was still read
+        # as "its size relation was checked".
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            document['samples'][0]['artifacts'][0]['byte_length'] = None
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['audio_size_arithmetic_applied'], [])
+        self.assertEqual(
+            [item['sample_id'] for item in result['audio_size_arithmetic_not_applicable']],
+            ['SAMPLE-0001'])
 
 
 class AcceptanceCliTest(unittest.TestCase):

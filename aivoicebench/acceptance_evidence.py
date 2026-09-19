@@ -28,6 +28,7 @@ than left to review discipline.
 import hashlib
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 from .validation import schema_errors
@@ -587,6 +588,46 @@ def _check_real_recording_gate(gate, document, errors, claim_checks, verify_arti
     claim_checks.append({'gate': gate['gate'], 'authorized': True, 'reason': None})
 
 
+def _parse_timestamp(text):
+    """Parse an ISO-8601 timestamp, or ``None`` when it is absent or unusable.
+
+    A timestamp this module cannot parse is not silently treated as ordered: the
+    caller only compares values that both parsed.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        return datetime.fromisoformat(text.strip().replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
+def _check_gate_timestamp_order(document, index, name, gate, errors):
+    """A verification cannot predate what it verified, nor postdate the record.
+
+    Requiring a timestamp only established that the field was filled. PRD-N007's
+    finalization-state concerns need the claim to sit on a reconstructible timeline, so
+    the verification time is ordered against the recording's own authorization time and
+    the time the record was written. Only pairs that both parse are compared.
+    """
+    verified_at = _parse_timestamp(gate.get('verified_at'))
+    if verified_at is None:
+        return
+    recorded_at = _parse_timestamp(document.get('recorded_at'))
+    if recorded_at is not None and verified_at > recorded_at:
+        errors.append(f'/gates/{index}: {name} is verified at {gate["verified_at"]}, after the '
+                      f'record was written ({document["recorded_at"]}); a verification cannot '
+                      'postdate the record that reports it')
+    for sample in _authorized_real_samples(document):
+        authorized_at = _parse_timestamp((sample.get('authorization') or {}).get('authorized_at'))
+        if authorized_at is not None and verified_at < authorized_at:
+            errors.append(
+                f'/gates/{index}: {name} is verified at {gate["verified_at"]}, before sample '
+                f'{sample["sample_id"]} was authorized ('
+                f'{sample["authorization"]["authorized_at"]}); a gate cannot be verified against a '
+                'recording that was not yet authorized')
+
+
 def _check_gates(document, errors, verify_artifacts):
     claim_checks = []
     present = [gate['gate'] for gate in document.get('gates') or []]
@@ -614,6 +655,7 @@ def _check_gates(document, errors, verify_artifacts):
             claim_checks.append({'gate': name, 'authorized': False,
                                  'reason': 'verified without a timestamp'})
             continue
+        _check_gate_timestamp_order(document, index, name, gate, errors)
         evidence = gate.get('evidence') or []
         if not evidence:
             errors.append(f'/gates/{index}: {name} is claimed verified without any evidence '
@@ -775,20 +817,22 @@ def _check_declared_audio_size(document, errors):
     for index, sample in enumerate(document.get('samples') or []):
         audio_artifacts = [artifact for artifact in sample.get('artifacts') or []
                            if artifact['kind'] == 'audio']
-        implied = _implied_pcm_bytes(sample)
-        declared_any = any(artifact.get('byte_length') is not None
-                           for artifact in audio_artifacts)
-        if implied is None or not declared_any:
-            if audio_artifacts:
-                not_applicable.append((sample['sample_id'], sample['encoding']))
+        if not audio_artifacts:
             continue
-        applied.append((sample['sample_id'], sample['encoding']))
+        implied = _implied_pcm_bytes(sample)
+        if implied is None:
+            not_applicable.append((sample['sample_id'], sample['encoding']))
+            continue
+        sample_applied = False
         for position, artifact in enumerate(sample.get('artifacts') or []):
             if artifact['kind'] != 'audio':
                 continue
             declared = artifact.get('byte_length')
             if declared is None:
+                # This artifact declared no size, so no relation was checked for it.
+                # Reported per sample, where the assertion is about the sample.
                 continue
+            sample_applied = True
             tolerance = sample['sample_rate_hz'] * sample['channels'] \
                 * PCM_ENCODING_BYTES_PER_SAMPLE[str(sample['encoding']).upper()] \
                 * (PCM_SIZE_TOLERANCE_MS / 1000.0)
@@ -800,6 +844,12 @@ def _check_declared_audio_size(document, errors):
                     f'{round(sample["duration_ms"] / 1000.0, 3)}s), which imply about '
                     f'{int(round(implied))} bytes; a declared size that cannot describe the '
                     'declared recording is not evidence of it')
+        if sample_applied:
+            applied.append((sample['sample_id'], sample['encoding']))
+        else:
+            # The encoding had arithmetic but no audio artifact declared a size for it
+            # to be applied to, which is a non-application and is named as one.
+            not_applicable.append((sample['sample_id'], sample['encoding']))
     return applied, not_applicable
 
 
@@ -972,6 +1022,32 @@ def _check_evidence_references(document, errors, gaps):
                 'artifact')
 
 
+def _check_exposure_scan_findings(document, errors):
+    """A record may not declare material it also declares clean.
+
+    ``exposure_scan.clean`` is the record's own claim about PRD-N004, and
+    ``exposure_scan.findings`` is the record's own list of what it found. Only the
+    first was ever read, so a record could carry a ``real_recording_in_git`` finding
+    *and* `clean: true` and still be reported ``complete`` — every gate it claims would
+    rest on exactly the condition this gate exists to reject. The list is now read: a
+    recorded finding means the scan is not clean, and the only way to claim clean is to
+    record nothing.
+    """
+    declared_scan = document.get('exposure_scan') or {}
+    recorded = declared_scan.get('findings') or []
+    if not recorded:
+        return
+    categories = sorted({str(item.get('category')) for item in recorded})
+    message = (f'/exposure_scan/findings: the record itself declares {len(recorded)} exposure '
+               f'finding(s) ({", ".join(categories)}); a record that records material which must '
+               'not be committed cannot be acceptance evidence, because every gate it claims '
+               'rests on the same scan')
+    if declared_scan.get('clean') is True:
+        message += (' — and it declares `clean: true` at the same time: a clean scan is an empty '
+                    'findings list, so the declaration contradicts the list it ships with')
+    errors.append(message)
+
+
 def _check_exposure_roots(document, errors, gaps, unchecked_roots, repository_root):
     """A control that was not exercised is not a passed control."""
     if repository_root is None:
@@ -999,6 +1075,7 @@ def _check_exposure_roots(document, errors, gaps, unchecked_roots, repository_ro
 
 def _check_denominators(document, errors, gaps):
     seen = set()
+    totals = {}
     for index, entry in enumerate(document.get('denominators') or []):
         location = f'/denominators/{index}'
         if entry['stage'] in seen:
@@ -1014,14 +1091,15 @@ def _check_denominators(document, errors, gaps):
             errors.append(
                 f'{location}: a stage evaluated against {entry["expected_total"]} record(s) must cite '
                 'the evidence it was evaluated from')
+        totals[entry['stage']] = entry['expected_total']
     if not seen:
         gaps.append('no stage denominator was reported at all, so failures, unknowns and abstentions '
                     'cannot be counted (the M1 gate forbids a success-only denominator)')
-    return seen
+    return seen, totals
 
 
-def _check_denominator_coverage(document, errors, stages):
-    """A declared evaluation must have its denominator reported.
+def _check_denominator_coverage(document, errors, stages, stage_totals):
+    """A declared evaluation must have its denominator reported, and it must not be empty.
 
     An omitted stage is indistinguishable from "nothing failed there", which is how
     a success-only denominator gets built by omission. This applies to **every**
@@ -1031,6 +1109,11 @@ def _check_denominator_coverage(document, errors, stages):
     real-recording gate must report at least one evaluation and must account for
     every M1 stage; a record that claims nothing may report nothing, and its
     emptiness is visible as a pending gate rather than as an invalid claim.
+
+    The dual is also enforced: a stage that was evaluated against **zero** records
+    cannot have produced a measurement. Reporting every stage as an empty denominator
+    satisfies "every stage is accounted for" while nothing was actually evaluated, so
+    a `measured` evaluation whose stage has ``expected_total = 0`` is refused.
     """
     evaluations = list(document.get('evaluations') or [])
     claims_real_recording = (_gate(document, 'real_recording_verified') or {}).get(
@@ -1061,6 +1144,12 @@ def _check_denominator_coverage(document, errors, stages):
                 f'{evaluation["evaluation_id"]} is declared with status {evaluation["status"]!r}; an '
                 'omitted stage is indistinguishable from "nothing failed", which is a success-only '
                 'denominator')
+        elif evaluation['status'] == 'measured' and not stage_totals.get(stage):
+            errors.append(
+                f'/evaluations: evaluation {evaluation["evaluation_id"]} is declared '
+                f'`measured`, but its stage {stage} reports a denominator of 0 records; a '
+                'measurement cannot rest on a denominator that was evaluated against nothing, and '
+                'a record of all-empty denominators accounts for every stage while measuring none')
 
 
 def _check_traceability(document, errors, gaps, declared_evidence, observations):
@@ -1149,8 +1238,9 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
     audio_size_applied, audio_size_not_applicable = _check_declared_audio_size(document, errors)
     _check_evaluations(document, errors, gaps, observations)
     declared_evidence = _check_evidence_identity(document, errors)
-    stages = _check_denominators(document, errors, gaps)
-    _check_denominator_coverage(document, errors, stages)
+    stages, stage_totals = _check_denominators(document, errors, gaps)
+    _check_denominator_coverage(document, errors, stages, stage_totals)
+    _check_exposure_scan_findings(document, errors)
     _check_traceability(document, errors, gaps, declared_evidence, observations)
     _check_manual_role_corrections(document, errors, gaps)
     _check_human_review_coverage(document, errors, gaps)
