@@ -40,10 +40,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from aivoicebench.acceptance_evidence import (
     CLAIM_NOT_AUTHORIZED, EVIDENCE_POLICY_VERSION, M1_STAGES, MAX_SAMPLE_MS, MIN_SAMPLE_MS,
-    STATUS_COMPLETE, STATUS_INVALID, STATUS_NO_AUTHORIZED_RECORDING,
-    STATUS_REAL_RECORDING_PENDING, AcceptanceError, blank_record, load_record,
-    render_report, scan_secrets, sha256_file, validate,
+    PCM_ENCODING_BYTES_PER_SAMPLE, STATUS_COMPLETE, STATUS_INVALID,
+    STATUS_NO_AUTHORIZED_RECORDING, STATUS_REAL_RECORDING_PENDING, AcceptanceError,
+    blank_record, load_record, render_report, scan_secrets, sha256_file, validate,
 )
+
+
+def implied_pcm_bytes(sample):
+    """The artifact size a raw-PCM sample's own parameters imply (test-side mirror)."""
+    bytes_per_sample = PCM_ENCODING_BYTES_PER_SAMPLE.get(str(sample['encoding']).upper())
+    if bytes_per_sample is None:
+        return None
+    return (sample['sample_rate_hz'] * sample['channels'] * bytes_per_sample
+            * (sample['duration_ms'] / 1000.0))
 
 ISSUE_URL = 'https://github.com/lybym/AIVoiceBench/issues/85'
 COMMIT = '4' * 40
@@ -271,10 +280,24 @@ def materialize(document, directory):
     for index, sample in enumerate(document['samples']):
         for position, artifact in enumerate(sample['artifacts']):
             path = directory / f'{sample["sample_id"]}-{position}{Path(artifact["location"]).suffix or ".bin"}'
-            path.write_bytes(f'fixture {sample["sample_id"]} {position}'.encode('utf-8'))
+            payload = f'fixture {sample["sample_id"]} {position}'.encode('utf-8')
+            if artifact['kind'] == 'audio':
+                # A raw-PCM sample states its own duration, rate and channel count, so
+                # the fixture writes the byte count those parameters imply and then
+                # declares the size it actually wrote. Otherwise the fixture would be
+                # asserting a recording whose own three statements contradict each other.
+                implied = implied_pcm_bytes(sample)
+                if implied is not None:
+                    payload = payload.ljust(max(int(implied), len(payload)), b'\x00')
+            path.write_bytes(payload)
             artifact['location'] = str(path)
             artifact['sha256'] = sha256_file(path)
             artifact['byte_length'] = path.stat().st_size
+            if artifact['kind'] == 'audio' and implied_pcm_bytes(sample) is not None:
+                # Express the sample's duration as the one its real artifact has.
+                sample['duration_ms'] = path.stat().st_size / (
+                    sample['sample_rate_hz'] * sample['channels']
+                    * PCM_ENCODING_BYTES_PER_SAMPLE[str(sample['encoding']).upper()]) * 1000.0
     for index, review in enumerate(document['human_reviews']):
         path = directory / f'{review["review_id"]}-annotation.json'
         path.write_text(json.dumps({'review': review['review_id']}), encoding='utf-8')
@@ -291,6 +314,25 @@ def materialize(document, directory):
         path.write_text(json.dumps({'evidence': entry['evidence_id']}), encoding='utf-8')
         entry['location'] = str(path)
         entry['sha256'] = sha256_file(path)
+    return document
+
+
+def resize_audio_fixture(document, directory, duration_ms):
+    """Re-express the sample's duration with a matching, real artifact.
+
+    The duration, the artifact's real size and its declared `byte_length` are three
+    statements about one recording, so a test that moves the duration must move the
+    others with it.
+    """
+    sample = document['samples'][0]
+    artifact = sample['artifacts'][0]
+    path = Path(artifact['location'])
+    implied = implied_pcm_bytes(dict(sample, duration_ms=duration_ms))
+    payload = path.read_bytes()[:64]
+    path.write_bytes(payload.ljust(int(implied), b'\x00'))
+    artifact['sha256'] = sha256_file(path)
+    artifact['byte_length'] = path.stat().st_size
+    sample['duration_ms'] = duration_ms
     return document
 
 
@@ -378,7 +420,7 @@ class NoAuthorizedRecordingTest(unittest.TestCase):
             with self.subTest(duration=duration):
                 with tempfile.TemporaryDirectory() as directory:
                     document = materialize(record(), directory)
-                    document['samples'][0]['duration_ms'] = duration
+                    resize_audio_fixture(document, directory, duration)
                     self.assertEqual(validate_complete(document)['status'], STATUS_COMPLETE)
 
 
@@ -964,7 +1006,7 @@ class ExposureScanTest(unittest.TestCase):
         document = record()
         document['samples'][0]['artifacts'][0]['location'] = (
             'https://tos.example/bucket/SAMPLE-0001.wav?X-Amz-Signature=deadbeef')
-        findings, _, _, _ = scan_secrets(document)
+        findings, _, _, _, _ = scan_secrets(document)
         self.assertTrue(any(item['category'] == 'signed_url' for item in findings))
 
     def test_a_private_key_block_is_reported(self):
@@ -978,13 +1020,13 @@ class ExposureScanTest(unittest.TestCase):
         secret = 'Bearer abcdefgh12345678'
         document = record()
         document['notes'] = secret
-        findings, _, _, _ = scan_secrets(document)
+        findings, _, _, _, _ = scan_secrets(document)
         self.assertTrue(findings)
         self.assertNotIn(secret, json.dumps(findings))
 
     def test_a_digest_is_not_mistaken_for_a_credential(self):
         document = record()
-        findings, _, _, _ = scan_secrets(document)
+        findings, _, _, _, _ = scan_secrets(document)
         self.assertEqual(findings, [])
 
     def test_declaring_a_clean_scan_while_material_is_present_is_rejected(self):
@@ -1015,7 +1057,7 @@ class ExposureScanTest(unittest.TestCase):
             audio.write_bytes(b'RIFF-not-really-audio')
             document = record()
             document['exposure_scan']['scan_roots'] = [directory]
-            findings, _, _, _ = scan_secrets(document)
+            findings, _, _, _, _ = scan_secrets(document)
             self.assertTrue(any(item['category'] == 'real_recording_in_git' for item in findings))
 
     def test_scanning_a_repository_root_reports_committed_audio(self):
@@ -1023,7 +1065,7 @@ class ExposureScanTest(unittest.TestCase):
             nested = Path(directory) / 'data'
             nested.mkdir()
             (nested / 'sample.mp3').write_bytes(b'ID3')
-            findings, _, _, _ = scan_secrets(record(), repository_root=directory)
+            findings, _, _, _, _ = scan_secrets(record(), repository_root=directory)
             self.assertTrue(any(item['category'] == 'real_recording_in_git' for item in findings))
 
     def test_a_credential_outside_the_old_extension_allowlist_is_reported(self):
@@ -1095,6 +1137,36 @@ class ExposureScanTest(unittest.TestCase):
         self.assertTrue(any('test_acceptance_evidence.py' in item['location']
                             for item in result['secret_findings']))
         self.assertEqual(result['detection_policy_sources_skipped'], [])
+
+    def test_directories_the_walk_did_not_enter_are_disclosed(self):
+        # P2 regression: `dist`/`build`/`node_modules`/`.git` and friends were excluded
+        # from the scan with nothing in the result or the docs saying so, while the
+        # record and changelog claimed the policy-source files were "the only exclusion".
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'node_modules').mkdir()
+            (root / 'node_modules' / 'leak.py').write_text(
+                "secret = 'Bearer abcdefgh12345678'\n", encoding='utf-8')
+            (root / 'clean.txt').write_text('clean\n', encoding='utf-8')
+            document = record()
+            document['exposure_scan']['scan_roots'] = [directory]
+            result = validate(document)
+        disclosed = result['repository_directories_skipped']
+        self.assertTrue(any(Path(entry).name == 'node_modules' for entry in disclosed))
+        # Only the one non-skipped file was inspected.
+        self.assertEqual(result['repository_files_inspected'], 1)
+        self.assertTrue(any(Path(entry).name == 'node_modules'
+                            for entry in disclosed))
+        text = render_report(result)
+        self.assertIn('Directories the scan did not descend into', text)
+        self.assertIn('`node_modules`', text)
+
+    def test_the_policy_source_constants_carry_no_dead_entry_point(self):
+        # P2 regression: a basename-keyed constant was left behind by the round-4
+        # path-matching refactor and matched nothing.
+        from aivoicebench import acceptance_evidence as module
+        self.assertFalse(hasattr(module, 'DETECTION_POLICY_SOURCE_NAMES'))
+        self.assertTrue(module.DETECTION_POLICY_SOURCE_PATHS)
 
 
 class RepositoryControlTest(unittest.TestCase):
@@ -1455,17 +1527,50 @@ class ContractTest(unittest.TestCase):
                       ' '.join(result['errors']))
 
     def test_a_declared_duration_is_not_reported_as_a_measured_one(self):
-        # A fixture with 8 declared minutes and a few real bytes still satisfies the
-        # band, which is exactly why the result must say the band was reconciled with a
-        # declared value rather than claiming the checker measured the recording.
+        # The artifact's size now agrees with the sample's own stated parameters, and
+        # the band is still a declared-value check: the result must say so rather than
+        # imply the checker measured the recording.
         with tempfile.TemporaryDirectory() as directory:
             document = materialize(record(), directory)
-            self.assertLess(
-                Path(document['samples'][0]['artifacts'][0]['location']).stat().st_size, 1000)
+            artifact = document['samples'][0]['artifacts'][0]
+            self.assertEqual(artifact['byte_length'], Path(artifact['location']).stat().st_size)
             result = validate_complete(document)
         self.assertEqual(result['status'], STATUS_COMPLETE)
         self.assertTrue(any('not a measured one' in item
                             for item in result['declared_only_controls']))
+
+    def test_a_declared_size_that_contradicts_the_sample_parameters_is_rejected(self):
+        # P1 regression: duration, rate, channels and encoding imply a size for raw PCM,
+        # so a tiny artifact cannot be declared as eight minutes of 16 kHz mono audio.
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            document['samples'][0]['artifacts'][0]['byte_length'] = 48
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertFalse(result['real_recording_verified'])
+        self.assertIn("contradicts the sample's own parameters", ' '.join(result['errors']))
+
+    def test_a_declared_size_matching_the_sample_parameters_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            sample = document['samples'][0]
+            artifact = sample['artifacts'][0]
+            artifact['byte_length'] = int(implied_pcm_bytes(sample))
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertNotIn("contradicts the sample's own parameters", ' '.join(result['errors']))
+
+    def test_a_compressed_encoding_is_not_judged_by_pcm_arithmetic(self):
+        # No size arithmetic exists for compressed encodings; the checker must not
+        # invent one, so the sample is judged only by the file-size reconciliation.
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            document['samples'][0]['encoding'] = 'MP3'
+            document['samples'][0]['artifacts'][0]['byte_length'] = 4096
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertNotIn("contradicts the sample's own parameters", ' '.join(result['errors']))
 
 
 class AcceptanceCliTest(unittest.TestCase):

@@ -214,10 +214,6 @@ DETECTION_POLICY_SOURCE_PATHS = frozenset({
     'tests/test_workbench.py',
 })
 
-#: The same files named from a scan root that *is* the repository root.
-DETECTION_POLICY_SOURCE_NAMES = frozenset(
-    entry.rsplit('/', 1)[-1] for entry in DETECTION_POLICY_SOURCE_PATHS)
-
 
 def _is_detection_policy_source(path):
     """Whether ``path`` is a copy of the detection policy's own source.
@@ -279,13 +275,15 @@ def scan_secrets(document, *, repository_root=None):
     the location and category are reported: echoing the offending text would move
     the secret into the report.
 
-    Returns ``(findings, unchecked_roots, inspected, unscanned)``. ``unchecked_roots``
-    names every declared or requested root that could not be walked: a control that
-    was never exercised must be reported as unexercised rather than as clean, because a
-    typo'd or stale path would otherwise read as "scanned, nothing found".
-    ``inspected`` counts the files examined for material, and ``unscanned`` names the
-    files that were walked but could not be decoded as text. Every file the walk
-    reached therefore lands in exactly one bucket — scanned, found, or unscanned — so
+    Returns ``(findings, unchecked_roots, inspected, unscanned, skipped_directories)``.
+    ``unchecked_roots`` names every declared or requested root that could not be walked:
+    a control that was never exercised must be reported as unexercised rather than as
+    clean, because a typo'd or stale path would otherwise read as "scanned, nothing
+    found". ``inspected`` counts the files examined for material, ``unscanned`` names
+    the files that were walked but could not be decoded as text, and
+    ``skipped_directories`` names the environment/build directories the walk did not
+    descend into. Every file the walk reached therefore lands in exactly one bucket —
+    scanned, found, or unscanned — and every directory it passed over is named, so
     "no findings" can never be an artefact of what the scan chose not to read.
 
     A root named more than once (declared in ``exposure_scan.scan_roots`` *and*
@@ -296,6 +294,7 @@ def scan_secrets(document, *, repository_root=None):
     findings = []
     unchecked = []
     unscanned = []
+    skipped_directories = []
     inspected = 0
     _scan_record(document, '', findings)
     scan_roots = document.get('exposure_scan', {}).get('scan_roots') or []
@@ -312,14 +311,22 @@ def scan_secrets(document, *, repository_root=None):
         if identity in seen_roots:
             continue
         seen_roots.add(identity)
-        targets = sorted(p for p in root.rglob('*')
-                         if p.is_file() and not _is_under_skipped_directory(p, root))
+        # One walk, partitioned: a directory in the skip list is recorded and not
+        # descended into, everything else is a scan target.
+        targets = []
+        for path in root.rglob('*'):
+            if path.is_dir():
+                if path.name in _TEXT_SCAN_SKIP_DIRECTORIES:
+                    skipped_directories.append(str(path))
+            elif not _is_under_skipped_directory(path, root):
+                targets.append(path)
+        targets.sort()
         inspected += len(targets)
         for target in targets:
             reason = _scan_target(target, findings)
             if reason is not None:
                 unscanned.append({'location': str(target), 'reason': reason})
-    return findings, unchecked, inspected, unscanned
+    return findings, unchecked, inspected, unscanned, sorted(set(skipped_directories))
 
 
 def _is_under_skipped_directory(path, root):
@@ -700,6 +707,84 @@ def _check_human_reviews(document, errors):
             errors.append(f'{location}/artifact/location: must name the preserved review material')
 
 
+#: Bytes per sample for encoding names that describe raw, uncompressed PCM. The M1
+#: acceptance samples are recorded as raw PCM, so for these encodings the record's own
+#: `duration_ms`, `sample_rate_hz` and `channels` imply the artifact's size. Encodings
+#: that are compressed or containerised (mp3, m4a, opus, …) are deliberately absent:
+#: no such arithmetic exists for them, and inventing one would be exactly the
+#: fabricated-measurement failure this checker exists to prevent.
+PCM_ENCODING_BYTES_PER_SAMPLE = {
+    'PCM_S16LE': 2,
+    'PCM_S16BE': 2,
+    'PCM_U8': 1,
+    'PCM_S8': 1,
+    'PCM_S24LE': 3,
+    'PCM_S24BE': 3,
+    'PCM_S32LE': 4,
+    'PCM_S32BE': 4,
+    'PCM_F32LE': 4,
+    'PCM_F32BE': 4,
+}
+
+#: Rounding allowance when comparing a declared size with the size the record's own
+#: sample parameters imply, expressed as a fraction of a second of audio.
+PCM_SIZE_TOLERANCE_MS = 1
+
+
+def _implied_pcm_bytes(sample):
+    """The artifact size the sample's own declared parameters imply, or ``None``.
+
+    Returns ``None`` for any encoding this module has no size arithmetic for, so an
+    unknown or compressed encoding is never silently treated as if it had been
+    checked.
+    """
+    encoding = str(sample.get('encoding') or '').upper()
+    bytes_per_sample = PCM_ENCODING_BYTES_PER_SAMPLE.get(encoding)
+    if bytes_per_sample is None:
+        return None
+    channels = sample.get('channels')
+    rate = sample.get('sample_rate_hz')
+    duration = sample.get('duration_ms')
+    if not isinstance(channels, int) or not isinstance(rate, int) \
+            or not isinstance(duration, (int, float)):
+        return None
+    return rate * channels * bytes_per_sample * (duration / 1000.0)
+
+
+def _check_declared_audio_size(document, errors):
+    """The declared artifact size must agree with the sample's own parameters.
+
+    A record states a duration, a sample rate, a channel count and an encoding, and
+    separately states the artifact's `byte_length`. For raw PCM those two statements
+    are arithmetically related, so a 48-byte artifact cannot be eight minutes of
+    16 kHz mono S16LE audio (~15.36 MB). The size check alone would accept that pair,
+    because both numbers are the author's; this closes the gap between them without
+    decoding any audio and without claiming anything about encodings that have no
+    such arithmetic.
+    """
+    for index, sample in enumerate(document.get('samples') or []):
+        implied = _implied_pcm_bytes(sample)
+        if implied is None:
+            continue
+        for position, artifact in enumerate(sample.get('artifacts') or []):
+            if artifact['kind'] != 'audio':
+                continue
+            declared = artifact.get('byte_length')
+            if declared is None:
+                continue
+            tolerance = sample['sample_rate_hz'] * sample['channels'] \
+                * PCM_ENCODING_BYTES_PER_SAMPLE[str(sample['encoding']).upper()] \
+                * (PCM_SIZE_TOLERANCE_MS / 1000.0)
+            if abs(declared - implied) > tolerance:
+                errors.append(
+                    f'/samples/{index}/artifacts/{position}: declared byte_length {declared} '
+                    f'contradicts the sample\'s own parameters ({sample["encoding"]}, '
+                    f'{sample["sample_rate_hz"]} Hz, {sample["channels"]} channel(s), '
+                    f'{round(sample["duration_ms"] / 1000.0, 3)}s), which imply about '
+                    f'{int(round(implied))} bytes; a declared size that cannot describe the '
+                    'declared recording is not evidence of it')
+
+
 def _check_artifact_identity(document, errors, gaps):
     """An authorized sample must be backed by its own artifact, once.
 
@@ -1043,6 +1128,7 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
     _check_samples(document, errors, observations)
     _check_human_reviews(document, errors)
     _check_artifact_identity(document, errors, gaps)
+    _check_declared_audio_size(document, errors)
     _check_evaluations(document, errors, gaps, observations)
     declared_evidence = _check_evidence_identity(document, errors)
     stages = _check_denominators(document, errors, gaps)
@@ -1051,8 +1137,8 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
     _check_manual_role_corrections(document, errors, gaps)
     _check_human_review_coverage(document, errors, gaps)
 
-    secret_findings, unchecked_roots, files_inspected, unscanned_files = scan_secrets(
-        document, repository_root=repository_root)
+    secret_findings, unchecked_roots, files_inspected, unscanned_files, skipped_directories = \
+        scan_secrets(document, repository_root=repository_root)
     declared_scan = document.get('exposure_scan') or {}
     for finding in secret_findings:
         errors.append(f'/exposure_scan: {finding["category"]} at {finding["location"]}')
@@ -1154,6 +1240,10 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
         'repository_files_inspected': files_inspected,
         'repository_files_unread': sorted(files_not_text),
         'detection_policy_sources_skipped': sorted(policy_sources),
+        # Named so "clean" cannot silently mean "I did not look": the walk does not
+        # descend into environment/build directories, and which ones it passed over is
+        # part of the coverage claim.
+        'repository_directories_skipped': skipped_directories,
         'unchecked_scan_roots': unchecked_roots,
         'secret_findings': secret_findings,
         # Blocking gaps and non-blocking observations are reported separately so a
@@ -1270,6 +1360,13 @@ def render_report(result):
                      f'{len(result["detection_policy_sources_skipped"])} file(s) that define or '
                      'exercise the detection patterns themselves, so a match in them is the '
                      'control, not a leak')
+    if result.get('repository_directories_skipped'):
+        names = sorted({Path(entry).name
+                        for entry in result['repository_directories_skipped']})
+        lines.append(f'- Directories the scan did not descend into: '
+                     f'{", ".join(f"`{name}`" for name in names)} '
+                     f'({len(result["repository_directories_skipped"])} in total); their contents '
+                     'are not covered by this scan')
     lines.append('')
     lines.append('## Conditions checked against declared values')
     lines.append('')

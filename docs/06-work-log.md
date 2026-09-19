@@ -1,5 +1,15 @@
 # Continuous work log
 
+## 2026-09-19 — Issue #85 Step 05（第五轮）：修复 PR #108 第五轮 Review findings（PRD-N001/N002/N004/N007）
+
+- **输入与核实。** 第五个全新独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5257333640`）对 `5c9dcaf` 给出 `REQUEST_CHANGES`：**无 P0**，1 条 P1 + 2 条 P2。审查者从零重建了一份自洽 fixture 记录来定位检查器边界，并独立验证第四轮 P1-A（gate 与人工层摘要绑定）及其余各轮修复在本 SHA 生效。
+- **P1-1（成立，已修）。** `byte_length` 已与**文件**对账，但从未与记录**自身**声明的 `duration_ms × sample_rate_hz × channels × encoding` 对账：一个 48 字节的 artifact 声明为“8 分钟 16 kHz 单声道 PCM_S16LE”（隐含 ~15,360,000 字节）仍得到 `complete` + `real_recording_verified=True` + `errors=[]`。实测复现：把 audio 替换为 48 字节文件、`duration_ms=480000`、`byte_length=48` → 修复前 `complete`（原 fixture 本身就是这种状态：声明 15,360,000、实际 21 字节）；修复后 `invalid`。修复：新增 `PCM_ENCODING_BYTES_PER_SAMPLE` 与 `_check_declared_audio_size`，对**未被压缩的 raw PCM 编码**校验 `duration_ms × rate × channels × bytes_per_sample` 与 `byte_length` 一致（1 ms 容差）。对 mp3/m4a/opus 等压缩或容器格式**不发明**尺寸算术（`_implied_pcm_bytes` 返回 `None`），未知编码不会被当作已核对——不制造伪测量。
+- **P2-1（成立，已修）。** `_TEXT_SCAN_SKIP_DIRECTORIES`（16 项，含 `dist`/`build`/`node_modules`/`.git`）静默排除，既不进结果也不进文档，而 `acceptance-status.md` 与 changelog 1.5.13(j) 当时声称只有二进制后缀、超大文件与策略源码被排除、且策略源码是“唯一的排除项”。修复：被跳过的目录逐条记入 `repository_directories_skipped` 并在 Markdown 报告新增 “Directories the scan did not descend into” 一行；文档与 changelog 改为如实列出**全部**排除项。顺带把 `scan_secrets` 的两次 `rglob` 合并为一次遍历（同一棵树只走一遍）。
+- **P2-2（成立，已修）。** `DETECTION_POLICY_SOURCE_NAMES` 是第四轮 basename→路径重构后遗留的死代码，按 basename 匹配但已无人使用。删除，并新增测试锁定它不再出现。
+- **测试（121 项，新增 5 项）。** 新增：声明尺寸与样本参数矛盾被拒（48 字节 vs 8 分钟 PCM）、与参数一致的尺寸被接受、压缩编码（MP3）不被 PCM 算术误判、被跳过目录被披露且这些目录内的文件确实未被计入 `repository_files_inspected`（以 `node_modules` 内藏凭据验证既不被扫描也不被静默当作干净）、策略源码常量无死入口。fixture 修正：`materialize()` 对 raw PCM audio 按样本参数写出**真实大小**的 artifact，并据实回填 `byte_length` 与 `duration_ms`——此前 fixture 自身（声明 15,360,000、实际 21 字节）正是本轮 P1 所描述的不自洽；新增 `resize_audio_fixture()` 供移动时长边界的测试同步调整三者。
+- **验证（实际执行）。** 定向：`tests.test_acceptance_evidence` → **121 tests, OK**。逐条复现第五轮 finding 并确认修复后结论：48 字节 artifact 声明为 8 分钟 16 kHz 单声道 PCM → `invalid`（原 `complete`）；自洽记录 → `complete` + `True`；仓库自扫描 → 披露 9 类被跳过目录（共 2516 条路径）且报告含披露行；`DETECTION_POLICY_SOURCE_NAMES` → 已不存在。受影响既有套件与全量套件由本 PR 的 CI 复跑。
+- **未验证边界（不升级为完成）。** 本 PR 仍为 **software_verified**：无真实录音、无真实云调用、无人工标注、无实体设备。`real_recording_verified` 保持**未声明**，#85 保持 Open，M1 仍未通过。第五轮 Review 同样不把“授权真实录音缺席”与既有 `test_voice_browser` flaky 计为 finding。
+
 ## 2026-09-19 — Issue #85 Step 05（第四轮）：修复 PR #108 第四轮 Review findings（PRD-N001/N002/N004/N007）
 
 - **输入与核实。** 第四个全新独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5257225461`）对 `0f91e55` 给出 `REQUEST_CHANGES`：**无 P0**，1 条 P1 + 3 条 P2。审查者从零复核，独立重跑了第三轮各项探测（baseline `complete`、synthetic 拒绝、跨样本共用 artifact 拒绝、`verified_at` 缺失拒绝、stage/counters 拒绝、缺两项控制不绿、CLI 退出码 0/2/1、108 tests OK），并确认前几轮 finding 在本 SHA 真实修复；同时如实指出本轮 resolution summary 中“21 字节文件声明 15,000,000 → invalid”的**复现步骤**描述不实（须在 materialize **之后**覆盖 `byte_length`，代码修复本身有效），该表述不应再被当作证据使用。
