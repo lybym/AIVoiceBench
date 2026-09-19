@@ -56,6 +56,10 @@ const NAV_VIEWS = ['home', 'import', 'voice-test', 'models'];
 function view(name) {
     ['home', 'import', 'voice-test', 'analysis', 'models']
         .forEach(candidate => { $(candidate).hidden = candidate !== name; });
+    // Leaving the analysis view tears the waveform/regions renderer down again.
+    const workbench = window.WB;
+    if (name !== 'analysis' && workbench)
+        workbench.unmount();
     $('breadcrumb').textContent = VIEW_TITLES[name];
     NAV_VIEWS.forEach(candidate => {
         const button = $('nav-' + candidate);
@@ -182,6 +186,13 @@ function render(data) {
         ['待复核发现', data.findings.length],
     ].map(([label, count]) => `<div class="stat">${label}<b>${count}</b></div>`).join('');
     tab('segments');
+    // The Evidence Workbench renders the backend's persisted regions for this Run.
+    // It reads the `workbench` member (or the dedicated endpoint) and never derives
+    // evidence locally; `workbench.ts` is loaded after this file.
+    const workbench = window.WB;
+    if (workbench) {
+        workbench.mount(data).catch(error => notify(error.message));
+    }
     if (data.reason)
         notify(data.reason);
 }

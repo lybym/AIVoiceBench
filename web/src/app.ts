@@ -74,6 +74,9 @@ const NAV_VIEWS: readonly ViewName[] = ['home', 'import', 'voice-test', 'models'
 function view(name: ViewName): void {
   (['home', 'import', 'voice-test', 'analysis', 'models'] as ViewName[])
     .forEach(candidate => { $(candidate).hidden = candidate !== name; });
+  // Leaving the analysis view tears the waveform/regions renderer down again.
+  const workbench = window.WB;
+  if (name !== 'analysis' && workbench) workbench.unmount();
   $('breadcrumb').textContent = VIEW_TITLES[name];
   NAV_VIEWS.forEach(candidate => {
     const button = $('nav-' + candidate);
@@ -327,6 +330,8 @@ interface AnalysisDocument {
   findings: FindingView[];
   judge_results: JudgeResultView[];
   analysis_id?: string;
+  /** Persisted-evidence projection for the Web Evidence Workbench (`workbench.ts`). */
+  workbench?: WorkbenchDocument | null;
 }
 
 function render(data: AnalysisDocument): void {
@@ -345,6 +350,13 @@ function render(data: AnalysisDocument): void {
     ['待复核发现', data.findings.length],
   ].map(([label, count]) => `<div class="stat">${label}<b>${count}</b></div>`).join('');
   tab('segments');
+  // The Evidence Workbench renders the backend's persisted regions for this Run.
+  // It reads the `workbench` member (or the dedicated endpoint) and never derives
+  // evidence locally; `workbench.ts` is loaded after this file.
+  const workbench = window.WB;
+  if (workbench) {
+    workbench.mount(data).catch(error => notify((error as Error).message));
+  }
   if (data.reason) notify(data.reason);
 }
 

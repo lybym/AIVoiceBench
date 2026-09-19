@@ -11,3 +11,9 @@
 *.sh text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+
+# Vendored third-party browser bundles are byte-exact artifacts: `VENDOR.json`
+# records their SHA256 and `tests/test_web_workbench.py` recomputes it. Any
+# end-of-line conversion on checkout (notably `core.autocrlf=true` on Windows)
+# would change the bytes and make that integrity check meaningless.
+aivoicebench/static/vendor/** -text

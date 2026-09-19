@@ -101,6 +101,10 @@ class AnalysisResponse(BaseModel):
     # decide each one, the saved human revision and the revision diff. Role-dependent
     # stages stay blocked until every cluster has an explicit user decision.
     role_review: dict = {}
+    # Reviewer-facing projection of the current AnalysisRevision for the wavesurfer
+    # Evidence Workbench (PRD-F013/F014). Every region coordinate is a persisted
+    # evidence interval; the browser never becomes a measurement producer.
+    workbench: dict = {}
 
 
 @app.get("/health")
@@ -173,7 +177,21 @@ def _run_dir(run_id):
     return path
 
 
-def _load_run(directory):
+def _workbench(directory):
+    """Persisted-evidence projection for the Evidence Workbench.
+
+    A Run whose evidence cannot be read at all must not fabricate a workbench, so
+    a projection failure is reported as an absent document instead of a partial
+    one. The projection itself never computes a metric, event or role.
+    """
+    from .workbench import build_workbench
+    try:
+        return build_workbench(directory)
+    except (OSError, ValueError):
+        return {}
+
+
+def _load_run(directory, *, include_workbench=True):
     manifest = _read(directory / 'manifest.json')
     unified = manifest.get('workflow') == 'recording_import' and not (directory / 'web-analysis').exists()
     root = directory / 'analysis' / manifest['analysis_id'] if unified else (
@@ -302,6 +320,7 @@ def _load_run(directory):
             return {}
 
     result = dict(transcript=(_read(root / 'transcript.json').get('data') or {}) if unified else {},
+        workbench=_workbench(directory) if include_workbench else {},
         stages=manifest.get('stages', {}), analysis_id=manifest.get('analysis_id', ''),
         invocation_refs=[a for a in manifest.get('artifacts', []) if a['kind']=='provider_invocation'],
         run_id=directory.name, status=status, reason=status_doc.get('reason'),
@@ -333,7 +352,7 @@ def list_runs():
     runs = []
     for entry in OUTPUT_ROOT.iterdir():
         if entry.is_dir() and entry.name.startswith('RUN-') and not entry.is_symlink():
-            data = _load_run(entry)
+            data = _load_run(entry, include_workbench=False)
             runs.append(dict(run_id=entry.name, status=data['status'],
                 device=data['profile'].get('device'), created=entry.stat().st_mtime))
     return {'runs': sorted(runs, key=lambda r: r['created'], reverse=True)}
@@ -427,6 +446,19 @@ async def save_role_review(run_id: str, request: Request):
     except Exception:
         raise HTTPException(409, '无法应用角色确认：请检查证据完整性或是否已有分析正在执行') from None
     return AnalysisResponse(**_load_run(directory))
+
+
+@app.get('/api/runs/{run_id}/evidence-workbench')
+def get_evidence_workbench(run_id: str):
+    """Regions, tracks and provenance for the wavesurfer Evidence Workbench.
+
+    Returned as its own document so CLI/automation can verify the exact evidence
+    geometry the browser is allowed to draw, independently of the page.
+    """
+    document = _workbench(_run_dir(run_id))
+    if not document:
+        raise HTTPException(404, '该记录没有可复核的证据工作台')
+    return document
 
 
 @app.get('/api/runs/{run_id}/audio')

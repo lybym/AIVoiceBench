@@ -16,8 +16,8 @@
 | F010 | Structured LLM Harness/Judge 受 schema、Evidence、版本与失败状态约束 | ✅ implemented（软件）：ImportRun 在配置了 Judge 且角色已确认时执行完整 Judge，结果通过 schema + Evidence/Event/Turn 引用校验后才成为语义证据（#10）；**真实 provider 调用与真实验收未完成**，仍由 #85 承载 |
 | F011 | Findings 必须关联指标、证据、置信度、影响和复核状态 | ✅ implemented（软件）：Finding 2.1.0 显式记录 Turn/Event/Metric/Evidence 链接，缺可解析证据引用只记录弃权、不生成 Finding（#10）；真实录音复核待验收 |
 | F012 | 人工修订为新 revision，不覆盖机器原件；可重算并显示差异 | ✅ implemented（软件）：角色 mapping 每次保存生成不可变 `role-review/role-mapping-REV-NNNN.json` 与新 AnalysisRevision，旧 artifact 字节不变并显示 diff（#95） |
-| F013 | 生成 Markdown/JSON 报告，保留结论至证据的回溯路径 | 🟡 partial；指标可用性原因已进入报告（#94），正式报告仍需人工角色确认后才产出（#95） |
-| F014 | Web/CLI 统一分析工作台；Web Evidence Workbench 使用 wavesurfer.js 展示 waveform、Regions/Timeline 与点击证据定位，不自研 waveform renderer | 🟡 partial；人工角色确认面板与区间试听已实现（#95），wavesurfer.js 集成 planned |
+| F013 | 生成 Markdown/JSON 报告，保留结论至证据的回溯路径 | 🟡 partial；报告已改为按 AnalysisRevision 产出，含证据分级（deterministic/semantic/human_reviewed）、证据索引、阶段失败/弃权与 provenance（#11）；正式 role-dependent 结论仍需人工角色确认（#95），真实录音报告待验收 |
+| F014 | Web/CLI 统一分析工作台；Web Evidence Workbench 使用 wavesurfer.js 展示 waveform、Regions/Timeline 与点击证据定位，不自研 waveform renderer | 🟡 partial；wavesurfer.js 工作台（waveform + Regions/Timeline + Finding/Metric/Event 定位 + 同步 transcript/role/provenance）与人工角色确认面板已实现（#11/#95）；Docker/远端 Chrome 实机与真实录音视觉复核待完成（#85） |
 | F015 | 后端托管的 Provider 配置、路由、快照与调用审计；目标由服务器侧外置 `providers.yaml` / `storage.yaml` 提供非敏感配置，密钥仅以 env/secret reference 解析 | 🟡 partial；#87 已实现外置 YAML loader/validator + SQLite migration/conflict + Docker read-only mount，software_verified；真实部署验收待完成 |
 | F016 | File ASR、Streaming ASR 与 TTS 按生命周期分家族；File ASR 支持 `inline | object_storage | auto`，Streaming ASR 不经过对象存储；浏览器不持有长期凭据 | 🟡 partial；#87 已实现 transport selection + TOS adapter，software_verified；真实云/设备待验收 |
 | F017 | 同一原件可产生新 AnalysisRevision；旧产物、配置和差异可追溯 | ✅ implemented（软件）：角色确认与 ASR retry 都生成新 AnalysisRevision，旧产物保留并在 `role_review.diff` 显示变化（#95） |
@@ -69,6 +69,14 @@ wavesurfer.js 负责 Web 端波形与区间交互：
 - 同步展示 transcript、speaker role、confidence、uncertainty、processor/model provenance。
 
 wavesurfer.js 不产生 Event，不改变 Artifact，也不是声学时间真值；所有 Region 坐标必须来自 AIVoiceBench Evidence/Timeline。
+
+实现口径（#11）：
+
+- `aivoicebench/workbench.py` 是唯一的投影点：它把当前 AnalysisRevision 的持久化文档投影为 `regions`/`tracks`/`metrics`/`findings`/`unavailable`/`provenance`，并通过 `GET /api/runs/{run_id}/evidence-workbench` 与 `AnalysisResponse.workbench` 发布。
+- Region 坐标：acoustic/speaker/turn/event 直接取持久化区间；metric/finding 取其**自身引用**的证据区间包络（`evidence_ids` → `event_ids` → `turn_ids` 固定优先级），并记录 `envelope_of` 与引用列表。这是坐标解析，不是重新计算指标。
+- 毫秒到秒只在后端换算一次（`start_sec`/`end_sec`），浏览器只绘制后端给的值，不重算边界。
+- 角色确认未完成时，role-dependent 轨道（turn/metric/finding）**不发布**，并在 `unavailable` 中给出 `awaiting_role_review` 原因；浏览器只呈现明确标注的 provisional 视图。
+- wavesurfer.js 7.12.12 以同源 `/static/vendor/` 方式随仓库分发（版本、来源与逐文件 SHA256 记录在 `VENDOR.json`），不依赖 CDN，浏览器不持有 Provider 凭据。
 
 ## 共同验收边界
 

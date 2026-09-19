@@ -39,6 +39,10 @@ const ELEMENT_IDS = [
   'settings-revision', 'model-hint', 'routes', 'model-list',
   'model-editor', 'editor-title', 'model-form', 'model-protocol', 'model-capabilities',
   'model-params', 'secret-state', 'clear-secret',
+  'workbench', 'wb-status', 'wb-refresh', 'wb-gate', 'wb-player', 'wb-waveform',
+  'wb-timeline', 'wb-minimap', 'wb-tracks', 'wb-evidence', 'wb-findings', 'wb-metrics',
+  'wb-events', 'wb-turns', 'wb-transcript', 'wb-revision', 'wb-provenance',
+  'wb-abstentions', 'wb-unavailable',
 ];
 
 function makeElement(id) {
@@ -134,11 +138,12 @@ const sandbox = vm.createContext(buildSandbox());
 const loaded = [];
 
 // The load order is the one `index.html` documents: the shared view helpers come
-// first, then the model-settings view, then the control layer. Reading it from the
-// page keeps the check honest if the markup ever changes.
+// first, then the model-settings view, then the control layer, then the Evidence
+// Workbench renderer. Reading it from the page keeps the check honest if the markup
+// ever changes.
 const page = readFileSync(join(STATIC, 'index.html'), 'utf8');
 const scriptOrder = [...page.matchAll(/<script src="\/static\/([^"]+)"><\/script>/g)].map(match => match[1]);
-const expectedOrder = ['app.js', 'models.js', 'voice_test.js'];
+const expectedOrder = ['app.js', 'models.js', 'voice_test.js', 'workbench.js'];
 if (JSON.stringify(scriptOrder) !== JSON.stringify(expectedOrder)) {
   errors.push(`index.html loads ${scriptOrder.join(', ')} instead of ${expectedOrder.join(', ')}`);
 }
@@ -156,7 +161,7 @@ for (const name of scriptOrder.length ? scriptOrder : expectedOrder) {
 // The page's inline `onclick` handlers and the test hooks resolve these by name.
 const expectedGlobals = ['$', 'esc', 'badge', 'notify', 'request', 'view', 'home',
                          'importView', 'voiceTestView', 'vtTab', 'openRun', 'render', 'tab',
-                         'modelsView', 'editModel', 'saveRoutes', 'VT'];
+                         'modelsView', 'editModel', 'saveRoutes', 'VT', 'WB'];
 for (const name of expectedGlobals) {
   let present = false;
   try {
@@ -180,6 +185,24 @@ try {
   if (idle !== null) errors.push('controlState() must be null before a run starts');
 } catch (error) {
   errors.push(`window.VT is not usable: ${error.message}`);
+}
+
+// `window.WB` is the published Evidence Workbench surface. It must exist as a live
+// object and must report "nothing loaded" before a Run is mounted, so a missing
+// backend document can never be rendered as a fabricated workbench.
+try {
+  const surface = vm.runInContext('Object.keys(window.WB || {}).sort().join(",")', sandbox);
+  const expected = ['eventRows', 'findingRows', 'load', 'metricRows', 'mount', 'playerState',
+                    'refresh', 'regionsFromDocument', 'selectEvidence', 'state',
+                    'transcriptRows', 'turnRows', 'unmount'];
+  const missing = expected.filter(key => !surface.split(',').includes(key));
+  if (missing.length) errors.push(`window.WB is missing: ${missing.join(', ')}`);
+  const idle = vm.runInContext('window.WB.state()', sandbox);
+  if (idle !== null) errors.push('WB.state() must be null before a workbench document is loaded');
+  const unknown = vm.runInContext('window.WB.selectEvidence("does-not-exist") === null', sandbox);
+  if (unknown !== true) errors.push('WB.selectEvidence() must return null for an unknown region id');
+} catch (error) {
+  errors.push(`window.WB is not usable: ${error.message}`);
 }
 
 const ok = errors.length === 0;
