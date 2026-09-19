@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/vad-annotation.schema.json",
+  "title": "VadAnnotation 1.0.0",
+  "description": "A human annotation of speech boundaries in one real recording, used to evaluate an acoustic boundary provider. It is bound to the recording by sha256 so a prediction produced from different audio cannot be scored against it. It carries no accuracy result and no product threshold: it is input evidence for an evaluation, not a measurement policy.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "annotation_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+    "annotator": {
+      "description": "Who made the manual decision. A machine-generated or synthetic annotation must not be recorded here as if it were human review.",
+      "type": "string",
+      "minLength": 1
+    },
+    "annotated_at": { "type": "string", "minLength": 1 },
+    "source": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "duration_ms": { "type": "number", "minimum": 0 },
+        "sample_rate_hz": { "type": "integer", "minimum": 1 },
+        "channels": { "type": "integer", "minimum": 1 },
+        "encoding": { "type": "string", "minLength": 1 }
+      },
+      "required": ["path", "sha256", "duration_ms", "sample_rate_hz", "channels", "encoding"],
+      "additionalProperties": false
+    },
+    "annotated_regions": {
+      "description": "Time ranges a human actually listened to and labelled. Optional and additive: with the field absent or empty the whole recording is treated as annotated. A produced segment outside these regions is reported as unmeasurable rather than as a false alarm.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "start_ms": { "type": "number", "minimum": 0 },
+          "end_ms": { "type": "number", "minimum": 0 }
+        },
+        "required": ["start_ms", "end_ms"],
+        "additionalProperties": false
+      }
+    },
+    "intervals": {
+      "description": "Annotated speech intervals, ordered and non-overlapping, on the recording's audio-relative millisecond time base. Silence is everything inside an annotated region that is not listed here; it is never inferred from an absent field.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "start_ms": { "type": "number", "minimum": 0 },
+          "end_ms": { "type": "number", "minimum": 0 },
+          "label": { "type": "string", "minLength": 1 }
+        },
+        "required": ["start_ms", "end_ms"],
+        "additionalProperties": false
+      }
+    },
+    "boundary_uncertainty_ms": {
+      "description": "How precisely the annotator could place a boundary. Recorded separately from any provider's uncertainty so the two are never confused.",
+      "type": "number",
+      "minimum": 0
+    },
+    "notes": { "type": ["string", "null"] }
+  },
+  "required": ["schema_version", "annotation_id", "annotator", "source", "intervals"],
+  "additionalProperties": false
+}
