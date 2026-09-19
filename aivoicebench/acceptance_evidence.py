@@ -608,24 +608,70 @@ def _check_gate_timestamp_order(document, index, name, gate, errors):
     Requiring a timestamp only established that the field was filled. PRD-N007's
     finalization-state concerns need the claim to sit on a reconstructible timeline, so
     the verification time is ordered against the recording's own authorization time and
-    the time the record was written. Only pairs that both parse are compared.
+    the time the record was written.
+
+    The control is **fail-closed**: a timestamp that is present but unparseable is an
+    error rather than a comparison that is quietly skipped, and an authorized real
+    sample that declares no authorization time is reported as the reason its ordering
+    could not be checked. Skipping the comparison silently would leave the gate
+    authorized while the control that is supposed to bound it never ran — the exact
+    "unexercised control reported as exercised" failure this module exists to prevent.
     """
-    verified_at = _parse_timestamp(gate.get('verified_at'))
+    raw_verified_at = gate.get('verified_at')
+    verified_at = _parse_timestamp(raw_verified_at)
     if verified_at is None:
+        errors.append(f'/gates/{index}: {name} declares verified_at {raw_verified_at!r}, which is '
+                      'not a parseable timestamp, so its position on the acceptance timeline '
+                      'cannot be checked')
         return
-    recorded_at = _parse_timestamp(document.get('recorded_at'))
-    if recorded_at is not None and verified_at > recorded_at:
-        errors.append(f'/gates/{index}: {name} is verified at {gate["verified_at"]}, after the '
-                      f'record was written ({document["recorded_at"]}); a verification cannot '
+    raw_recorded_at = document.get('recorded_at')
+    recorded_at = _parse_timestamp(raw_recorded_at)
+    if recorded_at is None:
+        errors.append(f'/recorded_at: {raw_recorded_at!r} is not a parseable timestamp, so '
+                      f'{name} cannot be ordered against the time the record was written')
+    elif verified_at > recorded_at:
+        errors.append(f'/gates/{index}: {name} is verified at {raw_verified_at}, after the '
+                      f'record was written ({raw_recorded_at}); a verification cannot '
                       'postdate the record that reports it')
     for sample in _authorized_real_samples(document):
-        authorized_at = _parse_timestamp((sample.get('authorization') or {}).get('authorized_at'))
-        if authorized_at is not None and verified_at < authorized_at:
+        raw_authorized_at = (sample.get('authorization') or {}).get('authorized_at')
+        authorized_at = _parse_timestamp(raw_authorized_at)
+        if authorized_at is None:
             errors.append(
-                f'/gates/{index}: {name} is verified at {gate["verified_at"]}, before sample '
-                f'{sample["sample_id"]} was authorized ('
-                f'{sample["authorization"]["authorized_at"]}); a gate cannot be verified against a '
-                'recording that was not yet authorized')
+                f'/gates/{index}: {name} cannot be ordered against sample {sample["sample_id"]} '
+                f'because its authorization.authorized_at is {raw_authorized_at!r}, which is not a '
+                'parseable timestamp; a gate whose verification time cannot be placed after the '
+                'recording was authorized has not been shown to be verifiable')
+        elif verified_at < authorized_at:
+            errors.append(
+                f'/gates/{index}: {name} is verified at {raw_verified_at}, before sample '
+                f'{sample["sample_id"]} was authorized ({raw_authorized_at}); a gate cannot be '
+                'verified against a recording that was not yet authorized')
+        if authorized_at is None:
+            # The unorderable authorization time is already reported above; comparing the
+            # review against it would only restate that.
+            continue
+        for review in document.get('human_reviews') or []:
+            if review.get('sample_id') not in (None, sample['sample_id']):
+                continue
+            raw_annotated_at = review.get('annotated_at')
+            annotated_at = _parse_timestamp(raw_annotated_at)
+            if annotated_at is None:
+                errors.append(
+                    f'/gates/{index}: {name} cannot be ordered against human review '
+                    f'{review["review_id"]} because its annotated_at is {raw_annotated_at!r}, which '
+                    'is not a parseable timestamp')
+                continue
+            if annotated_at < authorized_at:
+                errors.append(
+                    f'/human_reviews: {review["review_id"]} was annotated at {raw_annotated_at}, '
+                    f'before sample {sample["sample_id"]} was authorized ({raw_authorized_at}); the '
+                    'human layer cannot have judged a recording that was not yet authorized')
+            if verified_at < annotated_at:
+                errors.append(
+                    f'/gates/{index}: {name} is verified at {raw_verified_at}, before human review '
+                    f'{review["review_id"]} was annotated ({raw_annotated_at}); the gate depends on '
+                    'that review, so it cannot be verified first')
 
 
 def _check_gates(document, errors, verify_artifacts):
@@ -997,6 +1043,12 @@ def _check_evidence_references(document, errors, gaps):
                 and gate['state'] == 'verified':
             for position, entry in enumerate(gate.get('evidence') or []):
                 targets.append((f'/gates/{index}/evidence/{position}', entry))
+    # An evaluation's evidence is the artifact a measurement rests on, so it is resolved
+    # on the same terms as the gate and denominator evidence. Leaving it out was the one
+    # place a `measured` claim could cite a path that resolves to nothing.
+    for index, evaluation in enumerate(document.get('evaluations') or []):
+        for position, entry in enumerate(evaluation.get('evidence') or []):
+            targets.append((f'/evaluations/{index}/evidence/{position}', entry))
     for index, entry in enumerate(document.get('denominators') or []):
         for position, item in enumerate(entry.get('evidence') or []):
             targets.append((f'/denominators/{index}/evidence/{position}', item))

@@ -49,7 +49,7 @@ python -m aivoicebench acceptance check <record.json> \
 - **真实录音 gate 的 `human_review` 证据必须是记录自己声明的人工复核 artifact。** 仅按 `kind` 与 `sample_id` 绑定不够：该证据的 `sha256` 必须等于 `human_reviews[]` 中某条已声明复核 artifact 的摘要，否则判为未授权声明（记录 `invalid`）。否则任意一个本地可达、摘要自洽的文件都能承载整条真实录音声明，而 `human_reviews[]`（PRD-N002 要求声明所依托的人工层）却指向别处。比对同时覆盖入口是否有摘要：缺摘要即无法证明它属于人工层。
 - **人工复核层同样适用摘要唯一性。** 同一条保留的标注 artifact 被两条不同 `review_id` 的复核复用判为 error（#85 要求人工复核覆盖多个不同事项），结果同时报告 `human_review_count` 使人工层规模可审计。
 - 未请求 artifact/evidence 校验、未提供仓库根、仓库根**不存在或不是目录**、或记录声明的 `exposure_scan.scan_roots` 条目无法遍历时，该 gate 不予授权，CLI 也不会以 0 退出。**未被执行的对照不得被报告为已执行**。
-- 授权真实 gate 的 evidence 与每个 stage 分母的 evidence 都必须解析到本地真实存在的 Artifact 且摘要匹配（声明了摘要却不匹配为 error，无法解析为 blocking gap）；只有 `--verify-artifacts` 会执行该解析。
+- 授权真实 gate 的 evidence、每个 stage 分母的 evidence、以及每个 evaluation 的 evidence 都必须解析到本地真实存在的 Artifact 且摘要匹配（声明了摘要却不匹配为 error，无法解析为 blocking gap）；只有 `--verify-artifacts` 会执行该解析。
 - 每个 stage 的分母必须显式计入 complete/partial/failed/unknown/abstained/not_applicable 且与 `expected_total` 对账，**禁止只报成功的分母**；**任何**已声明的 evaluation（含 `failed`/`abstained`/`not_attempted`）都必须有其 stage 的分母。
 - 声明真实录音 gate 的记录必须覆盖 M1 的全部 stage（`not_applicable` 是有效答案）；某 stage 整体缺席时，其失败/未知/弃权无法计入分母，故视为未授权。
 - 每条结论必须可回溯 Run → Turn/Event → 音频区间 → Evidence → processor/model/policy version；证据 id 必须在记录内唯一声明，缺口作为显式 blocking gap 报出。
@@ -60,7 +60,7 @@ python -m aivoicebench acceptance check <record.json> \
 - 暴露扫描读取被遍历根下**每个可解码为文本的文件**，无法解码的文件作为未覆盖项报出而不是当作干净；同一个根被重复声明时只遍历一次。扫描**不做降级遍历**的目录（`dist`/`build`/`node_modules`/`.git`/`.venv`/`__pycache__`/缓存目录等环境与构建产物）逐条记入 `repository_directories_skipped`，其内容**不在本次扫描覆盖范围内**；二进制后缀、超过 8 MiB 的文件也分别记入 `repository_files_unread`。上述排除项与“定义/验证检测模式本身的策略源码”是扫描的**全部**排除项，且全部出现在结果与 Markdown 报告中——"clean" 不得表示"没有看过"。
 - **记录自己声明的 exposure finding 会被读取。** `exposure_scan.findings` 非空即表示该次扫描检出了不得提交的材料，此时记录不得被判为验收证据（与 `clean: true` 并存时明确报出二者矛盾）；`clean` 为真的唯一形态是 `findings` 为空。检查器自己扫出的材料与记录自报的材料同等处理。
 - **分母不得与已声明的 evaluation 矛盾。** 除「任何已声明 evaluation 都必须有其 stage 分母」外，其**对偶**同样成立：声明为 `measured` 的 evaluation，其 stage 的 `expected_total` 不得为 0——把 15 个 stage 全部报成空分母虽然「交代了每个 stage」，却一条失败/未知/弃权都没计入。非 `measured`（如 `not_attempted`）的 evaluation 允许其 stage 为 0 记录。
-- **验证时间必须落在可重建的时间轴上。** 判为 `verified` 的 gate 除必须带 `verified_at` 外，该时间不得晚于记录写入时间（`recorded_at`），也不得早于授权样本的 `authorization.authorized_at`；无法解析的时间戳不会被当作「顺序正确」，但仍须满足存在性要求。
+- **验证时间必须落在可重建的时间轴上，且该对照 fail-closed。** 判为 `verified` 的 gate 必须带可解析的 `verified_at`（schema 已把 `recorded_at`/`verified_at`/`authorized_at`/`annotated_at` 声明为 `date-time` 格式，无法解析的时间戳在契约层即被拒，而不是让对照静默跳过）。时间轴顺序为：样本 `authorization.authorized_at` ≤ 人工复核 `annotated_at` ≤ gate `verified_at` ≤ 记录 `recorded_at`。任一环节缺失或不可解析都是 error：授权样本未声明授权时间时，该 gate **不予授权**（原文案曾笼统写成「只要求时间戳存在」，与此不符，已更正）。
 - **声明的时长/采样率/声道/编码与声明的 artifact 尺寸必须自洽。** 对未被压缩的 raw PCM 编码（`PCM_S16LE` 等），记录自身声明的 `duration_ms × sample_rate_hz × channels × 每样本字节数` 即为 artifact 应有的大小；与 `byte_length` 不符判为 error（1 ms 容差）。对 mp3/m4a/opus 等压缩或容器格式**不发明**任何尺寸算术，只做文件尺寸对账。**这道算术是否行使必须被具名披露**：`encoding` 是自由文本，未识别拼写（如 `wav`）或压缩编码会让该对照不适用，因此结果给出 `audio_size_arithmetic_applied` 与 `audio_size_arithmetic_not_applicable`，Markdown 报告列出 “Audio size arithmetic NOT applied to …”。控制未行使时**不得**读作已行使——这是 `repository_directories_skipped`/`repository_files_unread`/`detection_policy_sources_skipped` 同一原则在此处的落实。
 
 检查器本身只是工具，其通过不等于 M1 通过；它只能证明声明摘要与本地文件一致、声明之间互相授权，**不能证明某个声明样本确实是授权真实录音**。区间、来源与授权等只能与记录自身对账的条件已在结果 `declared_only_controls` 中逐项列出，不得据此声称检查器测量过录音。M1 仍以真实证据记录为准。

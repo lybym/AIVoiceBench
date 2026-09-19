@@ -586,14 +586,76 @@ class ClaimAuthorizationTest(unittest.TestCase):
         self.assertEqual(result['status'], STATUS_INVALID)
         self.assertIn('after the record was written', ' '.join(result['errors']))
 
-    def test_an_unparseable_timestamp_is_not_treated_as_ordered(self):
-        # An unparseable timestamp is not silently accepted as in-order; it simply
-        # cannot be compared, and the presence requirement still applies.
+    def test_an_unparseable_timestamp_is_a_contract_error(self):
+        # P0 regression: an unparseable `verified_at` (or `authorized_at`) used to make the
+        # time-order control silently skip, leaving the gate authorized. The schema now
+        # types these as `date-time`, so an unreadable timestamp cannot reach the checker
+        # at all.
         document = record()
         gate(document, 'software_verified')['verified_at'] = 'not-a-timestamp'
+        with self.assertRaises(AcceptanceError):
+            validate(document)
+
+    def test_an_unparseable_authorization_time_is_a_contract_error(self):
+        document = record()
+        document['samples'][0]['authorization']['authorized_at'] = 'sometime last week'
+        with self.assertRaises(AcceptanceError):
+            validate(document)
+
+    def test_a_missing_authorization_time_cannot_disable_the_ordering_control(self):
+        # P0 regression: the ordering check guarded on `authorized_at is not None`, so
+        # nulling one optional field disabled it while the gate stayed authorized.
+        document = record()
+        document['samples'][0]['authorization']['authorized_at'] = None
+        for item in document['gates']:
+            item['verified_at'] = '1999-01-01T00:00:00+00:00'
         result = validate(document)
-        self.assertNotIn('after the record was written', ' '.join(result['errors']))
-        self.assertNotIn('was authorized', ' '.join(result['errors']))
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertFalse(result['real_recording_verified'])
+        self.assertIn('not a parseable timestamp', ' '.join(result['errors']))
+        self.assertIn('has not been shown to be verifiable', ' '.join(result['errors']))
+
+    def test_the_ordering_control_still_rejects_a_time_before_authorization(self):
+        # The fail-closed change must not replace the ordering check itself.
+        document = record()
+        document['samples'][0]['authorization']['authorized_at'] = '2026-09-19T09:00:00+00:00'
+        for item in document['gates']:
+            item['verified_at'] = '2026-09-19T08:00:00+00:00'
+        result = validate(document)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertIn('before sample SAMPLE-0001 was authorized', ' '.join(result['errors']))
+
+    def test_a_review_annotated_before_authorization_is_rejected(self):
+        # P2: the human layer could have judged a recording that was not yet authorized.
+        document = record()
+        document['samples'][0]['authorization']['authorized_at'] = '2026-09-19T10:00:00+00:00'
+        document['human_reviews'][0]['annotated_at'] = '2026-09-19T08:30:00+00:00'
+        result = validate(document)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertIn('before sample SAMPLE-0001 was authorized', ' '.join(result['errors']))
+        self.assertIn('cannot have judged a recording that was not yet authorized',
+                      ' '.join(result['errors']))
+
+    def test_a_gate_verified_before_the_review_it_depends_on_is_rejected(self):
+        document = record()
+        document['human_reviews'][0]['annotated_at'] = '2026-09-19T11:00:00+00:00'
+        gate(document, 'real_recording_verified')['verified_at'] = '2026-09-19T10:00:00+00:00'
+        result = validate(document)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertIn('cannot be verified first', ' '.join(result['errors']))
+
+    def test_the_full_temporal_chain_is_accepted_in_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            # authorized 09:00 -> annotated 10:00 -> verified 12:00 -> recorded 12:00
+            document['samples'][0]['authorization']['authorized_at'] = '2026-09-19T09:00:00+00:00'
+            document['human_reviews'][0]['annotated_at'] = '2026-09-19T10:00:00+00:00'
+            for item in document['gates']:
+                item['verified_at'] = '2026-09-19T12:00:00+00:00'
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_COMPLETE)
+        self.assertEqual(result['errors'], [])
 
 
 class VerificationControlTest(unittest.TestCase):
@@ -1312,6 +1374,27 @@ class EvidenceReferenceTest(unittest.TestCase):
         self.assertEqual(result['status'], STATUS_REAL_RECORDING_PENDING)
         self.assertTrue(any('does not resolve to a locally present artifact' in item
                             for item in result['gaps']))
+
+    def test_an_evaluation_evidence_that_resolves_to_nothing_is_a_blocking_gap(self):
+        # P2 regression: denominator and gate evidence were resolved under
+        # --verify-artifacts but an evaluation's evidence was not, so a `measured`
+        # claim could cite an artifact that resolves to nothing.
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            document['evaluations'][0]['evidence'][0]['location'] = 'D:/definitely/not/here.json'
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_REAL_RECORDING_PENDING)
+        self.assertFalse(result['real_recording_verified'])
+        self.assertTrue(any('/evaluations/0/evidence/0' in item for item in result['gaps']))
+
+    def test_a_resolvable_evaluation_evidence_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_COMPLETE)
+        self.assertEqual(result['gaps'], [])
 
     def test_an_evidence_digest_mismatch_is_an_error(self):
         with tempfile.TemporaryDirectory() as directory:

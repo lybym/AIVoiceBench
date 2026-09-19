@@ -1,5 +1,16 @@
 # Continuous work log
 
+## 2026-09-19 — Issue #85 Step 05（第八轮）：修复 PR #108 第八轮 Review findings（PRD-N001/N002/N004/N007）
+
+- **输入与核实。** 第八个全新独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5257577876`）对 `9dfab1d` 给出 `REQUEST_CHANGES`：**1 条 P0**（无 P1）+ 3 条 P2。审查者独立复核并确认此前各轮修复（尺寸对账、跨样本摘要唯一、`exposure_scan.findings`、gate 人工层摘要绑定、`verified_at` 非空）真实生效，且架构与 scope 干净。
+- **P0-1（成立，已修；本轮修复自己上一轮引入的缺陷）。** 第七轮新增的 `_check_gate_timestamp_order` 以 `if authorized_at is not None` 守卫，而 `_parse_timestamp` 对「缺失」与「不可解析」都返回 `None`：因此把 schema 中**可选**的 `authorization.authorized_at` 置为 `null`，整条时序对照即静默失效，gate 仍被授权。实测：从 `complete` 记录做两处合法修改（`authorized_at = null`、全部 `verified_at = 1999-01-01`）→ `status=complete` / `real_recording_verified=True` / `errors=[]` / `gaps=[]` / CLI exit 0；仅把 `authorized_at` 还原即变为 `invalid` + 5 条 error，证明该对照存在且可被一个可选字段置空关闭。同类：`verified_at = "sometime last week"` 同样得 `complete`（schema 当时只声明为裸字符串），且**未行使本身完全未披露**——`declared_only_controls` 与报告两节均打印 "- None."，违背本 PR 自己的具名披露原则。修复分两层：(a) schema 把 `recorded_at`/`verified_at`/`authorization.authorized_at`/`annotated_at` 声明为 `format: date-time`，不可解析的时间戳在**契约层**即被拒（不再进入检查器）；(b) `_check_gate_timestamp_order` 改为 **fail-closed**：可解析性不再是「无法比较就跳过」，而是授权样本未声明/不可解析授权时间时**该 gate 不予授权**并明确报出原因。实测三处修改后：`authorized_at=null` + 1999 → `invalid` + `False`；不可解析 `verified_at` → 契约层 `AcceptanceError`；普通自洽记录仍 `complete`。
+- **P2-1（成立，已修）。** `--verify-artifacts` 下 gate evidence 与分母 evidence 都会解析到本地 Artifact，**唯独 evaluation 的 evidence 不解析**：`measured` 的 evaluation 可以引用一个解析不到任何东西的路径而不被报出。修复：`_check_evidence_references` 纳入 `/evaluations/{i}/evidence/{j}`，无法解析为 blocking gap、摘要不匹配为 error。实测：指向不存在路径 → `real_recording_pending` + 明确 gap（修复前 `complete`）。
+- **P2-2（成立，已修）。** `acceptance-status.md` 的时序条款原文笼统写成「只要求时间戳存在」，与实际（本轮修复后更强）不符。已改写为准确的 fail-closed 描述与完整时间轴：`authorized_at` ≤ `annotated_at` ≤ `verified_at` ≤ `recorded_at`；同时该文档中 evidence 解析条款补上「以及每个 evaluation 的 evidence」。
+- **P2-3（成立，已修）。** `authorization.authorized_at` 与判定该录音的人工复核之间没有任何时序关系，人工层可以对一段尚未授权的录音作出复核。修复：时序链补上 `annotated_at ≥ authorized_at` 与 `verified_at ≥ annotated_at`（人工复核所属样本匹配时）。
+- **测试（140 项，新增 8 项）。** 新增：不可解析 `verified_at` 为契约错误、不可解析 `authorized_at` 为契约错误、`authorized_at = null` 无法再关闭时序对照、时序对照仍拒绝早于授权的时间、复核早于授权被拒、gate 早于其依赖的复核被拒、完整时间轴顺序正确时仍 `complete`、evaluation evidence 无法解析为 blocking gap、可解析的 evaluation evidence 被接受。`authorized_at` 此前在测试中只出现一次且从未被改动——这正是该分支双向都无断言、缺陷得以穿越七轮的原因，现已补齐。
+- **验证（实际执行）。** 定向：`tests.test_acceptance_evidence` → **140 tests, OK**。逐条复现第八轮 finding 并确认修复后结论见上。受影响既有套件与全量套件由本 PR 复跑。
+- **未验证边界（不升级为完成）。** 本 PR 仍为 **software_verified**：无真实录音、无真实云调用、无人工标注、无实体设备。`real_recording_verified` 保持**未声明**，#85 保持 Open，M1 仍未通过。
+
 ## 2026-09-19 — Issue #85 Step 05（第七轮）：修复 PR #108 第七轮 Review findings（PRD-N001/N002/N004/N007）
 
 - **输入与核实。** 第七个全新独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5257509597`）对 `0bf45ed` 给出 `REQUEST_CHANGES`：**无 P0**，2 条 P1 + 2 条 P2。审查者未继承任何前轮结论，独立复现了第六轮的 encoding 绕过修复（`wav`/`PCM_S16LE `/`mp3`/`MP3`/`opus`/`aac`/`flac` 七种拼写现均被具名披露），并确认 `real_recording_verified` 未被过度声明、#85 仍 Open、无音频提交。

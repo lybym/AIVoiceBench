@@ -8,7 +8,7 @@
     "schema_version": { "const": "1.0.0" },
     "record_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
     "issue_url": { "type": "string", "minLength": 1 },
-    "recorded_at": { "type": "string", "minLength": 1 },
+    "recorded_at": { "type": "string", "minLength": 1, "format": "date-time" },
     "recorded_by": {
       "description": "Who authored this record. A machine-authored draft must not be presented as the human acceptance decision.",
       "type": "string",
@@ -61,7 +61,11 @@
             "type": "object",
             "properties": {
               "authorized_by": { "type": "string", "minLength": 1 },
-              "authorized_at": { "type": ["string", "null"] },
+              "authorized_at": {
+                "description": "When the recording was authorized. A timestamp the checker cannot parse is a shape error, not a value it silently skips: the real-recording gate's time-order control reads this field, and an unreadable or absent authorization time would let a gate be verified before the recording it judges.",
+                "type": ["string", "null"],
+                "format": "date-time"
+              },
               "scope": { "type": "string", "minLength": 1 },
               "handling_constraints": { "type": "string", "minLength": 1 }
             },
@@ -119,7 +123,7 @@
             "type": "string",
             "minLength": 1
           },
-          "annotated_at": { "type": ["string", "null"] },
+          "annotated_at": { "type": ["string", "null"], "format": "date-time" },
           "artifact": {
             "type": "object",
             "properties": {
@@ -314,7 +318,11 @@
             "type": "string",
             "enum": ["verified", "pending", "not_reached"]
           },
-          "verified_at": { "type": ["string", "null"] },
+          "verified_at": {
+            "description": "When this gate was verified. Required (non-null) for a gate recorded as 'verified', and it must be parseable: the checker orders it against the record's recorded_at and against the authorization time of the samples the gate rests on.",
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
           "evidence": {
             "type": "array",
             "items": { "$ref": "#/$defs/evidence" }
