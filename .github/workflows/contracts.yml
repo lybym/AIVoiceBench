@@ -10,6 +10,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       AIVOICEBENCH_REQUIRE_MEDIA_TESTS: '1'
+      # The Silero acoustic-boundary provider is a P0 server capability, so its
+      # model gate must run rather than be skipped when the optional VAD runtime is
+      # absent from the runner. `requirements-vad.txt` is installed below so the
+      # gate can pass, and the variable makes a skip impossible to mistake for it.
+      AIVOICEBENCH_REQUIRE_SILERO_TESTS: '1'
       # The Browser Station TypeScript gate must run, not be skipped: without it a
       # source change that was never rebuilt could ship the previous browser logic.
       VT_REQUIRE_WEB_BUILD: '1'
@@ -27,7 +32,7 @@ jobs:
       - run: npm ci
       - name: Browser Station typecheck and build determinism
         run: npm run verify
-      - run: python -m pip install -r requirements-audio.txt -r requirements-api.txt httpx
+      - run: python -m pip install -r requirements-audio.txt -r requirements-api.txt -r requirements-vad.txt httpx
       - name: Install media tools on Linux
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
