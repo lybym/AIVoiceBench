@@ -48,21 +48,33 @@ Migration: none needed — this is a new artifact, and no historical document is
 reinterpreted. A Judge artifact that fails this contract is not published: the
 Run records the rejected document and its errors as a `retained_diagnostic`.
 
-### Finding 2.1.0 — Turn linkage and nullable case identity
+### Finding 2.1.0 — Turn linkage
 
 `schemas/finding.schema.json` accepts `2.0.0` and `2.1.0` structurally, and
 `finding_errors` applies version-specific rules:
 
-- 2.1.0 requires `turn_ids` (possibly empty) and allows a nullable `case_id` plus
-  an optional `analysis_id`, so an unscripted Recording Analysis Run can carry
-  findings without a fabricated Case. Every declared turn must be reachable from
-  the finding's own events/metrics, and every reachable turn must be declared.
-- 2.0.0 still requires a case identity and must not carry `turn_ids`/`analysis_id`;
-  a 2.0.0 document is re-emitted under 2.1.0 with `migrate_finding_document()`,
-  which resolves `turn_ids` from the Timeline when one is supplied and leaves the
-  list empty — never guessed — when it cannot.
+- 2.1.0 requires `turn_ids` (possibly empty) and adds an optional, nullable
+  `analysis_id`. Every declared turn must be reachable from the finding's own
+  events/metrics, and every reachable turn must be declared.
+- 2.0.0 must not carry `turn_ids`/`analysis_id`; a 2.0.0 document is re-emitted
+  under 2.1.0 with `migrate_finding_document()`, which resolves `turn_ids` from
+  the Timeline when one is supplied and leaves the list empty — never guessed —
+  when it cannot.
+- **`case_id` stays required and non-null in both versions.** A Finding resolves
+  against the persisted Timeline, and `event-timeline.schema.json` requires a Case
+  identity there, so a nullable `case_id` would be unreachable. An unscripted
+  Recording Analysis Run carries the placeholder `CASE-auto` that `_timeline`
+  established in #24; `generate_findings_document` refuses to build a Finding from
+  a Timeline without a case identity instead of inventing one.
+- Note the deliberate, pre-existing difference from the measurement layer:
+  `import_pipeline._metrics` keeps its own nullable `case_id` for an unscripted
+  import (MetricResult 3.0.0 allows it) and `metric_errors` only compares the two
+  when both are present. A finding linking such a metric therefore carries
+  `CASE-auto` while the metric carries `null`. That is each layer's documented
+  convention, not a silent unification, and `finding_errors` still validates the
+  metric itself against the same Timeline.
 
-Additive/behavioural summary: `metric_ids` on generated findings now hold canonical
+Behavioural summary: `metric_ids` on generated findings now hold canonical
 `metric_id` values resolved against the supplied metrics document (previous output
 wrote metric *names* there), and only decided metrics of the finding's own turns
 are linked. This tightens generated output; historical 2.0.0 documents are

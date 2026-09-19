@@ -272,6 +272,76 @@ class JudgeImportStageTests(unittest.TestCase):
         self.assertEqual(stages['judge']['status'], 'insufficient_evidence')
         self.assertEqual(recording_run_errors(manifest, directory), [])
 
+    def test_a_further_revision_leaves_the_earlier_judge_artifacts_untouched(self):
+        """Repeat-run idempotency: a new revision never rewrites older evidence."""
+        judge = MockLLMProvider()
+        providers = RunProviders(judge=judge)
+        directory, manifest = self.import_once(judge)
+        directory, first_manifest, _review = self.confirm_roles(
+            directory, {'1': 'tester', '2': 'device'}, providers)
+        first_analysis = first_manifest['analysis_id']
+        before = {item['path']: item['sha256'] for item in first_manifest['artifacts']
+                  if first_analysis in item['path']
+                  and (item['path'].endswith('judge-document.json')
+                       or item['path'].endswith('judge-raw.json')
+                       or item['path'].endswith('findings-document.json')
+                       or item['path'].endswith('metrics.json'))}
+        self.assertTrue(before, 'the first revision produced no judge/findings artifacts')
+
+        # A second, different human decision set creates another revision.
+        directory, second_manifest, _review = self.confirm_roles(
+            directory, {'1': 'device', '2': 'tester'}, providers)
+        self.assertNotEqual(second_manifest['analysis_id'], first_analysis)
+        after = {item['path']: item['sha256'] for item in second_manifest['artifacts']}
+        for path, digest in before.items():
+            self.assertIn(path, after, 'an earlier revision artifact disappeared')
+            self.assertEqual(after[path], digest,
+                             f'{path} changed after a further revision')
+        # The new revision has its own judge artifacts, and both judge the same Run.
+        self.assertTrue(any(second_manifest['analysis_id'] in path
+                            and path.endswith('judge-document.json') for path in after))
+        self.assertEqual(recording_run_errors(second_manifest, directory), [])
+
+    def test_a_failed_judge_stage_is_recovered_by_a_retry(self):
+        """Checkpoint lifecycle: a failed Judge leaves no half-written envelope."""
+        import aivoicebench.llm as llm_module
+        original = llm_module.LLMJudge.evaluate
+        judge = MockLLMProvider()
+        providers = RunProviders(judge=judge)
+        directory, manifest = self.import_once(judge)
+
+        def broken(self, fused_doc, turns_doc, metrics_result, timeline=None,
+                   run_id=None, analysis_id=None):
+            document = original(self, fused_doc, turns_doc, metrics_result, timeline,
+                                run_id, analysis_id)
+            document['results'][0]['event_refs'] = ['EVT-MISSING']
+            return document
+
+        llm_module.LLMJudge.evaluate = broken
+        try:
+            directory, failed_manifest, _review = self.confirm_roles(
+                directory, {'1': 'tester', '2': 'device'}, providers)
+        finally:
+            llm_module.LLMJudge.evaluate = original
+
+        self.assertEqual(failed_manifest['stages']['judge']['status'], 'failed')
+        failed_analysis = self.analysis_files(directory, failed_manifest)
+        # No half-written evidence: the envelope is absent, not present-but-empty.
+        self.assertNotIn('judge-results.json', failed_analysis)
+        self.assertEqual(recording_run_errors(failed_manifest, directory), [])
+
+        # Retrying with a working Judge completes the stage in a new revision.
+        directory, recovered_manifest, _review = self.confirm_roles(
+            directory, {'1': 'tester', '2': 'device'}, providers)
+        self.assertEqual(recovered_manifest['stages']['judge']['status'], 'complete')
+        recovered = self.analysis_files(directory, recovered_manifest)
+        self.assertIn('judge-document.json', recovered)
+        self.assertEqual(
+            judge_document_errors(recovered['judge-document.json'],
+                                  recovered['timeline.json']['data'],
+                                  recovered['turns.json']['data']), [])
+        self.assertEqual(recording_run_errors(recovered_manifest, directory), [])
+
 
 class _CountingProvider(MockLLMProvider):
     """Fixture that records whether the Judge was invoked at all."""

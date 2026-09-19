@@ -396,9 +396,14 @@ def _finding_version_errors(finding):
     """Version-specific Finding contract.
 
     The shared schema accepts both 2.0.0 and 2.1.0 structurally; each version then
-    enforces its own identity rules here. 2.1.0 adds explicit Turn linkage and a
-    nullable case identity so an unscripted Recording Analysis Run can carry
-    findings without a fabricated Case.
+    enforces its own identity rules here. 2.1.0 adds explicit Turn linkage.
+
+    Both versions require a Case identity: a Finding resolves against the persisted
+    Timeline, and an EventTimeline always carries one (an unscripted Recording
+    Analysis Run carries the placeholder `CASE-auto` established by #24). A
+    nullable `case_id` would therefore be unreachable, so it is not offered. The
+    measurement layer's nullable case identity is its own convention and is
+    documented in `docs/07-contract-versions.md` rather than silently unified.
     """
     version = finding.get('schema_version')
     errors = []

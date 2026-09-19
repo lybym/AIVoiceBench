@@ -87,14 +87,60 @@ def dialogue_timeline(interruption=False):
         make_event('EVT-DEVICE-END', 'device_speech_end', 5000, ['EVD-DEVICE-END']),
     ]
     if interruption:
+        # `interrupt_start` is an interval event in the timeline contract, so it
+        # needs its paired end or the timeline is not a complete observation.
         evidence.append(make_evidence('EVD-INTERRUPT', 4200, source='manual_annotation',
                                       confidence=0.9))
+        evidence.append(make_evidence('EVD-INTERRUPT-END', 4400, source='manual_annotation',
+                                      confidence=0.9))
         events.append(make_event('EVT-INTERRUPT', 'interrupt_start', 4200, ['EVD-INTERRUPT']))
+        events.append(make_event('EVT-INTERRUPT-END', 'interrupt_end', 4400,
+                                 ['EVD-INTERRUPT-END']))
         events.sort(key=lambda event: event['start_ms'])
     return make_timeline(events, evidence)
 
 
-def fused_document():
+def fused_document(interruption=False):
+    segments = [
+        {'segment_id': 'FSEG-0000', 'start_ms': 500, 'end_ms': 1000,
+         'speaker_role': 'tester', 'speaker_id': 'cluster-0',
+         'speaker_cluster_confidence': 0.9, 'role_attribution_confidence': 0.9,
+         'role_attribution': 'explicit', 'acoustic_boundary_confidence': 0.8,
+         'acoustic_uncertainty_ms': None, 'speaker_source': 'asr',
+         'timing_source': 'acoustic', 'text': '今天天气怎么样？',
+         'acoustic_segment_id': 'SEG-0000', 'asr_segment_id': None,
+         'speaker_evidence': [], 'speaker_candidates': [], 'segment_origin': 'fused',
+         'asr_start_ms': None, 'asr_end_ms': None, 'asr_speaker_id': None,
+         'text_attribution': 'asr', 'start_boundary_source': 'audio_signal',
+         'end_boundary_source': 'audio_signal'},
+        {'segment_id': 'FSEG-0001', 'start_ms': 3500, 'end_ms': 5000,
+         'speaker_role': 'device', 'speaker_id': 'cluster-1',
+         'speaker_cluster_confidence': 0.9, 'role_attribution_confidence': 0.9,
+         'role_attribution': 'explicit', 'acoustic_boundary_confidence': 0.8,
+         'acoustic_uncertainty_ms': None, 'speaker_source': 'asr',
+         'timing_source': 'acoustic',
+         'text': '嗯……好的，让我看看。南京今天天气晴朗，气温25度。',
+         'acoustic_segment_id': 'SEG-0001', 'asr_segment_id': None,
+         'speaker_evidence': [], 'speaker_candidates': [], 'segment_origin': 'fused',
+         'asr_start_ms': None, 'asr_end_ms': None, 'asr_speaker_id': None,
+         'text_attribution': 'asr', 'start_boundary_source': 'audio_signal',
+         'end_boundary_source': 'audio_signal'},
+    ]
+    if interruption:
+        # The tester interrupts with a new intent; compliance is about whether the
+        # following response honours it.
+        segments.append(
+            {'segment_id': 'FSEG-0002', 'start_ms': 4200, 'end_ms': 4400,
+             'speaker_role': 'tester', 'speaker_id': 'cluster-0',
+             'speaker_cluster_confidence': 0.9, 'role_attribution_confidence': 0.9,
+             'role_attribution': 'explicit', 'acoustic_boundary_confidence': 0.8,
+             'acoustic_uncertainty_ms': None, 'speaker_source': 'asr',
+             'timing_source': 'acoustic', 'text': '不对，我想听南京今天的天气',
+             'acoustic_segment_id': 'SEG-0002', 'asr_segment_id': None,
+             'speaker_evidence': [], 'speaker_candidates': [], 'segment_origin': 'fused',
+             'asr_start_ms': None, 'asr_end_ms': None, 'asr_speaker_id': None,
+             'text_attribution': 'asr', 'start_boundary_source': 'audio_signal',
+             'end_boundary_source': 'audio_signal'})
     return {
         'schema_version': '1.0.0', 'document_id': 'FUSED-fixture',
         'source': {'acoustic_document_id': 'ACOUSTIC-fixture',
@@ -103,31 +149,7 @@ def fused_document():
         'attribution': {'strategy': 'explicit_user_mapping', 'provider': None,
                         'confidence': 0.9, 'note': 'fixture roles are explicit'},
         'status': 'complete', 'reason': None, 'unattributed_texts': [],
-        'segments': [
-            {'segment_id': 'FSEG-0000', 'start_ms': 500, 'end_ms': 1000,
-             'speaker_role': 'tester', 'speaker_id': 'cluster-0',
-             'speaker_cluster_confidence': 0.9, 'role_attribution_confidence': 0.9,
-             'role_attribution': 'explicit', 'acoustic_boundary_confidence': 0.8,
-             'acoustic_uncertainty_ms': None, 'speaker_source': 'asr',
-             'timing_source': 'acoustic', 'text': '今天天气怎么样？',
-             'acoustic_segment_id': 'SEG-0000', 'asr_segment_id': None,
-             'speaker_evidence': [], 'speaker_candidates': [], 'segment_origin': 'fused',
-             'asr_start_ms': None, 'asr_end_ms': None, 'asr_speaker_id': None,
-             'text_attribution': 'asr', 'start_boundary_source': 'audio_signal',
-             'end_boundary_source': 'audio_signal'},
-            {'segment_id': 'FSEG-0001', 'start_ms': 3500, 'end_ms': 5000,
-             'speaker_role': 'device', 'speaker_id': 'cluster-1',
-             'speaker_cluster_confidence': 0.9, 'role_attribution_confidence': 0.9,
-             'role_attribution': 'explicit', 'acoustic_boundary_confidence': 0.8,
-             'acoustic_uncertainty_ms': None, 'speaker_source': 'asr',
-             'timing_source': 'acoustic',
-             'text': '嗯……好的，让我看看。南京今天天气晴朗，气温25度。',
-             'acoustic_segment_id': 'SEG-0001', 'asr_segment_id': None,
-             'speaker_evidence': [], 'speaker_candidates': [], 'segment_origin': 'fused',
-             'asr_start_ms': None, 'asr_end_ms': None, 'asr_speaker_id': None,
-             'text_attribution': 'asr', 'start_boundary_source': 'audio_signal',
-             'end_boundary_source': 'audio_signal'},
-        ],
+        'segments': segments,
     }
 
 
@@ -138,9 +160,9 @@ def turns_document(interruption=False):
         'start_ms': 500, 'end_ms': 5000,
         'tester_speech_start_ms': 500, 'tester_speech_end_ms': 1000,
         'device_speech_start_ms': 3500, 'device_speech_end_ms': 5000,
-        'has_interruption': interruption, 'has_overlap': False,
-        'interrupted_response_id': None,
-        'interrupting_segment_ids': [],
+        'has_interruption': interruption, 'has_overlap': interruption,
+        'interrupted_response_id': 'RESP-0001' if interruption else None,
+        'interrupting_segment_ids': ['FSEG-0002'] if interruption else [],
     }
     return {'schema_version': '1.0.0', 'document_id': 'TURNS-fixture',
             'fused_document_id': 'FUSED-fixture', 'status': 'complete', 'reason': None,

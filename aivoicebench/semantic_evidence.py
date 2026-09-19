@@ -147,6 +147,28 @@ def timeline_event(event_id, timeline):
     return None
 
 
+def turn_event_types(turn, timeline):
+    """Event types bound to one turn.
+
+    Used so the Judge and the deterministic engine answer "was this turn
+    interrupted?" from the same evidence instead of from two different rules.
+    """
+    if not isinstance(turn, dict) or not isinstance(timeline, dict):
+        return set()
+    turn_id = turn.get('turn_id')
+    return {event.get('type') for event in timeline.get('events') or ()
+            if isinstance(event, dict) and event.get('turn_id') == turn_id}
+
+
+def has_interrupt_evidence(turn, timeline):
+    """Whether the Turn carries an `interrupt_start` event.
+
+    This is the same predicate PRD-M006 uses to decide applicability, so a
+    semantic judgment is requested exactly when a metric can consume it.
+    """
+    return 'interrupt_start' in turn_event_types(turn, timeline)
+
+
 def resolve_anchors(selection, anchors):
     """Resolve a provider's anchor selection against measured anchors.
 

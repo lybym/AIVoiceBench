@@ -31,7 +31,7 @@ from typing import Protocol
 from .runner import write_json
 from .semantic_evidence import (
     CRITERIA_VERSION, SEMANTIC_CRITERIA, anchor_for, build_judge_profile,
-    criterion_for, resolve_anchors, turn_anchors, turn_evidence,
+    criterion_for, has_interrupt_evidence, resolve_anchors, turn_anchors, turn_evidence,
 )
 
 # Common Chinese filler / feedback words that precede meaningful content
@@ -863,7 +863,10 @@ class LLMJudge:
         results = []
         for turn in turns:
             results.extend(self.evaluate_turn(turn, fused_segments, timeline, run_id))
-            if turn.get('has_interruption'):
+            # PRD-M006 applicability comes from an `interrupt_start` event, which is
+            # the same predicate the metric uses. Judging compliance off a turn flag
+            # could spend a provider call on a judgment no metric can consume.
+            if has_interrupt_evidence(turn, timeline):
                 results.append(self._judge('barge_in_compliance', turn,
                                            turn.get('response_id'),
                                            {'tester_text': ' '.join(

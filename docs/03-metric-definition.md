@@ -163,6 +163,10 @@ Issue #10 (`aivoicebench/llm.py`, `aivoicebench/semantic_evidence.py`):
   The adapter expands a selected event to that event's own evidence, so the
   metric invariant "event evidence must be included in metric evidence_ids" holds
   by construction.
+- **One predicate per question.** A `barge_in_compliance` judgment is requested
+  exactly when the Turn carries an `interrupt_start` event — the same predicate
+  PRD-M006 uses to decide applicability — so a judgment is never paid for that no
+  metric can consume.
 - A suspected cause always carries `requires_log_verification=true` and a
   non-certain `attribution_confidence`; nothing here promotes it to a verified
   root cause.

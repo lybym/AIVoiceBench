@@ -35,7 +35,7 @@ Web Evidence Workbench → wavesurfer.js
 
 ### Finding 2.0.0 → 2.1.0
 
-2.1.0 增加显式 `turn_ids` 与可空 `analysis_id`，并允许未脚本化导入的 `case_id` 为空（2.0.0 仍要求 case identity，且不得携带 2.1.0 字段）。历史文档继续通过其自身版本的规则；`migrate_finding_document()` 可显式重发为 2.1.0，`turn_ids` 从 Timeline 解析，**解析不到时留空而不是猜测**。
+2.1.0 增加显式 `turn_ids` 与可空 `analysis_id`；`case_id` 在两个版本都保持必填非空：Finding 对照持久化 Timeline 解析，而 EventTimeline 始终带 Case 身份（未脚本化导入带 #24 建立的 `CASE-auto` 占位），因此可空 `case_id` 不可达、不予提供。`migrate_finding_document()` 可显式重发为 2.1.0，`turn_ids` 从 Timeline 解析，**解析不到时留空而不是猜测**。测量层（MetricResult 3.0.0）对未脚本化导入保留了它自己可空的 `case_id`；这与 Finding 层的约定不同，已在 `docs/07-contract-versions.md` 记录，不做静默统一。
 
 ## Report rendering
 

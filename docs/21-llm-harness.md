@@ -39,6 +39,7 @@ JudgeResult 1.0.0（validated）+ Invocation（raw response + provider/model/pro
 - Judge 阶段在 metrics 之前运行，因为 metric 文档一旦发布即不可变：PRD-M003/M006 必须一次性带上语义记录。Judge 内部用内存中的确定性 metrics 作为 context，因此确定性问题的答案仍来自确定性代码。
 - 未配置 Judge provider 时 `judge` 阶段以 `insufficient_evidence` 与准确原因发布，**不调用任何模型**，也不编造语义值。
 - 角色未人工确认（匿名 cluster）时 Turn/Timeline/Metrics/Judge/Findings 全部以角色 Gate 原因弃权 —— Judge 永远不参与角色判定（见 [#95](https://github.com/lybym/AIVoiceBench/issues/95)）。
+- **一次判定一个消费者。** `barge_in_compliance` 只在 Turn 真的带 `interrupt_start` 事件时请求（`semantic_evidence.has_interrupt_evidence`），这与 PRD-M006 判定适用性的谓词是同一条；不会出现"花了一次 provider 调用但没有任何 metric 消费该记录"的情况，也不会用 turn flag 与事件两种规则推导同一语义。
 - 保存角色 revision（`apply_role_mapping`）会**重跑** Judge/Findings 并沿用同一 provider 配置；确认角色不会静默丢掉语义阶段或换掉模型。
 - 引擎校验自身产物：Judge artifact 违反自身契约时该阶段 `failed`，并把被拒文档与逐条校验错误写成 `retained_diagnostic`（`judge-results-contract-violation.json`）便于诊断；不合格文档绝不发布为证据。
 

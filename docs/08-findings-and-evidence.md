@@ -4,17 +4,17 @@
 
 Finding schema 2.0.0 links the first-class Evidence 1.0.0 catalog in a valid Timeline. A finding is either a defect or an observation. A normal observation has null severity and cannot become a regression defect candidate. The seed passing VAD finding was migrated to an explicitly synthetic observation, rather than counting a pass as a P3 defect.
 
-Finding **2.1.0** (Issue #10) adds explicit Turn linkage and a nullable case
-identity so an unscripted Recording Analysis Run can carry findings without a
-fabricated Case:
+Finding **2.1.0** (Issue #10) adds explicit Turn linkage:
 
 - `turn_ids` records the Turns the finding is bound to. Each declared turn must be
   reachable from the finding's own linked events or metrics, and every reachable
   turn must be declared — a Turn link is never asserted independently of evidence.
-- `analysis_id` (nullable) and a nullable `case_id` follow the MetricResult 3.0.0
-  convention. 2.0.0 documents still require a case identity and must not carry
-  2.1.0-only members; `migrate_finding_document()` re-emits one under 2.1.0 with
-  `turn_ids` resolved from the Timeline, left empty when unresolved.
+- `analysis_id` (nullable) records the AnalysisRevision the finding was produced
+  in. `case_id` stays required and non-null in both versions: a Finding resolves
+  against the persisted Timeline, which always carries a Case identity, so a
+  nullable `case_id` would be unreachable. `migrate_finding_document()` re-emits a
+  2.0.0 document under 2.1.0 with `turn_ids` resolved from the Timeline, left empty
+  when unresolved.
 - Generated findings link MetricResults by canonical `metric_id`, and only decided
   metrics (`observed`/`pass`/`fail`) belonging to the finding's own turns. A metric
   that abstained cannot support a defect claim.

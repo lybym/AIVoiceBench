@@ -155,7 +155,7 @@ class JudgeRunTests(unittest.TestCase):
         timeline = dialogue_timeline(interruption=True)
         turns = turns_document(interruption=True)
         judge = LLMJudge(MockLLMProvider())
-        document = judge.evaluate(fused_document(), turns,
+        document = judge.evaluate(fused_document(interruption=True), turns,
                                   compute_timeline_metrics(timeline), timeline, run_id=RUN_ID)
         result = next(item for item in document['results']
                       if item['dimension'] == 'barge_in_compliance')
@@ -318,6 +318,59 @@ class SemanticEvidenceTests(unittest.TestCase):
         self.assertEqual(semantic[0]['evidence_ids'],
                          list(self.records[0]['evidence_ids']))
 
+    def test_barge_in_compliance_reaches_prd_m006_end_to_end(self):
+        """PRD-M006 is driven from an interruption event to an observed value."""
+        timeline = dialogue_timeline(interruption=True)
+        turns = turns_document(interruption=True)
+        metrics_result = compute_timeline_metrics(timeline)
+        judge = LLMJudge(MockLLMProvider())
+        document = judge.evaluate(fused_document(interruption=True), turns, metrics_result,
+                                  timeline, run_id=RUN_ID)
+        self.assertIn('barge_in_compliance',
+                      {result['dimension'] for result in document['results']})
+        self.assertEqual(judge_document_errors(document, timeline, turns), [])
+
+        records, abstentions = semantic_evidence_records(document, timeline, turns)
+        compliance = [record for record in records
+                      if record['kind'] == 'barge_in_compliance']
+        self.assertTrue(compliance, f'no M006 record; abstentions: {abstentions}')
+        self.assertIsInstance(compliance[0]['decision'], bool)
+        self.assertEqual(compliance[0]['criterion_id'], 'CRIT-BARGE-IN-COMPLIANCE')
+        self.assertEqual(semantic_evidence_errors(records, timeline, turns), [])
+
+        result = compute_timeline_metrics(timeline, semantic_evidence=records)
+        metric = next(item for item in result['metrics']
+                      if item['name'] == 'barge_in_semantic_compliance')
+        self.assertEqual(metric['status'], 'observed')
+        self.assertEqual(metric['prd_ref'], 'PRD-M006')
+        self.assertIsInstance(metric['value'], bool)
+        self.assertEqual(metric['method'], 'llm_judge')
+        self.assertTrue(metric['event_ids'])
+
+    def test_compliance_is_not_requested_without_an_interruption_event(self):
+        """One predicate decides M006 applicability for both Judge and metric."""
+        timeline = dialogue_timeline(interruption=True)
+        turns = turns_document(interruption=True)
+        # `has_interruption` remains true, but the event the metric needs is gone.
+        timeline['events'] = [event for event in timeline['events']
+                              if not event['type'].startswith('interrupt')]
+        timeline['evidence'] = [item for item in timeline['evidence']
+                                if item['evidence_id'] not in ('EVD-INTERRUPT',
+                                                               'EVD-INTERRUPT-END')]
+        self.assertEqual(timeline_errors(timeline), [])
+        judge = LLMJudge(MockLLMProvider())
+        document = judge.evaluate(fused_document(interruption=True), turns,
+                                  compute_timeline_metrics(timeline), timeline, run_id=RUN_ID)
+        self.assertNotIn('barge_in_compliance',
+                         {result['dimension'] for result in document['results']})
+        records, _abstentions = semantic_evidence_records(document, timeline, turns)
+        self.assertFalse([record for record in records
+                          if record['kind'] == 'barge_in_compliance'])
+        metric = next(item for item in
+                      compute_timeline_metrics(timeline, semantic_evidence=records)['metrics']
+                      if item['name'] == 'barge_in_semantic_compliance')
+        self.assertEqual(metric['status'], 'not_applicable')
+
     def test_an_ineligible_record_abstains_with_a_reason(self):
         broken = copy.deepcopy(self.records[0])
         broken['criterion_version'] = '9.9.9'
@@ -408,6 +461,31 @@ class JudgeArtifactIntegrityTests(unittest.TestCase):
         target['event_refs'] = []
         errors = judge_result_errors(target)
         self.assertTrue(any('must cite evidence' in error for error in errors))
+
+    def test_artifact_criteria_version_must_match_the_adapter(self):
+        document = copy.deepcopy(self.document)
+        document['criteria_version'] = '0.9.0'
+        document['judge_profile']['criteria_version'] = '0.9.0'
+        errors = judge_document_errors(document, self.timeline, self.turns)
+        self.assertTrue(any('the adapter contract is' in error for error in errors))
+
+    def test_profile_criteria_version_must_agree_with_the_artifact(self):
+        document = copy.deepcopy(self.document)
+        document['judge_profile']['criteria_version'] = '0.9.0'
+        errors = judge_document_errors(document, self.timeline, self.turns)
+        self.assertTrue(any('must agree with the artifact criteria_version' in error
+                            for error in errors))
+
+    def test_a_result_profile_from_another_criteria_version_is_not_eligible(self):
+        """An adapter-version change must not silently keep old judgments eligible."""
+        document = copy.deepcopy(self.document)
+        target = next(item for item in document['results']
+                      if item['dimension'] == 'semantic_response')
+        target['judge_profile']['criteria_version'] = '0.9.0'
+        records, abstentions = semantic_evidence_records(document, self.timeline, self.turns)
+        self.assertFalse([record for record in records if record['kind'] == 'semantic_response'])
+        self.assertTrue(any('criteria_version disagrees with the adapter contract' in item['reason']
+                            for item in abstentions))
 
 
 if __name__ == '__main__':

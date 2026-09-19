@@ -75,6 +75,9 @@ def generate_findings_document(judge_results, timeline, metrics_result, run_id=N
             'rejected': [],
         }
     run_id = timeline.get('run_id') or run_id or 'RUN-auto'
+    # A Finding resolves against the persisted Timeline identity. That a timeline
+    # always carries a non-null case_id is enforced once, by the timeline contract
+    # and `timeline_errors` above — this module does not restate the rule.
     case_id = timeline.get('case_id')
     execution_kind = timeline.get('execution_kind')
     metrics = [metric for metric in (metrics_result.get('metrics') if isinstance(metrics_result, dict)

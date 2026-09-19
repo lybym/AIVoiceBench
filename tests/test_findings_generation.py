@@ -14,6 +14,7 @@ Fixtures are synthetic: no recording, no provider and no hardware are involved.
 """
 
 import copy
+import json
 import unittest
 
 from aivoicebench.findings import (
@@ -205,6 +206,32 @@ class FindingAbstentionTests(unittest.TestCase):
                                               self.metrics, RUN_ID)
         self.assertEqual(document['findings'], [])
         self.assertEqual(document['abstentions'][0]['state'], 'not_eligible')
+
+    def test_a_timeline_without_a_case_identity_never_invents_one(self):
+        """The case identity comes from the Timeline; absence is not invented.
+
+        The rule itself lives in the timeline contract, so the observable behaviour
+        is the invalid-Timeline gate rather than a second copy of the check here.
+        """
+        timeline = dialogue_timeline()
+        timeline['case_id'] = None
+        document = generate_findings_document([self.candidate()], timeline, self.metrics,
+                                              RUN_ID)
+        self.assertEqual(document['findings'], [])
+        self.assertEqual(document['abstentions'][0]['state'], 'not_eligible')
+        self.assertIn('case_id', document['abstentions'][0]['reason'])
+        # And no Case identity is invented anywhere in the produced document.
+        self.assertNotIn('CASE', json.dumps(document))
+
+    def test_a_nullable_case_id_finding_is_rejected_by_the_contract(self):
+        """The rule is asserted directly so a dead affordance cannot reappear."""
+        document = self.document(self.candidate())
+        finding = copy.deepcopy(document['findings'][0])
+        self.assertEqual(finding_errors(finding, self.timeline, self.metrics['metrics']), [])
+        finding['case_id'] = None
+        errors = finding_errors(finding, self.timeline, self.metrics['metrics'])
+        self.assertTrue(any('case_id' in error for error in errors),
+                        'a nullable case_id must not validate under Finding 2.1.0')
 
 
 class FindingMigrationTests(unittest.TestCase):

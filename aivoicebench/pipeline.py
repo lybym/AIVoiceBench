@@ -17,7 +17,7 @@ from .acoustic import resolve_segmenter
 from .fusion import fuse, build_turns, detect_events, generate_timeline
 from .metrics import compute_timeline_metrics, run_status
 from .llm import LLMJudge, UnavailableLLMProvider
-from .findings import generate_findings_document
+from .findings import CURRENT_FINDING_VERSION, generate_findings_document
 from .report import render_report
 from .runner import write_json
 from .semantic_evidence import semantic_evidence_records
@@ -56,15 +56,28 @@ def run_full_pipeline(source, output, profile=None, *, provider=None,
     write_json(out / 'acoustic-segments.json', acoustic_doc)
 
     if acoustic_doc['status'] == 'insufficient_evidence':
-        # Still produce a report with the partial state
+        # Still produce a report with the partial state. The Judge artifact is
+        # written in its real shape (empty results, no invocations) rather than as
+        # an ad-hoc dict: with no segments there is nothing to judge, and a
+        # consumer of this directory must be able to validate what it finds.
         fused_doc = {'segments': [], 'source': acoustic_doc['source'],
                      'attribution': {'strategy': 'none', 'provider': None,
                                      'confidence': 0, 'note': 'No acoustic segments'}}
         turns_doc = {'turns': []}
         timeline = {'events': [], 'evidence': [], 'status': 'partial'}
         metrics_result = {'status': 'insufficient_evidence', 'metrics': []}
-        judge_data = {'results': [], 'invocations': []}
+        judge_data = LLMJudge().judge_document([], run_id=out.name)
+        write_json(out / 'judge-results.json', judge_data)
+        write_json(out / 'judge-raw.json', {
+            'schema_version': '1.0.0', 'run_id': out.name,
+            'invocations': judge_data['invocations'],
+        })
+        findings_document = {
+            'schema_version': CURRENT_FINDING_VERSION, 'run_id': out.name,
+            'analysis_id': None, 'findings': [], 'abstentions': [], 'rejected': [],
+        }
         findings = []
+        write_json(out / 'findings.json', findings_document)
     else:
         # 2. Fusion → turns → events → timeline
         fused_doc = fuse(acoustic_doc)

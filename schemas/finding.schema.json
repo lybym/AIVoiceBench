@@ -26,10 +26,7 @@
       "minLength": 1
     },
     "case_id": {
-      "type": [
-        "string",
-        "null"
-      ],
+      "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
     },
     "execution_kind": {
