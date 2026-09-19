@@ -11,7 +11,7 @@
 | ⬜ `planned` | 无可交付实现；设计、配置或关闭 Issue 不算实现 |
 | ⏸ `deferred` | 不在当前 MVP 排程，保留已有基础 |
 
-验证状态独立：`software_verified`、`container_verified`、`browser_verified`、`real_recording_pending`、`real_device_pending`、`validation_pending`。除非有直接证据，不能声明 `real_recording_verified` 或 `measurement_equivalence_verified`。状态语言由 `AcceptanceRecord 1.0.0` 逐 gate 落盘（见下）。
+验证状态独立：`software_verified`、`container_verified`、`browser_verified`、`real_cloud_verified`、`real_recording_pending`/`real_recording_verified`、`real_device_pending`、`validation_pending`。除非有直接证据，不能声明 `real_recording_verified` 或 `measurement_equivalence_verified`。状态语言由 `AcceptanceRecord 1.0.0` 逐 gate 落盘（见下），未达到的 gate 记 `pending`/`not_reached`，不得省略。
 
 ## 非功能要求
 
@@ -37,13 +37,14 @@ M1 尚未通过。最终验收需要授权的真实 5–20 分钟录音、有效
 
 M1 的五个 gate（`software_verified`、`container_verified`、`browser_verified`、`real_cloud_verified`、`real_recording_verified`）由 `AcceptanceRecord 1.0.0`（`schemas/acceptance-evidence.schema.json`）记录，并由确定性检查器 `aivoicebench/acceptance_evidence.py`（CLI `python -m aivoicebench acceptance init|check`）校验。该契约把本节门槛变成可执行检查，**不降低任何门槛**：
 
-- `real_recording_verified` 只在存在授权真实样本（5–20 分钟区间）、人工复核证据与机器原件分离、且曝光扫描干净时才成立；synthetic/fixture 样本、mock、CI、机器生成却被记为人工的标注会被判为未授权声明并使记录 `invalid`。
-- 每个 stage 的分母必须显式计入 complete/partial/failed/unknown/abstained/not_applicable 且与 `expected_total` 对账，**禁止只报成功的分母**。
-- 每条结论必须可回溯 Run → Turn/Event → 音频区间 → Evidence → processor/model/policy version；缺口作为显式 open item 报出。
+- `real_recording_verified` 只在存在授权真实样本（5–20 分钟区间）、人工复核证据与机器原件分离、**声明的 artifact 摘要经 `--verify-artifacts` 实际重算匹配**、且 **`--repository-root` 仓库扫描干净**时才成立；synthetic/fixture 样本、mock、CI、机器生成却被记为人工的标注会被判为未授权声明并使记录 `invalid`。未请求 artifact 校验或未扫描仓库时，该 gate 一律不得写成已验证，CLI 也不会以 0 退出。
+- 每个 stage 的分母必须显式计入 complete/partial/failed/unknown/abstained/not_applicable 且与 `expected_total` 对账，**禁止只报成功的分母**；被测量过的 evaluation 若缺少其 stage 的分母，视为按省略构成的 success-only 分母。
+- 每条结论必须可回溯 Run → Turn/Event → 音频区间 → Evidence → processor/model/policy version；证据 id 必须在记录内真实声明，缺口作为显式 blocking gap 报出。
+- 真实云 gate 的 evidence 必须以显式 `sample_id` 绑定到**授权真实样本**（路径子串不算绑定），synthetic/fixture 样本不得授权真实云 gate。
 - 角色修改必须生成新 AnalysisRevision、保留旧结果字节并给出 recompute/diff 证据，且不得重跑识别/聚类。
-- 未达到的 gate 必须写明缺口；**没有真实验收记录时不得把任何 gate 写成已验证**。
+- 未达到的 gate 必须写明缺口；**没有真实验收记录时不得把任何 gate 写成已验证**。blocking gap 未清零时记录不得判为 `complete`。
 
-检查器本身只是工具，其通过不等于 M1 通过；M1 仍以真实证据记录为准。
+检查器本身只是工具，其通过不等于 M1 通过；它只能证明声明摘要与本地文件一致、声明之间互相授权，**不能证明某个声明样本确实是授权真实录音**。M1 仍以真实证据记录为准。
 
 ## 正式里程碑
 

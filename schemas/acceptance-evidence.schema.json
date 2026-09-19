@@ -367,7 +367,7 @@
   "additionalProperties": false,
   "$defs": {
     "evidence": {
-      "description": "A reference to a preserved artifact. Only the location and digest travel with the record; the artifact itself stays outside Git.",
+      "description": "A reference to a preserved artifact. Only the location and digest travel with the record; the artifact itself stays outside Git. A real-cloud or human-review reference must name the authorized sample it belongs to, so the binding is structural rather than inferred from a path substring.",
       "type": "object",
       "properties": {
         "evidence_id": { "type": "string", "minLength": 1 },
@@ -377,6 +377,10 @@
                    "real_cloud_invocation", "real_recording_artifact", "ci_run", "documentation"]
         },
         "location": { "type": "string", "minLength": 1 },
+        "sample_id": {
+          "description": "The sample this evidence belongs to. Required for evidence that authorizes a real gate, so a claim cannot be satisfied by evidence about an unrelated or synthetic sample.",
+          "type": ["string", "null"]
+        },
         "sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
         "produced_at": { "type": ["string", "null"] },
         "detail": { "type": ["string", "null"] }

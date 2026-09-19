@@ -630,13 +630,16 @@ def main(argv=None):
               f'real_recording_verified={result["real_recording_verified"]}, '
               f'{len(result["pending_gates"])} pending gate(s), '
               f'{len(result["unauthorized_claims"])} unauthorized claim(s), '
+              f'{len(result["gaps"])} blocking gap(s), '
               f'{len(result["errors"])} error(s)')
         for item in result['unauthorized_claims']:
             print(f'  UNAUTHORIZED CLAIM {item["gate"]}: {item["reason"]}')
         for item in result['errors']:
             print(f'  ERROR {item}')
-        for item in result['unresolved']:
-            print(f'  OPEN {item}')
+        for item in result['gaps']:
+            print(f'  BLOCKING {item}')
+        for item in result['observations']:
+            print(f'  OBSERVATION {item}')
         if result['status'] == STATUS_INVALID:
             return 1
         return 0 if result['status'] == STATUS_COMPLETE else 2
