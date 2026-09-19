@@ -61,9 +61,10 @@ Run records the rejected document and its errors as a `retained_diagnostic`.
   numbers could declare another turn's Finding. The generator and
   `finding_errors` enforce the same rule.
 - 2.0.0 must not carry `turn_ids`/`analysis_id`; a 2.0.0 document is re-emitted
-  under 2.1.0 with `migrate_finding_document()`, which resolves `turn_ids` from
-  the Timeline when one is supplied and leaves the list empty — never guessed —
-  when it cannot.
+  under 2.1.0 with `migrate_finding_document()`, which **requires the Timeline**
+  and resolves `turn_ids` from it together with the Finding's own cited events. It
+  never guesses a Turn: without a Timeline it refuses, because an empty `turn_ids`
+  is exactly what this validator rejects against the real Timeline.
 - **`case_id` stays required and non-null in both versions.** A Finding resolves
   against the persisted Timeline, and `event-timeline.schema.json` requires a Case
   identity there, so a nullable `case_id` would be unreachable. An unscripted
@@ -86,12 +87,15 @@ unaffected, and no data migration is required because no stored document changes
 meaning under its own version tag.
 
 Migration coverage, stated precisely: `migrate_finding_document` covers
-`2.0.0 -> 2.1.0` only. `2.1.0` is introduced by this change and no released
-artifact carries it, so there is no `2.1.0 -> 2.1.0` migration. In particular, a
-2.1.0 document produced by an earlier commit of this same (unmerged) branch could
-declare a Turn reachable only through a linked metric; under the tightened rule
-that document is rejected rather than migrated, and it must be regenerated. No
-published artifact is affected.
+`2.0.0 -> 2.1.0` only, and it **requires the Timeline** — a 2.1.0 Finding resolves
+its Turns against one, so migrating without it could only emit an empty
+`turn_ids` that `finding_errors` rejects against the real Timeline. It refuses
+instead. `2.1.0` is introduced by this change and no released artifact carries it,
+so there is no `2.1.0 -> 2.1.0` migration. In particular, a 2.1.0 document
+produced by an earlier commit of this same (unmerged) branch could declare a Turn
+reachable only through a linked metric; under the tightened rule that document is
+rejected rather than migrated, and it must be regenerated. No published artifact is
+affected.
 
 ## MetricResult 3.0.0 / definition_version 4.0.0 (Issue #25)
 

@@ -134,6 +134,38 @@ class FindingGenerationTests(unittest.TestCase):
 
 
 class ReportRenderingTests(unittest.TestCase):
+    def test_markdown_renders_unknown_confidence_without_fabricating_a_number(self):
+        """Derived events and gap evidence legitimately carry no confidence.
+
+        The producer emits `confidence: null` for every derived interval, so the
+        report must render an explicit unknown rather than crash or print 0.00.
+        """
+        fused_doc = {'segments': [{'segment_id': 'FSEG-0000', 'start_ms': 0, 'end_ms': 500,
+                                   'speaker_role': 'unknown', 'speaker_confidence': None,
+                                   'timing_source': 'acoustic', 'text': None}],
+                     'source': {'audio_sha256': 'a' * 64, 'duration_ms': 500,
+                                'acoustic_document_id': 'ACOUSTIC-t'},
+                     'attribution': {'strategy': 'none', 'confidence': None}}
+        turns_doc = {'turns': []}
+        evidence = [dict(make_evidence('EV-001', 0, 500, source='derived'), confidence=None)]
+        events = [dict(make_event('E1', 'silence', 0, turn_id=None, evidence_ids=['EV-001']),
+                       end_ms=500, source='derived', confidence=None,
+                       confidence_source=None)]
+        timeline = make_timeline(events, evidence)
+        metrics = {'status': 'insufficient_evidence', 'metrics': []}
+
+        md = render_markdown({}, fused_doc, turns_doc, timeline, metrics,
+                             {'results': [], 'invocations': []}, [])
+        self.assertIn('## 事件时间线', md)
+        self.assertIn('## 证据', md)
+        # Unknown is rendered as an explicit marker in the row itself, never as a
+        # measured number and never as a Python repr.
+        event_row = next(line for line in md.splitlines() if line.startswith('| E1 '))
+        self.assertTrue(event_row.endswith('| — |'), event_row)
+        evidence_row = next(line for line in md.splitlines() if line.startswith('| EV-001 '))
+        self.assertTrue(evidence_row.endswith('| — |'), evidence_row)
+        self.assertNotIn('None', md)
+
     def test_render_markdown_has_all_sections(self):
         profile = {'device': 'TestDevice', 'supplier': 'TestSupplier'}
         fused_doc = {

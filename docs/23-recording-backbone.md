@@ -25,9 +25,9 @@ Ingestion
 → Judge / Findings / Review / Report
 ```
 
-已有代码能执行 acoustic → ASR-native diarization → attribution → fusion；只有存在角色证据时才继续 turns/timeline/metrics，否则弃权。Judge/Findings 尚未完整接入 ImportRun。历史 `web-analysis` 记录保持可读且不重写。
+已有代码能执行 acoustic → ASR-native diarization → attribution → fusion；只有存在角色证据时才继续 turns/timeline/judge/metrics/findings，否则弃权。Judge/Findings 已接入 ImportRun（[#10](https://github.com/lybym/AIVoiceBench/issues/10)）：配置了语义 provider 且角色由人工确认后执行，未配置时以准确原因弃权；真实 provider 调用验收仍属 #85。历史 `web-analysis` 记录保持可读且不重写。
 
-`ModelSettings.capture()` 是当前实现中的 model/provider snapshot 入口；ASR 与 ASR-native diarization 已可进入 ImportRun，Judge 配置可捕获但主链未完整执行。2026-09-18 目标架构改为从外置 `providers.yaml` / `storage.yaml` 解析有效配置，并继续生成 secret-free Run snapshot。Credential values 与完整 Presigned URL 始终保持运行时内存态，不写快照。#87 合并前，SQLite model settings 仍是当前代码事实。
+`ModelSettings.capture()` 是当前实现中的 model/provider snapshot 入口；ASR 与 ASR-native diarization 已可进入 ImportRun，Judge 配置既被捕获也被执行（角色确认后的语义阶段），角色 revision 会沿用同一配置重跑。2026-09-18 目标架构改为从外置 `providers.yaml` / `storage.yaml` 解析有效配置，并继续生成 secret-free Run snapshot。Credential values 与完整 Presigned URL 始终保持运行时内存态，不写快照。#87 合并前，SQLite model settings 仍是当前代码事实。
 
 ## 2026-09-18 File ASR 与对象存储决策
 

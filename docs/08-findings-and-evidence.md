@@ -17,8 +17,9 @@ Finding **2.1.0** (Issue #10) adds explicit Turn linkage:
   in. `case_id` stays required and non-null in both versions: a Finding resolves
   against the persisted Timeline, which always carries a Case identity, so a
   nullable `case_id` would be unreachable. `migrate_finding_document()` re-emits a
-  2.0.0 document under 2.1.0 with `turn_ids` resolved from the Timeline, left empty
-  when unresolved.
+  2.0.0 document under 2.1.0 from a **required** Timeline: `turn_ids` are resolved
+  from that Timeline and the Finding's own cited events, and migration refuses
+  rather than emitting an empty list that would not validate against it.
 - Generated findings link MetricResults by canonical `metric_id`, and only decided
   metrics (`observed`/`pass`/`fail`) belonging to the finding's own turns. A metric
   that abstained cannot support a defect claim.

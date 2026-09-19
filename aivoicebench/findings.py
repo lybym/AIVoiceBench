@@ -114,7 +114,7 @@ def generate_findings_document(judge_results, timeline, metrics_result, run_id=N
         if not turn_ids:
             abstentions.append(_abstention(
                 candidate, 'insufficient_evidence',
-                'the candidate cannot be bound to a Turn through its cited events or metrics'))
+                'the candidate cannot be bound to a Turn through its cited events'))
             continue
         finding = _build_finding(candidate, run_id, case_id, execution_kind,
                                  evidence_ids, event_ids, metric_ids, turn_ids,
@@ -280,14 +280,18 @@ def _abstention(candidate, state, reason):
     }
 
 
-def migrate_finding_document(finding, to_version=CURRENT_FINDING_VERSION, timeline=None):
+def migrate_finding_document(finding, timeline, to_version=CURRENT_FINDING_VERSION):
     """Re-emit a Finding document under the current contract.
 
     A 2.0.0 document has no ``turn_ids``. They are resolved from the Timeline and
     the Finding's own linked **events** (the only object that establishes which
-    Turn a Finding is about — see ``validation._finding_turn_errors``); when they
-    cannot be resolved the list is empty rather than guessed, so a migrated
-    document never claims a Turn the original evidence does not establish.
+    Turn a Finding is about — see ``validation._finding_turn_errors``).
+
+    The Timeline is required, because a Finding 2.1.0 resolves its Turns against
+    one: migrating without it could only emit an empty ``turn_ids`` that the very
+    same validator rejects against the real Timeline, i.e. a document this engine
+    would never accept. Failing here is the honest outcome — the migration never
+    guesses a Turn, and never returns something it cannot stand behind.
     """
     if not isinstance(finding, dict):
         raise ValueError('Finding must be an object')
@@ -296,6 +300,9 @@ def migrate_finding_document(finding, to_version=CURRENT_FINDING_VERSION, timeli
         return dict(finding)
     if to_version != CURRENT_FINDING_VERSION or version != LEGACY_FINDING_VERSION:
         raise ValueError(f'No finding migration from {version!r} to {to_version!r}')
+    if not isinstance(timeline, dict):
+        raise ValueError('Migrating a Finding to 2.1.0 requires the Timeline it resolves '
+                         'its Turns against')
     migrated = dict(finding)
     migrated['schema_version'] = CURRENT_FINDING_VERSION
     migrated.setdefault('turn_ids', _migrated_turn_ids(finding, timeline))
@@ -303,8 +310,6 @@ def migrate_finding_document(finding, to_version=CURRENT_FINDING_VERSION, timeli
 
 
 def _migrated_turn_ids(finding, timeline):
-    if not isinstance(timeline, dict):
-        return []
     events = {item.get('event_id'): item for item in timeline.get('events') or []}
     turns = {events[event_id].get('turn_id') for event_id in finding.get('event_ids') or []
              if event_id in events and events[event_id].get('turn_id')}

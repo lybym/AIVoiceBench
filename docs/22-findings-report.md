@@ -26,7 +26,7 @@ Web Evidence Workbench → wavesurfer.js
 - 映射 severity 到 defect/observation；
 - 每个 Finding 保存 `evidence_ids`、`event_ids`、`metric_ids`、**`turn_ids`**、suspected layer 与 review 状态；
 - `metric_ids` 使用 canonical `metric_id`（不是显示名），且只链接**自身已决定**（`observed`/`pass`/`fail`）且属于同一 Turn 的 MetricResult —— 弃权的 metric 不能支撑一个缺陷结论；
-- `metric_ids` / `turn_ids` 均对照本次传入的 Timeline 与 metrics 解析；`turn_ids` 必须能由该 Finding 自己的事件/指标回溯到，否则不生成；
+- `metric_ids` / `turn_ids` 均对照本次传入的 Timeline 与 metrics 解析；`turn_ids` 只能由该 Finding **自己引用的 events** 回溯得到（Timeline evidence 本身不携带 Turn 绑定，因此 linked metric 不能替它声明 Turn），否则不生成；
 - **没有"就近借用证据"回退。** 候选若无法引用可解析证据（或 Timeline 本身不合法），该候选进入 `abstentions`（state + 原因），不产生 Finding；
 - 每个生成的 Finding 在写入前都用 `finding_errors` 校验；不合约的 Finding 进入 `rejected` 并中止写出，绝不发布；
 - defect 与 suspected 归因默认需要 human review；具名 `suspected_layers` 一律 `requires_log_verification=true`，`attribution_confidence` 上限 0.99；层名不在闭合 taxonomy 内则退化为显式 `unknown`（`attribution_confidence = 0`）。
@@ -35,7 +35,7 @@ Web Evidence Workbench → wavesurfer.js
 
 ### Finding 2.0.0 → 2.1.0
 
-2.1.0 增加显式 `turn_ids` 与可空 `analysis_id`；`case_id` 在两个版本都保持必填非空：Finding 对照持久化 Timeline 解析，而 EventTimeline 始终带 Case 身份（未脚本化导入带 #24 建立的 `CASE-auto` 占位），因此可空 `case_id` 不可达、不予提供。`migrate_finding_document()` 可显式重发为 2.1.0，`turn_ids` 从 Timeline 解析，**解析不到时留空而不是猜测**。测量层（MetricResult 3.0.0）对未脚本化导入保留了它自己可空的 `case_id`；这与 Finding 层的约定不同，已在 `docs/07-contract-versions.md` 记录，不做静默统一。
+2.1.0 增加显式 `turn_ids` 与可空 `analysis_id`；`case_id` 在两个版本都保持必填非空：Finding 对照持久化 Timeline 解析，而 EventTimeline 始终带 Case 身份（未脚本化导入带 #24 建立的 `CASE-auto` 占位），因此可空 `case_id` 不可达、不予提供。`migrate_finding_document()` 可显式重发为 2.1.0，**必须传入 Timeline**：`turn_ids` 由该 Timeline 与 Finding 自己的 events 解析；缺 Timeline 时直接报错而不是产出空 `turn_ids`（空值在真实 Timeline 上会被 `finding_errors` 拒绝，即产出本引擎自己不会接受的文档）。测量层（MetricResult 3.0.0）对未脚本化导入保留了它自己可空的 `case_id`；这与 Finding 层的约定不同，已在 `docs/07-contract-versions.md` 记录，不做静默统一。
 
 ## Report rendering
 

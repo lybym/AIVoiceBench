@@ -309,15 +309,31 @@ class FindingMigrationTests(unittest.TestCase):
         self.assertEqual(migrated['turn_ids'], ['TURN-0001'])
         self.assertEqual(finding_errors(migrated, self.timeline, []), [])
 
-    def test_migration_without_a_timeline_never_guesses_a_turn(self):
-        migrated = migrate_finding_document(self.legacy_finding())
-        self.assertEqual(migrated['turn_ids'], [])
+    def test_migration_requires_the_timeline_and_never_emits_an_invalid_document(self):
+        """A migrated 2.1.0 document must be one this engine would accept.
+
+        Without a Timeline the Turns cannot be resolved, so the Timeline is a
+        required argument and a non-Timeline value is refused: emitting an empty
+        `turn_ids` instead would produce a document that `finding_errors` rejects
+        against the very Timeline the original events came from.
+        """
+        with self.assertRaises(TypeError):
+            migrate_finding_document(self.legacy_finding())
+        # An explicit non-Timeline is refused too, rather than silently emitting
+        # an unvalidatable document.
+        with self.assertRaises(ValueError) as caught:
+            migrate_finding_document(self.legacy_finding(), timeline=None)
+        self.assertIn('requires the Timeline', str(caught.exception))
+        # With the Timeline, the result validates under the current rules.
+        migrated = migrate_finding_document(self.legacy_finding(), self.timeline)
+        self.assertEqual(migrated['turn_ids'], ['TURN-0001'])
+        self.assertEqual(finding_errors(migrated, self.timeline, []), [])
 
     def test_migration_is_idempotent_and_rejects_unknown_versions(self):
         current = migrate_finding_document(self.legacy_finding(), timeline=self.timeline)
         self.assertEqual(migrate_finding_document(current, timeline=self.timeline), current)
         with self.assertRaises(ValueError):
-            migrate_finding_document({'schema_version': '9.9.9'})
+            migrate_finding_document({'schema_version': '9.9.9'}, timeline=self.timeline)
 
 
 if __name__ == '__main__':
