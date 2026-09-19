@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .acoustic import resolve_segmenter
 from .fusion import fuse, build_turns, detect_events, generate_timeline
-from .metrics import compute_timeline_metrics
+from .metrics import compute_timeline_metrics, run_status
 from .llm import LLMJudge, MockLLMProvider, UnavailableLLMProvider
 from .findings import generate_findings
 from .report import render_report
@@ -153,6 +153,9 @@ def _integrate_llm_metrics(metrics_result, judge_results):
             metric['value'] = None
             metric['status'] = 'insufficient_evidence'
             metric['reason'] = 'Verified per-turn semantic timing anchors are unavailable'
-    observed = [m for m in metrics_result.get('metrics', []) if m.get('status') == 'observed' and m.get('value') is not None]
-    metrics_result['status'] = 'observed' if observed else 'insufficient_evidence'
+    # One status rule for the whole engine: this surface used to derive the run
+    # status with its own "observed and value is not None" test, which was one
+    # null-valued observed metric away from disagreeing with the canonical
+    # `compute_timeline_metrics` result on the same documents.
+    metrics_result['status'] = run_status(metrics_result.get('metrics', []))
     return metrics_result

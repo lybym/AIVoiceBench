@@ -238,9 +238,28 @@ def metric_errors(metric, timeline=None):
     # structurally; each version then enforces its own identity, policy and
     # traceability rules here. Do not silently normalize one into the other.
     if version == '3.0.0':
-        if not metric.get('prd_ref'):
-            errors.append('/prd_ref: MetricResult 3.0.0 requires a PRD requirement reference')
-        if metric.get('name') == 'false_endpoint':
+        from .metrics import DEFINITION_VERSION, LEGACY_METRIC_NAMES, prd_ref_for
+        name = metric.get('name')
+        declared = metric.get('definition_version')
+        legacy_continuity = declared == DEFINITION_VERSION and name in LEGACY_METRIC_NAMES
+        if not metric.get('prd_ref') and not legacy_continuity:
+            errors.append('/prd_ref: MetricResult 3.0.0 requires a PRD requirement reference; only '
+                          'a declared legacy metric kept for continuity may carry none')
+        if legacy_continuity and not metric.get('reason'):
+            errors.append('/reason: a legacy metric without a PRD reference must state that the '
+                          'current PRD decomposition no longer defines it')
+        # A PRD id is only meaningful together with the definition version that
+        # assigns it. Reusing an old id for a name the current definition maps
+        # elsewhere would silently reinterpret a historical requirement.
+        expected = prd_ref_for(name, declared)
+        if declared == DEFINITION_VERSION:
+            if expected and metric.get('prd_ref') != expected:
+                errors.append(f'/prd_ref: definition_version {DEFINITION_VERSION} maps {name} to '
+                              f'{expected}; a different reference silently reinterprets a PRD id')
+            elif not expected and metric.get('prd_ref'):
+                errors.append(f'/prd_ref: {name} has no PRD requirement under definition_version '
+                              f'{DEFINITION_VERSION}')
+        if name == 'false_endpoint':
             errors.append('/name: 3.0.0 deterministic output must use false_endpoint_candidate; '
                           'false_endpoint is the legacy confirmed form and requires explicit '
                           'semantic/human confirmation evidence')
@@ -304,7 +323,7 @@ def metric_errors(metric, timeline=None):
         errors.append('/evidence_ids: unknown timeline evidence')
     if any(key not in events for key in metric['event_ids']):
         errors.append('/event_ids: unknown timeline event')
-    decided = metric['status'] not in ('insufficient_evidence', 'not_applicable')
+    decided = metric['status'] not in ('insufficient_evidence', 'not_applicable', 'invalid')
     refs = [evidence[key] for key in metric['evidence_ids'] if key in evidence]
     if decided and metric['measurement_scope'] in ('white_box', 'hybrid') and not any(item['source'] == 'device_log' for item in refs):
         errors.append('/measurement_scope: internal measurement requires device log evidence')

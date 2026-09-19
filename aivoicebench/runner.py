@@ -100,7 +100,8 @@ def prepare_audio(case, asset_root, run_dir):
 
 
 def _missing_metric(case, timeline, name):
-    boolean_names = {'false_endpoint', 'barge_in_success', 'barge_in_stop_success',
+    boolean_names = {'false_endpoint', 'false_endpoint_confirmed', 'semantic_response',
+                     'barge_in_semantic_compliance', 'barge_in_success', 'barge_in_stop_success',
                      'barge_in_new_response_success', 'context_success', 'instruction_success'}
     unit = 'boolean' if name in boolean_names else ('ms' if name.endswith('_ms') else ('dB' if name == 'aec_erle_db' else 'ratio'))
     scope = 'white_box' if name == 'asr_cer' or name.startswith('internal_') or name == 'aec_erle_db' else 'black_box'

@@ -1,8 +1,28 @@
-# Metric definitions 2.0.0 (MetricResult schema 3.0.0)
+# Metric definitions 4.0.0 (MetricResult schema 3.0.0)
 
 > Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
 
 Definitions are versioned independently from schemas. No thresholds in this document are approved release criteria. Synthetic reference calculations validate arithmetic, not device performance.
+
+## Definition versions and the PRD-M001–M010 conflict
+
+`docs/prd/metric-requirements.md` (PRD 1.5.0) decomposes `PRD-M001–M010` as First
+Speech Latency / Endpoint Response End / Semantic Response / Turn Gap / Barge-in Stop
+Latency / Barge-in Semantic Compliance / False Endpoint / ASR-Transcript Quality /
+Overlap / Coverage-Outcome. The pre-1.5.0 PRD — and therefore this document and
+`aivoicebench/metrics.py` before Issue #25 — used a different set (Feedback Latency /
+First Speech / Meaningful Response / Turn Gap / Barge-in Stop / Barge-in New Intent /
+Barge-in Success / False Endpoint / Overlap / Timeout-CER-WER).
+
+The issue is that a PRD id is only meaningful together with the definition version
+that assigns it: `PRD-M002` means First Speech Latency under `definition_version`
+3.0.0 and Endpoint/Response End under 4.0.0. Issue #25 instructs implementation
+"according to current PRD definitions", so **the current PRD wins** and the canonical
+engine emits `definition_version` **4.0.0**. The historical table is retained in
+`aivoicebench.metrics.PRD_REFS_BY_DEFINITION` together with `prd_ref_for`,
+`migrate_prd_ref` and `migrate_metric_document`, so a stored 3.0.0 document keeps its
+original meaning and any conversion is explicit; `metric_errors` rejects a document
+whose `definition_version` maps its name to a different PRD id.
 
 ## Time base
 
@@ -40,39 +60,80 @@ Statuses: observed = eligible value without an applied threshold; pass/fail = va
 ## PRD metric names and legacy aliases
 
 MetricResult 3.0.0 carries `prd_ref`, `policy` and `policy_version` on every metric.
+`definition_version` 4.0.0 assigns the current PRD decomposition:
 
-| PRD | Canonical name | Legacy 2.0.0 name | Mapping |
+| PRD | Canonical name | Unit | Path |
 | --- | --- | --- | --- |
-| PRD-M001 | feedback_latency_ms | — | new |
-| PRD-M002 | first_speech_latency_ms | e2e_first_audio_latency_ms | same formula, new name and policy ref |
-| PRD-M003 | meaningful_response_latency_ms | semantic_response_latency_ms | same intent, semantic anchor required |
-| PRD-M004 | turn_gap_ms | — | new, signed, direction corrected |
-| PRD-M005 | barge_in_stop_latency_ms | barge_in_stop_latency_ms | unchanged name, response_id binding added |
-| PRD-M006 | barge_in_new_intent_latency_ms | — | new, semantic dependency |
-| PRD-M007 | barge_in_success | barge_in_success | unchanged name, full 4-component evidence required |
-| PRD-M008 | false_endpoint_candidate | false_endpoint | candidate only; confirmation needs semantic evidence |
-| PRD-M009 | overlap_duration_ms / overlap_ratio | overlap_duration_ms | ratio added |
-| PRD-M010 | timeout / asr_cer / asr_wer / statistics | timeout_rate, asr_cer | unchanged |
+| PRD-M001 | first_speech_latency_ms | ms | deterministic, acoustic boundaries |
+| PRD-M002 | response_end_candidate_ms | ms | deterministic candidate + `uncertainty_ms` |
+| PRD-M003 | semantic_response | boolean | constrained semantic evidence |
+| PRD-M004 | turn_gap_ms | ms | deterministic, signed |
+| PRD-M005 | barge_in_stop_latency_ms | ms | deterministic, interrupted `response_id` |
+| PRD-M006 | barge_in_semantic_compliance | boolean | constrained semantic evidence |
+| PRD-M007 | false_endpoint_candidate / false_endpoint_confirmed | boolean | candidate heuristic; confirmation is composite |
+| PRD-M008 | asr_cer / asr_wer | ratio | eligible reference + device-internal transcript |
+| PRD-M009 | overlap_duration_ms / overlap_ratio | ms / ratio | deterministic interval intersection |
+| PRD-M010 | coverage | ratio | deterministic planned/attempted/measured/abstained counts |
 
-Legacy 2.0.0 documents remain readable by validation. New output uses the canonical names above. A legacy name never silently changes meaning.
+Names the current decomposition no longer defines (`feedback_latency_ms`,
+`meaningful_response_latency_ms`, `barge_in_new_intent_latency_ms`,
+`barge_in_success`) are still emitted as **legacy continuity records**: `prd_ref` is
+`null`, the status is `insufficient_evidence` and the reason says the current PRD no
+longer defines the requirement. They are never computed into a new value, and
+`metric_errors` requires that reason. Legacy 2.0.0 documents and 3.0.0 documents remain
+readable; new output never reuses an old PRD id for a name the current definition maps
+elsewhere.
 
 ## Phase 1 formulas and contracts
 
 | Metric (`prd_ref`) | Formula / decision | Applicability, evidence and missing handling | Unit |
 | --- | --- | --- | --- |
-| first_speech_latency_ms (PRD-M002) | first device speech start minus that turn's final tester speech end | Same turn, first associated response. Require both acoustic boundaries. Device onset before utterance completion is overlap → **not_applicable**, not a negative latency. Tester utterance present but no device onset evidence → insufficient_evidence. No tester utterance → not_applicable. Legacy alias: e2e_first_audio_latency_ms. | ms |
+| first_speech_latency_ms (PRD-M001) | first device speech start minus that turn's final tester speech end | Same turn, first associated response. Require both **acoustic** boundaries (`source` audio_signal/manual_annotation). Device onset before utterance completion is overlap → **not_applicable**, not a negative latency. Tester utterance present but no device onset evidence → insufficient_evidence. No tester utterance → not_applicable. An ASR/control-sourced boundary abstains instead of becoming a value. | ms |
+| response_end_candidate_ms (PRD-M002) | absolute `audio_relative_ms` position of the turn's acoustic response end, with its own `uncertainty_ms` and boundary confidence | Candidate, never a confirmed end. The request must have **completed**: the turn needs a `tester_speech_end`, and a turn with only `tester_speech_start` abstains because the request never closed. An acoustic `device_speech_end` or acoustic `response_end` may supply the candidate; a `response_end` that is only `derived`, and any `asr`-sourced end or ASR final timestamp, cannot — the metric then abstains naming that reason. In the real fusion pipeline the event is `derived`, so the candidate always comes from the acoustic `device_speech_end`. No device response at all → not_applicable. | ms |
+| semantic_response (PRD-M003) | boolean coverage decision from a constrained semantic record | Requires a record with `kind=semantic_response`, a boolean `decision`, `criterion_id`/`criterion_version`, a `judge_profile` and evidence/event references. Anything less abstains. No device response → not_applicable. A performed judgment carries `method=llm_judge`. | boolean |
 | turn_gap_ms (PRD-M004) | that turn's device speech start minus tester speech end | **Signed.** Negative values express overlap/barge-in and remain `observed`; never clamp to zero or raise. Policy `device_speech_start` (deterministic) is current; a future policy may select a semantic effective-response start. Different policies must not be aggregated together. Legacy direction (device_end → next_tester_start) is retained only as `turn_gap_ms_legacy`, which still rejects negative values. | ms |
-| feedback_latency_ms (PRD-M001) | final tester speech end → first perceivable feedback onset | Needs feedback_type (filler / ack / thinking cue / non-speech tone). Pure signal timing cannot separate feedback from noise → insufficient_evidence until acoustic pattern or LLM evidence exists. | ms |
-| meaningful_response_latency_ms (PRD-M003) | annotated first meaningful response onset minus final tester speech end | Meaningfulness is anchored by a reviewed transcript/audio interval; acknowledgments/fillers ("嗯", "好的，让我看看") do not count. Manual/semantic identification chooses evidence; arithmetic is deterministic. Missing meaningful boundary → insufficient_evidence even if first audio exists. Legacy alias: semantic_response_latency_ms. | ms |
-| false_endpoint_candidate (PRD-M008) | true iff a `possible_false_endpoint` event was observed in the window | **Candidate only.** Confirmation additionally requires tester-continuation evidence, device response inside the intra-utterance pause, the full observation window and semantic/manual verification. A candidate must never be rendered as a confirmed defect. Legacy alias: false_endpoint (meaning unchanged but reserved for the confirmed form). | boolean |
-| barge_in_stop_latency_ms (PRD-M005) | interrupted old response's speech end minus actual interruption onset | The `interrupt_start` event must carry the interrupted **old `response_id`**; the paired `device_speech_end` must carry the same response_id. A later different response never satisfies it. Old end missing → insufficient_evidence. Old response already ended before the interruption → **not_applicable** (natural completion); never a negative stop latency. | ms |
-| barge_in_new_intent_latency_ms (PRD-M006) | new interrupting utterance end → response to that new intent | Requires semantic intent association. An arbitrary later device onset is not the new-intent response → insufficient_evidence until semantic evidence exists. | ms |
-| barge_in_success (PRD-M007) | old answer stopped AND new input accepted AND new intent answered AND no return to the old answer within the window | Composite. Any missing necessary component → insufficient_evidence, even when another component is false. Stop latency and stop success are reported separately from the composite. | boolean |
-| overlap_duration_ms / overlap_ratio (PRD-M009) | length of intersection of tester-speech union and device-speech union; ratio over declared denominator | Merge intervals per channel before intersection; half-open, touching bounds contribute zero. Ratio denominator is the same-turn device speech duration when used. Unknown-source speech must not be counted as tester/device overlap. Missing detector/capture is not empty speech. | ms / ratio |
-| timeout (PRD-M010) | confirmed observation deadline exceeded | Requires a configured deadline and evidence that observation stayed healthy through it. Capture/network failure is excluded as insufficient_evidence. EOF does not by itself prove a timeout. | boolean |
-| asr_cer / asr_wer (PRD-M010) | edit distance / reference unit count | Device-internal transcript required, paired with case reference text. NFC normalization only, case/whitespace/punctuation preserved (nfc-v1). Empty reference = not_applicable. External ASR annotates recordings but cannot populate the device metric. | ratio |
-| timeout_rate / `*_success_rate` (PRD-M010) | true eligible observations / eligible observations | Rate aggregation `eligible_ratio`. Fractions in [0,1], not percentages. Report sample_count, total_count and excluded_count; never zero-fill. | ratio |
+| barge_in_stop_latency_ms (PRD-M005) | interrupted old response's speech end minus actual interruption onset | The `interrupt_start` event must carry the interrupted **old `response_id`**; the paired `device_speech_end` must carry the same response_id. A later different response never satisfies it. Old end missing → insufficient_evidence. Old response already ended before the interruption → **not_applicable** (natural completion); never a negative stop latency. No interruption in the turn → not_applicable. | ms |
+| barge_in_semantic_compliance (PRD-M006) | boolean compliance decision for the response that follows an interruption | Requires `kind=barge_in_compliance` constrained semantic evidence with the same structural requirements as PRD-M003. No interruption in the turn → not_applicable. Barge-in stop latency never implies compliance. | boolean |
+| false_endpoint_candidate / false_endpoint_confirmed (PRD-M007) | candidate: true iff a `possible_false_endpoint` event was observed. confirmed: true only with tester continuation, an in-pause device response end, a covered observation window, a complete timeline and an explicit semantic/manual confirmation record | **Candidate and confirmation are separate results.** A candidate alone is always emitted and never rendered as a confirmed defect; a missing component makes the confirmed metric `insufficient_evidence` and names every missing component. Confirmation is `method=composite`, never a bare heuristic. | boolean |
+| asr_cer / asr_wer (PRD-M008) | edit distance / reference unit count over NFC-normalized text | Requires an eligible nonempty reference **and** a device-internal transcript carrying an evidence reference. An external ASR transcript annotates the recording and can never populate the device metric — it abstains naming that reason. Empty reference → not_applicable. Word/character normalization is `nfc-v1`; case/whitespace/punctuation preserved. | ratio |
+| overlap_duration_ms / overlap_ratio (PRD-M009) | length of the intersection of tester-speech union and device-speech union; ratio over the declared denominator | Explicit `overlap_start`/`overlap_end` pairs are used when present; otherwise the interval unions of both roles are intersected. Merge intervals per channel before intersecting; touching bounds contribute zero. When tester/device identity cannot be established from the recording the metric **abstains** and names the timeline gap — a mixed track without roles is not a zero-overlap measurement. A turn whose role identity and intervals exist but whose intersection is not formable (a role set with no closed interval) also abstains explicitly instead of producing no document, so PRD-M010 can never read an unmeasurable turn as evaluated. | ms / ratio |
+| coverage (PRD-M010) | measured turns / attempted turns | Attempted units are the timeline's turns; measured units are turns with at least one **formal measurement**, meaning an observed PRD-M001 `first_speech_latency_ms`, PRD-M004 `turn_gap_ms` or PRD-M005 `barge_in_stop_latency_ms` whose interval actually closed. An observed PRD-M002 endpoint **candidate** is deliberately excluded: it is a position, observable on a turn that produced no measurement, and counting it made a run with no formal measurement report an observed 1.0. `aggregation` is `kind=rate` and reports `sample_count`/`total_count`/`excluded_count` plus `invalid_count`, `abstained_count`, one linked `input_metric_ids` entry per measured turn and, when a plan exists, `planned_count`. No plan → planned coverage is not reported and a control/transport success is never substituted. No attempted unit → not_applicable. | ratio |
+
+Aggregation for the whole engine is `aggregate_metrics(...)` (percentile over
+compatible single samples with `algorithm=R7`, otherwise a rate with
+`algorithm=eligible_ratio`) and `latency_percentiles(...)` for the reporting view. Both
+keep the denominator and the invalid/abstained counts; neither zero-fills.
+
+Every observed metric must reference timestamped Evidence; the engine never emits an
+observed value without an evidence reference, and `invalid` (artifact integrity
+failure) is a distinct status from `not_applicable` and `insufficient_evidence`.
+An invalid-integrity run emits an `invalid` document for **every** name the current
+decomposition defines, plus the legacy continuity records in the same status: an
+omitted requirement must not be readable as an evaluated one.
+
+### Aggregation identity and the overall status
+
+`aggregation.sample_count`/`total_count`/`excluded_count` and `input_metric_ids` are one
+contract: a `rate`/`micro` aggregate links exactly one eligible input `metric_id` per
+sample, and `metric_errors` rejects a document that claims a sample without linking it.
+`metric_id` therefore has to be unique per sample, which is why a name a single turn can
+produce several samples of (one `overlap_duration_ms` per overlap pair, one
+`barge_in_stop_latency_ms` per interruption) carries a per-sample discriminator.
+
+The overall status of a metric document set has a **single** rule
+(`metrics.run_status`): `observed` when any document is `observed`/`pass`/`fail`
+*and* carries a non-null value, else `invalid` when any document is `invalid`, else
+the timeline's own `invalid`/`blocked`, else `insufficient_evidence`. Every calling
+surface derives it from that one helper so the same documents cannot produce two
+different run statuses.
+
+### Names outside the current PRD-M001–M010 decomposition
+
+| Metric | Formula / decision | Applicability, evidence and missing handling | Unit |
+| --- | --- | --- | --- |
 | context_success / instruction_success | response satisfies explicit facts/constraints from identified prior turns | Prefer exact fact matching when valid; otherwise structured Judge with both context and response evidence. Missing context → insufficient_evidence. | boolean |
+| timeout (legacy) | confirmed observation deadline exceeded | Requires a configured deadline and evidence that observation stayed healthy through it. Capture/network failure is excluded as insufficient_evidence. EOF does not by itself prove a timeout. The deterministic canonical engine emits PRD-M010 `coverage` instead; `timeout`/`timeout_rate` remain in the legacy Case/Timeline evaluator (`aivoicebench/engine.py`). | boolean |
+| timeout_rate / `*_success_rate` (legacy) | true eligible observations / eligible observations | Rate aggregation `eligible_ratio`. Fractions in [0,1], not percentages. Report sample_count, total_count and excluded_count; never zero-fill. | ratio |
 
 Response identity and turn completion are prerequisites supplied by the fusion/timeline engine, not guessed by the formulas. Reference functions in `aivoicebench/formulas.py` are arithmetic demonstrations; event selection lives in `aivoicebench/metrics.py` and produces canonical MetricResult 3.0.0 directly.
 
