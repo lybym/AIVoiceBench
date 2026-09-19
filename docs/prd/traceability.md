@@ -12,7 +12,7 @@ Issue 定义工作单元，PR 定义一次可审阅变更，工作日志记录�
 | [#87](https://github.com/lybym/AIVoiceBench/issues/87) | F005、F015–F016、N004/N006 | Provider/Object Storage 外置配置；File ASR 极速版 `inline | object_storage | auto` transport；移除固定 PUT/GET/HOST 生产依赖 |
 | [#22](https://github.com/lybym/AIVoiceBench/issues/22) | F005–F006、F016、N001/N004/N005 | Volcengine File ASR、原生 speaker separation、Provider provenance 与真实云调用证据；当前不接 3D-Speaker |
 | [#93](https://github.com/lybym/AIVoiceBench/issues/93) | F004–F006、F010、F015–F017、N001/N004/N005/N006 | Seed standard submit/query 恢复、partial transcript/speaker evidence 传播与角色专属 schema；#22/#27 子任务 |
-| [#23](https://github.com/lybym/AIVoiceBench/issues/23) | F003、F008–F009、N001/N003/N007 | Silero VAD server acoustic-boundary baseline、Measurement Policy、边界不确定性与真实标注样本评估 |
+| [#23](https://github.com/lybym/AIVoiceBench/issues/23) | F003、F008–F009、N001/N003/N007 | Silero VAD server acoustic-boundary baseline、Measurement Policy、边界不确定性与真实标注样本评估。软件验收已实现（`SileroVadSegmenter` + `silero_boundary_policy/1.0.0` + 可加性契约字段 + deterministic replay/fixture 测试 + `vad-eval` 脚手架）；**AC3 真实人工标注录音评测未满足**，仍属 #85 |
 | [#24](https://github.com/lybym/AIVoiceBench/issues/24) | F006–F008、N001/N003/N005 | speaker evidence → tester/device/unknown Attribution → Turn/Response → Canonical EventTimeline；冲突与未知必须保留 |
 | [#95](https://github.com/lybym/AIVoiceBench/issues/95) | F006–F009、F012–F014、F017、N001–N006 | 用户人工 speaker-role 确认 Gate、新 AnalysisRevision、重分析与正式报告；禁止 LLM 角色判断。软件验收已实现（role-review 契约 + API + Web 面板 + 恢复式重分析 + 浏览器测试）；真实录音人工标注验收仍属 #85 |
 | [#25](https://github.com/lybym/AIVoiceBench/issues/25) | F009、M001–M010、N001/N003/N007 | 唯一 Canonical Metric Engine、MetricResult、证据资格与 denominator/abstention 语义 |
