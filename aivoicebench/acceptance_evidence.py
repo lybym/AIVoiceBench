@@ -204,17 +204,36 @@ _MAX_SCANNED_FILE_BYTES = 8 * 1024 * 1024
 #: leaked credentials would be a false positive, and silently dropping their lines
 #: would hide a real one, so they are named here and disclosed in the result. This is
 #: the only exclusion in the scan: every other file the walk reaches is read.
-DETECTION_POLICY_SOURCES = frozenset({
-    'acceptance_evidence.py',
-    'test_acceptance_evidence.py',
-    'test_file_asr_transport.py',
-    'test_judge_contract.py',
-    'test_workbench.py',
+#: Entries are repository-relative paths, not basenames, so a copy of one of these
+#: names placed elsewhere in the tree is scanned like any other file.
+DETECTION_POLICY_SOURCE_PATHS = frozenset({
+    'aivoicebench/acceptance_evidence.py',
+    'tests/test_acceptance_evidence.py',
+    'tests/test_file_asr_transport.py',
+    'tests/test_judge_contract.py',
+    'tests/test_workbench.py',
 })
+
+#: The same files named from a scan root that *is* the repository root.
+DETECTION_POLICY_SOURCE_NAMES = frozenset(
+    entry.rsplit('/', 1)[-1] for entry in DETECTION_POLICY_SOURCE_PATHS)
 
 
 def _is_detection_policy_source(path):
-    return path.name in DETECTION_POLICY_SOURCES
+    """Whether ``path`` is a copy of the detection policy's own source.
+
+    Matched on the trailing repository-relative path (``tests/test_...py``) rather
+    than on the bare basename, so a same-named file elsewhere in a walked tree is
+    still scanned instead of being silently exempt.
+    """
+    if path.suffix.lower() != '.py':
+        return False
+    parts = path.resolve().parts
+    for entry in DETECTION_POLICY_SOURCE_PATHS:
+        tail = tuple(entry.split('/'))
+        if len(parts) >= len(tail) and tuple(parts[-len(tail):]) == tail:
+            return True
+    return False
 
 
 def _scan_target(path, findings):
@@ -514,6 +533,26 @@ def _check_real_recording_gate(gate, document, errors, claim_checks, verify_arti
         else:
             reasons.append('no human review evidence is bound to an authorized real sample; a review '
                            'that does not name the sample it reviewed cannot authorize it')
+    elif real_sample_ids:
+        # The entry must be one of the human artifacts the record declares, matched by
+        # digest and not only by path. Otherwise arbitrary bytes reachable at some
+        # location (with a matching self-declared digest) can carry the entire
+        # real-recording claim while `human_reviews[]` — the layer PRD-N002 says the
+        # claim rests on — says something else entirely.
+        declared_reviews = {review['artifact']['sha256']: review['review_id']
+                            for review in document.get('human_reviews') or []}
+        for entry in _evidence_bound_to(evidence, 'human_review', real_sample_ids):
+            digest = entry.get('sha256')
+            if digest is None:
+                reasons.append(
+                    f'human review evidence {entry["evidence_id"]} declares no sha256, so it cannot '
+                    'be shown to be one of the declared human review artifacts')
+            elif digest not in declared_reviews:
+                reasons.append(
+                    f'human review evidence {entry["evidence_id"]} at {entry["location"]} is not '
+                    'any declared human_reviews artifact (no declared review carries that digest); '
+                    'a gate authorized by material outside the preserved human layer is not '
+                    'authorized by human review')
     for sample in real_samples:
         duration = sample['duration_ms']
         if duration < MIN_SAMPLE_MS or duration > MAX_SAMPLE_MS:
@@ -705,6 +744,23 @@ def _check_artifact_identity(document, errors, gaps):
                 f'/samples: artifact sha256 {digest[:12]}… is declared by more than one sample '
                 f'({detail}), so the distinct authorized recordings are one file counted more than '
                 'once; each authorized sample must be bound to its own preserved artifact')
+
+    # The same rule one layer up: #85 requires human review sufficient to evaluate
+    # several distinct things (speaker coverage, manual role assignment, acoustic
+    # boundaries), so one preserved annotation reused verbatim as two reviews
+    # overstates the human layer exactly as one file counted as two recordings would.
+    review_digest_owners = {}
+    for index, review in enumerate(document.get('human_reviews') or []):
+        review_digest_owners.setdefault(review['artifact']['sha256'], []).append(
+            (review['review_id'], review['kind'], f'/human_reviews/{index}'))
+    for digest, owners in review_digest_owners.items():
+        review_ids = {review_id for review_id, _, _ in owners}
+        if len(review_ids) > 1:
+            detail = ', '.join(f'{review_id} ({kind})' for review_id, kind, _ in owners)
+            errors.append(
+                f'/human_reviews: artifact sha256 {digest[:12]}… is declared by more than one review '
+                f'({detail}), so distinct human reviews are one annotation file counted more than '
+                'once; each review must preserve its own annotation artifact')
 
 
 def _check_evaluations(document, errors, gaps, observations):
@@ -1084,6 +1140,9 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
         'unauthorized_claims': [item for item in claim_checks if not item['authorized']],
         'authorized_samples': [sample['sample_id'] for sample in real_samples],
         'sample_count': len(document.get('samples') or []),
+        # Reported so a human-layer count cannot be inflated invisibly (the digest rule
+        # above rejects the reuse; this makes the extent auditable either way).
+        'human_review_count': len(document.get('human_reviews') or []),
         'stages_reported': sorted(stages),
         'artifacts_hashed': artifacts_checked,
         'artifacts_verification_requested': verify_artifacts,
@@ -1114,8 +1173,10 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
             'duration is not a measured one',
             'sample source/device/authorization: the record states these; the checker can '
             'refuse a synthetic label but cannot confirm a recording is authorized',
-            'exposure_scan.clean: re-derived when --repository-root is given, otherwise '
-            'taken from the record and reported as a blocking gap',
+            'exposure_scan.clean: the record declares this flag and the checker never rewrites '
+            'it; when --repository-root is given the scan re-derives the finding independently '
+            'and a declared clean contradicts a detected finding as an error rather than '
+            'updating the flag',
         ],
         'errors': errors,
         'note': ('An acceptance record may only state a gate it can authorize. `real_recording_'

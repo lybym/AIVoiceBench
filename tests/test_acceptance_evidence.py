@@ -223,7 +223,12 @@ def record(**overrides):
              'unresolved': [], 'reason': None},
             {'gate': 'real_recording_verified', 'state': 'verified',
              'verified_at': '2026-09-19T12:00:00+00:00',
-             'evidence': [evidence('EV-0014', 'human_review'),
+             # The gate's human-review evidence is the record's own review artifact: the
+             # checker reconciles the entry with `human_reviews[]` by digest, so an entry
+             # pointing at unrelated bytes cannot authorize the gate.
+             'evidence': [evidence('EV-0014', 'human_review',
+                                   location='D:/secure/acc/SAMPLE-0001.annotation.json',
+                                   sha256=ANNOTATION_SHA),
                           evidence('EV-0015', 'real_recording_artifact')],
              'unresolved': [], 'reason': None},
         ],
@@ -256,6 +261,13 @@ def materialize(document, directory):
     and size controls under test.
     """
     directory = Path(directory)
+    # An evidence entry already declared as one of the human review artifacts must
+    # resolve to *that* file: the checker reconciles the gate's `human_review` evidence
+    # with `human_reviews[]` by digest, so generating a separate file here would
+    # silently break the binding the fixture means to express. Captured before the
+    # review locations are rewritten below.
+    review_locations = {review['artifact']['location']: review['artifact']
+                        for review in document['human_reviews']}
     for index, sample in enumerate(document['samples']):
         for position, artifact in enumerate(sample['artifacts']):
             path = directory / f'{sample["sample_id"]}-{position}{Path(artifact["location"]).suffix or ".bin"}'
@@ -269,6 +281,11 @@ def materialize(document, directory):
         review['artifact']['location'] = str(path)
         review['artifact']['sha256'] = sha256_file(path)
     for label, entry in _evidence_entries(document):
+        declared = review_locations.get(entry['location'])
+        if declared is not None:
+            entry['location'] = declared['location']
+            entry['sha256'] = declared['sha256']
+            continue
         slug = f'{label}-{entry["evidence_id"]}'.replace('/', '_')
         path = directory / f'{slug}.json'
         path.write_text(json.dumps({'evidence': entry['evidence_id']}), encoding='utf-8')
@@ -547,12 +564,17 @@ class VerificationControlTest(unittest.TestCase):
         document = record()
         document['samples'][0]['artifacts'][0]['location'] = 'D:/definitely/not/here.wav'
         with tempfile.TemporaryDirectory() as directory:
-            document['human_reviews'][0]['artifact']['location'] = str(
-                Path(directory) / 'annotation.json')
-            Path(document['human_reviews'][0]['artifact']['location']).write_text(
-                '{}', encoding='utf-8')
-            document['human_reviews'][0]['artifact']['sha256'] = sha256_file(
-                document['human_reviews'][0]['artifact']['location'])
+            annotation = Path(directory) / 'annotation.json'
+            annotation.write_text('{}', encoding='utf-8')
+            review = document['human_reviews'][0]['artifact']
+            review['location'] = str(annotation)
+            review['sha256'] = sha256_file(annotation)
+            # The gate cites the same review artifact, so the record stays internally
+            # consistent and the only open item is the absent sample artifact.
+            for entry in gate(document, 'real_recording_verified')['evidence']:
+                if entry['kind'] == 'human_review':
+                    entry['location'] = review['location']
+                    entry['sha256'] = review['sha256']
             result = validate(document, verify_artifacts=True,
                               repository_root=Path(__file__).resolve().parent)
         self.assertEqual(result['status'], STATUS_REAL_RECORDING_PENDING)
@@ -561,15 +583,17 @@ class VerificationControlTest(unittest.TestCase):
         self.assertNotIn('gaps', result['errors'])
 
     def test_an_absent_human_review_artifact_blocks_complete(self):
-        # P1 regression: the human layer used to be trusted by declaration.
         with tempfile.TemporaryDirectory() as directory:
             document = materialize(record(), directory)
             document['human_reviews'][0]['artifact']['location'] = 'Z:/nonexistent/annotation.json'
             document['human_reviews'][0]['artifact']['sha256'] = '9' * 64
             result = validate(document, verify_artifacts=True,
                               repository_root=Path(__file__).resolve().parent)
-        self.assertEqual(result['status'], STATUS_REAL_RECORDING_PENDING)
+        # The gate's human-review evidence no longer resolves to a declared review
+        # artifact (its digest moved), so the claim is unauthorized and the record is
+        # invalid — a stronger refusal than "the artifact could not be hashed".
         self.assertFalse(result['real_recording_verified'])
+        self.assertIn('is not any declared human_reviews artifact', ' '.join(result['errors']))
         self.assertTrue(any('human review REVIEW-0001 artifact' in item for item in result['gaps']))
 
     def test_an_unhashable_sample_artifact_is_a_blocking_gap(self):
@@ -764,6 +788,92 @@ class ArtifactIdentityTest(unittest.TestCase):
             result = validate(document)
         self.assertEqual(result['status'], STATUS_INVALID)
         self.assertIn('repeats one preserved file', ' '.join(result['errors']))
+
+    def test_one_annotation_reused_as_two_reviews_is_rejected(self):
+        # P2 regression, the human-layer twin of the cross-sample rule: #85 asks for
+        # review covering several distinct things, so one preserved annotation reused
+        # verbatim as two reviews overstates the human layer.
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            second = json.loads(json.dumps(document['human_reviews'][0]))
+            second['review_id'] = 'REVIEW-0002'
+            second['kind'] = 'speaker_role_review'
+            second['annotator'] = 'human-reviewer-B'
+            document['human_reviews'].append(second)
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertFalse(result['real_recording_verified'])
+        self.assertIn('is declared by more than one review', ' '.join(result['errors']))
+
+    def test_distinct_review_artifacts_are_accepted_and_counted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            second = json.loads(json.dumps(document['human_reviews'][0]))
+            second['review_id'] = 'REVIEW-0002'
+            second['kind'] = 'speaker_role_review'
+            annotation = Path(directory) / 'REVIEW-0002-annotation.json'
+            annotation.write_text(json.dumps({'review': 'REVIEW-0002'}), encoding='utf-8')
+            second['artifact'] = dict(second['artifact'], location=str(annotation),
+                                      sha256=sha256_file(annotation))
+            document['human_reviews'].append(second)
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertNotIn('more than one review', ' '.join(result['errors']))
+        self.assertEqual(result['human_review_count'], 2)
+
+
+class GateHumanReviewBindingTest(unittest.TestCase):
+    """The gate's human-review evidence must be the record's human layer, not any file."""
+
+    def _record_with_stray_gate_evidence(self, directory):
+        """Point the gate's `human_review` entry at an unrelated local file."""
+        document = materialize(record(), directory)
+        stray = Path(directory) / 'not-a-review.txt'
+        stray.write_text('unrelated material', encoding='utf-8')
+        entry = [item for item in gate(document, 'real_recording_verified')['evidence']
+                 if item['kind'] == 'human_review'][0]
+        entry['location'] = str(stray)
+        entry['sha256'] = sha256_file(stray)
+        return document
+
+    def test_gate_human_review_evidence_must_be_a_declared_review_artifact(self):
+        # P1 regression: the human_review entry was checked for kind and sample binding
+        # but never reconciled with human_reviews[], so arbitrary bytes (correctly
+        # digested) could carry the entire real-recording claim while the declared human
+        # layer said something else.
+        with tempfile.TemporaryDirectory() as directory:
+            document = self._record_with_stray_gate_evidence(directory)
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertFalse(result['real_recording_verified'])
+        self.assertIn('is not any declared human_reviews artifact', ' '.join(result['errors']))
+        self.assertIn('**no**', render_report(result))
+
+    def test_gate_human_review_evidence_without_a_digest_is_unauthorized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            document = self._record_with_stray_gate_evidence(directory)
+            entry = [item for item in gate(document, 'real_recording_verified')['evidence']
+                     if item['kind'] == 'human_review'][0]
+            entry['sha256'] = None
+            result = validate(document)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        self.assertIn('declares no sha256', ' '.join(result['errors']))
+
+    def test_a_declared_review_artifact_still_authorizes_the_gate(self):
+        # The refusal path must not have closed the legitimate one.
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            review = document['human_reviews'][0]
+            entry = [item for item in gate(document, 'real_recording_verified')['evidence']
+                     if item['kind'] == 'human_review'][0]
+            entry['location'] = review['artifact']['location']
+            entry['sha256'] = review['artifact']['sha256']
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_COMPLETE)
+        self.assertTrue(result['real_recording_verified'])
 
 class RevisionImmutabilityTest(unittest.TestCase):
     def test_a_correction_must_create_a_new_revision(self):
@@ -961,18 +1071,30 @@ class ExposureScanTest(unittest.TestCase):
         self.assertIn('unverified rather than clean', ' '.join(result['errors']))
 
     def test_the_detection_policy_sources_are_disclosed_not_silently_dropped(self):
+        # Scanning the repository itself skips the files that define or exercise the
+        # detection patterns, and says so.
+        document = record()
+        result = validate(document, repository_root=Path(__file__).resolve().parent.parent)
+        self.assertTrue(result['detection_policy_sources_skipped'])
+        self.assertTrue(any(entry.endswith('acceptance_evidence.py')
+                            for entry in result['detection_policy_sources_skipped']))
+        rendered = render_report(result)
+        self.assertIn('Detection-policy sources excluded from the scan', rendered)
+
+    def test_a_same_named_file_elsewhere_is_still_scanned(self):
+        # The exclusion is matched on the repository-relative path, not the basename, so
+        # a copy of a policy-source name in an unrelated tree is scanned like any file.
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory) / 'elsewhere'
+            root.mkdir()
             (root / 'test_acceptance_evidence.py').write_text(
                 "secret = 'Bearer abcdefgh12345678'\n", encoding='utf-8')
             document = record()
             document['exposure_scan']['scan_roots'] = [directory]
             result = validate(document)
-        # The policy source is skipped as a scanning target, but the skip is reported
-        # and it is not treated as a credential finding.
-        self.assertTrue(any('test_acceptance_evidence.py' in entry
-                            for entry in result['detection_policy_sources_skipped']))
-        self.assertEqual(result['secret_findings'], [])
+        self.assertTrue(any('test_acceptance_evidence.py' in item['location']
+                            for item in result['secret_findings']))
+        self.assertEqual(result['detection_policy_sources_skipped'], [])
 
 
 class RepositoryControlTest(unittest.TestCase):
@@ -1310,6 +1432,27 @@ class ContractTest(unittest.TestCase):
         self.assertIn('5–20 minute band', disclosure)
         self.assertIn('declared value only', disclosure)
         self.assertIn('Conditions checked against declared values', render_report(result))
+
+    def test_the_clean_flag_disclosure_matches_what_the_code_does(self):
+        # P2 regression: the disclosure claimed `exposure_scan.clean` was "re-derived",
+        # but validate() never rewrites the record's flag — it only contradicts it. The
+        # wording is asserted here so it cannot drift from the behaviour again.
+        result = validate(record())
+        disclosure = ' '.join(result['declared_only_controls'])
+        self.assertIn('exposure_scan.clean', disclosure)
+        self.assertNotIn('re-derived when', disclosure)
+        self.assertIn('never rewrites it', disclosure)
+
+    def test_a_clean_flag_contradicted_by_the_scan_is_an_error_not_a_rewrite(self):
+        document = record()
+        document['notes'] = 'sk-abcdefghijklmnop'
+        result = validate(document)
+        self.assertEqual(result['status'], STATUS_INVALID)
+        # The record's own flag is reported as contradicted, and the record is not
+        # silently corrected into a non-clean scan.
+        self.assertTrue(document['exposure_scan']['clean'])
+        self.assertIn('the record declares a clean scan but the scan found',
+                      ' '.join(result['errors']))
 
     def test_a_declared_duration_is_not_reported_as_a_measured_one(self):
         # A fixture with 8 declared minutes and a few real bytes still satisfies the

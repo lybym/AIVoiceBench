@@ -46,6 +46,8 @@ python -m aivoicebench acceptance check <record.json> \
 - **区间本身是声明值核对，不是测量值。** 5–20 分钟区间由样本自报的 `duration_ms` 判定；检查器不解码音频，因此该条件只与记录自身对账，结果中由 `declared_only_controls` 明确列出（Markdown 报告为 “Conditions checked against declared values”）。同一列表中还包括 `source`/`device`/`authorization` 等只能被拒绝、无法被证实的声明。
 - **声明的 artifact 尺寸必须与保留文件对账。** 样本 artifact 声明的 `byte_length` 与实际文件字节数不一致时判为 error；授权真实样本的 audio artifact 未声明 `byte_length` 时为 blocking gap。artifact 摘要不能同时让尺寸自由声明。
 - **每个授权样本必须绑定各自的 artifact。** 两个样本声明同一 `sha256`（同一物理文件被计为两条录音）判为 error；同一样本内重复声明同一摘要同样判为 error。授权样本数是被报告的结果，不得被重复引用放大。
+- **真实录音 gate 的 `human_review` 证据必须是记录自己声明的人工复核 artifact。** 仅按 `kind` 与 `sample_id` 绑定不够：该证据的 `sha256` 必须等于 `human_reviews[]` 中某条已声明复核 artifact 的摘要，否则判为未授权声明（记录 `invalid`）。否则任意一个本地可达、摘要自洽的文件都能承载整条真实录音声明，而 `human_reviews[]`（PRD-N002 要求声明所依托的人工层）却指向别处。比对同时覆盖入口是否有摘要：缺摘要即无法证明它属于人工层。
+- **人工复核层同样适用摘要唯一性。** 同一条保留的标注 artifact 被两条不同 `review_id` 的复核复用判为 error（#85 要求人工复核覆盖多个不同事项），结果同时报告 `human_review_count` 使人工层规模可审计。
 - 未请求 artifact/evidence 校验、未提供仓库根、仓库根**不存在或不是目录**、或记录声明的 `exposure_scan.scan_roots` 条目无法遍历时，该 gate 不予授权，CLI 也不会以 0 退出。**未被执行的对照不得被报告为已执行**。
 - 授权真实 gate 的 evidence 与每个 stage 分母的 evidence 都必须解析到本地真实存在的 Artifact 且摘要匹配（声明了摘要却不匹配为 error，无法解析为 blocking gap）；只有 `--verify-artifacts` 会执行该解析。
 - 每个 stage 的分母必须显式计入 complete/partial/failed/unknown/abstained/not_applicable 且与 `expected_total` 对账，**禁止只报成功的分母**；**任何**已声明的 evaluation（含 `failed`/`abstained`/`not_attempted`）都必须有其 stage 的分母。

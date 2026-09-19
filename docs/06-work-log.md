@@ -1,5 +1,16 @@
 # Continuous work log
 
+## 2026-09-19 — Issue #85 Step 05（第四轮）：修复 PR #108 第四轮 Review findings（PRD-N001/N002/N004/N007）
+
+- **输入与核实。** 第四个全新独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5257225461`）对 `0f91e55` 给出 `REQUEST_CHANGES`：**无 P0**，1 条 P1 + 3 条 P2。审查者从零复核，独立重跑了第三轮各项探测（baseline `complete`、synthetic 拒绝、跨样本共用 artifact 拒绝、`verified_at` 缺失拒绝、stage/counters 拒绝、缺两项控制不绿、CLI 退出码 0/2/1、108 tests OK），并确认前几轮 finding 在本 SHA 真实修复；同时如实指出本轮 resolution summary 中“21 字节文件声明 15,000,000 → invalid”的**复现步骤**描述不实（须在 materialize **之后**覆盖 `byte_length`，代码修复本身有效），该表述不应再被当作证据使用。
+- **P1-A（成立，已修）。** 真实录音 gate 只校验 `human_review` 证据的 `kind` 与显式 `sample_id` 绑定，**从不与 `human_reviews[]` 对账**：实测把 gate 的 `human_review` 证据换成一个无关的 36 字节本地文件（摘要如实声明），`human_reviews[]` 保持不动，仍得到 `status=complete` / `real_recording_verified=True` / 报告 `**yes**` / `errors=[] gaps=[]`。即：承载整条 M1 真实录音声明的那个字段，可以被**不属于记录所声明人工层**的任意字节满足——与前三轮所修的同类缺陷（绿色结论建立在并非记录所声明证据的材料上）再上一层。#85 要求结论“rest on human annotation/review”，PRD-N002 要求人工层是独立保留层。修复：gate 上每条绑定到授权样本的 `human_review` 证据，其 `sha256` 必须等于某条已声明 `human_reviews[].artifact.sha256`；缺摘要即拒绝（无法证明属于人工层）；不匹配为未授权声明使记录 `invalid`。
+- **P2-A（成立，已修）。** 样本层已有摘要唯一性规则（第三轮 P1-3），人工层没有：同一条标注文件原样充当两条不同 `kind` 的复核（不同 `review_id`/`annotator`）仍得 `complete` + `verified=True` + `errors=[]`。修复：与样本层对称的跨复核摘要唯一性规则（同一标注文件被两条复核复用为 error），并新增 `human_review_count` 使人工层规模可审计。
+- **P2-B（成立，已修）。** `declared_only_controls` 中 `exposure_scan.clean` 的措辞与代码不符：它写着“提供 `--repository-root` 时会被**重新推导**”，但 `validate()` 从不改写记录的该标志，扫描结果只是作为 `secret_findings`/`errors` **反驳**它。修复：措辞改为“记录声明该标志、检查器从不改写它；声明 clean 与检出材料矛盾时报 error 而非更新标志”，并新增两条测试锁定该措辞与行为（含“标志未被静默改写”）。
+- **P2-C（成立，已修）。** `_is_detection_policy_source` 按 basename 在全树排除策略源码，任何位置的同名文件都被静默豁免。修复：改为按**仓库相对路径**（`aivoicebench/acceptance_evidence.py`、`tests/test_*.py` 的尾部路径）匹配并限定 `.py`，同名文件位于其他位置时照常扫描；仓库自扫描仍如实披露 5 个被排除文件。
+- **测试（116 项，新增 8 项）。** 新增 `GateHumanReviewBindingTest`（无关文件充当 gate 人工证据被拒且报告为 `**no**`、gate 人工证据缺摘要被拒、指向**已声明**复核 artifact 的绑定仍可通过——确保拒绝路径没有关掉合法路径）、`ArtifactIdentityTest` 增补（同一标注复用为两条复核被拒、不同标注被接受且计数为 2）、`ExposureScanTest` 增补（仓库自扫描如实披露策略源码、同名文件在其他位置仍被扫描）、`ContractTest` 增补（`exposure_scan.clean` 措辞与代码一致、声明 clean 被检出材料反驳时是 error 且标志未被静默改写）。fixture 修正：`record()` 的 gate 人工证据现在指向记录自己的复核 artifact；`materialize()` 不再为已声明为复核 artifact 的证据另生成文件（否则会静默破坏该绑定），并在改写前捕获原 location 映射。
+- **验证（实际执行）。** 定向：`tests.test_acceptance_evidence` → **116 tests, OK**。逐条复现第四轮 finding 并确认修复后结论：无关文件充当 gate 人工证据 → `invalid` + `False`（原 `complete` + `True`）；合法绑定 → `complete` + `True` + `human_review_count=1`；同一标注复用为两条复核 → `invalid`（原 `complete`）；其他位置的同名策略文件 → 1 条 finding、无豁免（原被静默豁免）；仓库自扫描 → 仍披露 5 个策略源码。受影响既有套件与全量套件由本 PR 的 CI 复跑。
+- **未验证边界（不升级为完成）。** 本 PR 仍为 **software_verified**：无真实录音、无真实云调用、无人工标注、无实体设备。`real_recording_verified` 保持**未声明**，#85 保持 Open，M1 仍未通过。第四轮 Review 同样明确不把“授权真实录音缺席”与既有 `test_voice_browser` flaky 计为 finding。
+
 ## 2026-09-19 — Issue #85 Step 05（第三轮）：修复 PR #108 第三轮 Review findings（PRD-N001/N002/N004/N007）
 
 - **输入与核实。** 第三个全新独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5256959377`）对 `8969bff` 给出 `REQUEST_CHANGES`：**无 P0**，3 条 P1 + 4 条 P2。审查者独立复现确认第二轮修复真实有效，并明确声明“授权真实录音缺席不是 finding”——它不因缺少外部输入而扣分，只针对**契约声明了却没有对照核对的值**。每条 finding 均在本机脚本化复现后再修，逐条结论如下。
