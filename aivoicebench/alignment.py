@@ -112,11 +112,22 @@ def align_speaker_spans(acoustic_doc, diarization_doc, *, transcript_doc=None, p
     unmatched_acoustic_ms = 0.0
     conflicted_acoustic_ms = 0.0
     drift_values = []
-    energies = sorted(seg.get('frame_stats', {}).get('mean_rms', 0.0) or 0.0
-                      for seg in acoustic_segments)
-    low_energy_threshold = _percentile(energies, policy['low_energy_percentile']) if energies else 0.0
+    # The low-energy diagnostic is an *energy* diagnostic. A model-based provider
+    # (for example Silero VAD) reports per-frame speech probabilities, not RMS, so
+    # its segments carry no energy evidence at all. Treating that missing value as
+    # "0.0" would silently mark every model-produced boundary as low energy and
+    # hand back a misleading quiet-device diagnosis; instead those segments are
+    # excluded from the distribution and reported explicitly.
+    energy_values = {}
+    for index, seg in enumerate(acoustic_segments):
+        value = (seg.get('frame_stats') or {}).get('mean_rms')
+        energy_values[index] = float(value) if isinstance(value, (int, float)) else None
+    measured_energies = sorted(value for value in energy_values.values() if value is not None)
+    low_energy_threshold = (_percentile(measured_energies, policy['low_energy_percentile'])
+                            if measured_energies else 0.0)
 
-    for seg in acoustic_segments:
+    for index, seg in enumerate(acoustic_segments):
+        seg_energy = energy_values[index]
         start, end = seg['start_ms'], seg['end_ms']
         span_ms = max(0.0, end - start)
         matches = []
@@ -180,10 +191,12 @@ def align_speaker_spans(acoustic_doc, diarization_doc, *, transcript_doc=None, p
             'acoustic_speech_ms': round(span_ms, 3),
             'acoustic_confidence': seg.get('confidence'),
             'acoustic_uncertainty_ms': seg.get('uncertainty_ms'),
-            'acoustic_mean_rms': seg.get('frame_stats', {}).get('mean_rms'),
-            'acoustic_peak_rms': seg.get('frame_stats', {}).get('peak_rms'),
-            'low_energy': bool(energies and (seg.get('frame_stats', {}).get('mean_rms', 0.0) or 0.0)
-                               <= low_energy_threshold),
+            'acoustic_mean_rms': seg_energy,
+            'acoustic_peak_rms': (seg.get('frame_stats') or {}).get('peak_rms'),
+            # `false` here means "measured and not low", never "not measured".
+            # Unmeasured energy is reported by diagnostics.low_energy.energy_evidence.
+            'low_energy': bool(seg_energy is not None
+                               and seg_energy <= low_energy_threshold),
             'speaker_matches': matches,
             'speaker_candidates': candidates,
             'distinct_cluster_count': len(candidates),
@@ -200,6 +213,9 @@ def align_speaker_spans(acoustic_doc, diarization_doc, *, transcript_doc=None, p
     low_energy_ms = sum(item['acoustic_speech_ms'] for item in alignments if item['low_energy'])
     low_energy_unmatched_ms = sum(item['acoustic_speech_ms'] for item in alignments
                                   if item['low_energy'] and item['state'] == 'unmatched')
+    energy_evidence = [{'acoustic_segment_id': item['acoustic_segment_id'],
+                        'mean_rms': item['acoustic_mean_rms']}
+                       for item in alignments]
 
     conflicts = [item['acoustic_segment_id'] for item in alignments if item['state'] == 'conflict']
     unmatched = [item['acoustic_segment_id'] for item in alignments if item['state'] == 'unmatched']
@@ -248,13 +264,19 @@ def align_speaker_spans(acoustic_doc, diarization_doc, *, transcript_doc=None, p
             } for key, value in sorted(cluster_speech.items())],
             'low_energy': {
                 'percentile': policy['low_energy_percentile'],
-                'threshold_mean_rms': round(low_energy_threshold, 8) if energies else None,
+                'threshold_mean_rms': (round(low_energy_threshold, 8)
+                                       if measured_energies else None),
                 'segment_count': len(low_energy_ids),
                 'speech_ms': round(low_energy_ms, 3),
                 'unmatched_ms': round(low_energy_unmatched_ms, 3),
                 'unmatched_ratio': _ratio(low_energy_unmatched_ms, low_energy_ms),
+                'energy_evidence': energy_evidence,
                 'note': ('Low-energy coverage is a measurement input for quiet device '
-                         'responses. It does not change the canonical metric policy.'),
+                         'responses. It does not change the canonical metric policy. '
+                         'A segment whose energy_evidence mean_rms is null produced no '
+                         'energy measurement (for example a model-based boundary '
+                         'provider), so it is excluded from the low-energy distribution '
+                         'and is not evidence of a quiet device.'),
             },
             'boundary_drift_ms': {
                 'matched_segment_count': len(drift_values),

@@ -13,6 +13,17 @@ from referencing import Registry, Resource
 ROOT = Path(__file__).resolve().parents[1]
 FORMAT_CHECKER = FormatChecker()
 
+#: Methods that name a non-acoustic producer. An ASR/diarization timestamp is
+#: valid *input* to alignment, but presenting it as an acoustic boundary would
+#: silently replace signal evidence with provider timing.
+_NON_ACOUSTIC_METHOD = re.compile(
+    r'(?:^|[^a-z])(?:asr|diarization|diarisation|speaker|llm|transcript|provider_timestamp)',
+    re.IGNORECASE)
+
+#: Methods implemented with stdlib signal processing only; they must not claim a
+#: model/runtime provenance block.
+_STDLIB_ACOUSTIC_METHODS = ('energy_vad',)
+
 
 @FORMAT_CHECKER.checks('date-time')
 def _timestamp(value):
@@ -381,10 +392,33 @@ def transcript_errors(transcript):
 
 
 def acoustic_errors(document):
-    """Validate acoustic segment candidates without manufacturing events."""
+    """Validate acoustic segment candidates without manufacturing events.
+
+    Beyond shape, this rejects two provenance mistakes that would silently turn
+    non-acoustic timing into an acoustic boundary:
+
+    * a boundary whose ``method`` names an ASR/diarization producer instead of a
+      signal processor (an ASR timestamp may be *aligned* with acoustic evidence,
+      never relabelled as one);
+    * a model-method document that omits the model/runtime provenance block, which
+      would make its boundaries unreplayable and unauditable.
+    """
     errors = schema_errors(document, 'acoustic-segments')
     if errors:
         return errors
+    method = document['processor']['method']
+    if _NON_ACOUSTIC_METHOD.search(method):
+        errors.append(f'/processor/method: {method!r} is not a signal-based acoustic '
+                      'producer; ASR/provider timestamps must never be reported as '
+                      'acoustic boundaries')
+    model = document['processor'].get('model')
+    if model is not None:
+        if 'threshold' not in document['processor']['parameters']:
+            errors.append('/processor/parameters: a model VAD must record the absolute '
+                          'probability threshold it applied')
+        if method in _STDLIB_ACOUSTIC_METHODS:
+            errors.append(f'/processor/method: {method!r} is a stdlib signal method and must '
+                          'not claim a model/runtime provenance block')
     ids = [seg['segment_id'] for seg in document['segments']]
     if len(ids) != len(set(ids)):
         errors.append('/segments: segment_id must be unique')
