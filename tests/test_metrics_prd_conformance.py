@@ -262,6 +262,18 @@ class EndpointResponseEndTests(unittest.TestCase):
         self.assertEqual(metric['status'], 'not_applicable')
         self.assertIsNone(metric['value'])
 
+    def test_device_speech_without_a_request_is_not_a_response_end(self):
+        """An orphan device turn must not become an observed M002 measurement."""
+        events = [
+            make_event('E1', 'device_speech_start', 500, turn_id='TURN-0001'),
+            make_event('E2', 'device_speech_end', 1500, turn_id='TURN-0001'),
+        ]
+        result = compute_timeline_metrics(make_timeline(events))
+        metric = find(result['metrics'], 'response_end_candidate_ms')[0]
+        self.assertEqual(metric['status'], 'not_applicable')
+        self.assertIsNone(metric['value'])
+        self.assertIn('no tester utterance', metric['reason'])
+
 
 class FalseEndpointSeparationTests(unittest.TestCase):
     """AC5: PRD-M007 keeps candidate and confirmed states separate."""
@@ -511,6 +523,24 @@ class CoverageOutcomeTests(unittest.TestCase):
                         'coverage')[0]
         self.assertNotIn('planned_count', coverage['aggregation'])
         self.assertIn('control or transport success is never substituted', coverage['reason'])
+
+    def test_no_measured_value_never_becomes_an_observed_coverage(self):
+        """A pipeline with no eligible measurement must not look complete."""
+        events = [
+            make_event('E1', 'device_speech_start', 500, turn_id='TURN-0001'),
+            make_event('E2', 'device_speech_end', 1500, turn_id='TURN-0001'),
+            make_event('E3', 'tester_speech_end', 3000, turn_id='TURN-0002'),
+        ]
+        result = compute_timeline_metrics(make_timeline(events))
+        coverage = find(result['metrics'], 'coverage')[0]
+        self.assertEqual(coverage['status'], 'insufficient_evidence')
+        self.assertIsNone(coverage['value'])
+        self.assertEqual(coverage['aggregation']['total_count'], 2)
+        self.assertEqual(coverage['aggregation']['sample_count'], 0)
+        self.assertEqual(coverage['aggregation']['excluded_count'], 2)
+        self.assertEqual(schema_errors(coverage, 'metric'), [])
+        self.assertFalse([m for m in result['metrics'] if m['status'] == 'observed'])
+        self.assertEqual(result['status'], 'insufficient_evidence')
 
 
 class DefinitionCompatibilityTests(unittest.TestCase):

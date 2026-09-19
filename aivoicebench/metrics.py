@@ -377,9 +377,11 @@ def compute_timeline_metrics(timeline, *, semantic_evidence=None, device_transcr
                 response_id = candidate['response_id']
                 break
 
+        tester_present = any(e.get('type') in ('tester_speech_start', 'tester_speech_end')
+                             for e in turn_events)
         metrics.append(_first_speech_latency(timeline, turn_id, response_id,
                                              tester_end, device_start))
-        metrics.append(_response_end_metric(timeline, turn_id, response_id,
+        metrics.append(_response_end_metric(timeline, turn_id, response_id, tester_present,
                                             device_end, response_end_event, turn_events))
         metrics.append(_semantic_metric(timeline, 'semantic_response', 'PRD-M003',
                                         'semantic_response', turn_id, response_id,
@@ -474,14 +476,24 @@ def _turn_gap(timeline, turn_id, response_id, tester_end, device_start):
         reason='Turn has no tester utterance')
 
 
-def _response_end_metric(timeline, turn_id, response_id, device_end, response_end_event, turn_events):
+def _response_end_metric(timeline, turn_id, response_id, tester_present, device_end,
+                         response_end_event, turn_events):
     """PRD-M002: a response-end candidate with its uncertainty, never an ASR final.
 
     `device_speech_end` is an acoustic boundary; fusion also emits a `response_end`
     derived event. Either may carry the candidate, but only an acoustic boundary
     can. An ASR final timestamp is a transcript estimate and abstains.
+
+    A response end belongs to a *response*, so a turn without any tester utterance
+    has no request whose answer could end: that is `not_applicable`, not a
+    measurement of unrelated device speech.
     """
     policy = 'acoustic_boundary_candidate'
+    if not tester_present:
+        return _metric(
+            timeline, 'response_end_candidate_ms', status='not_applicable', turn_id=turn_id,
+            response_id=response_id, policy=policy,
+            reason='Turn has no tester utterance; there is no response whose end could be measured')
     boundaries = [e for e in (device_end, response_end_event) if e is not None]
     acoustic = [e for e in boundaries if _is_acoustic_boundary(e)]
     if acoustic:
@@ -788,14 +800,22 @@ def _coverage_metric(timeline, turn_ids, events, metrics, planned_units):
               'invalid_count': invalid, 'abstained_count': abstained}
     if planned_units is not None:
         counts['planned_count'] = planned_units
+    plan_note = ('no plan was supplied, so planned coverage is not reported and a control or '
+                 'transport success is never substituted for measurement coverage'
+                 if planned_units is None else f'{planned_units} planned')
+    if measured == 0:
+        # No formal measurement was produced. The denominator is retained and the
+        # outcome stays an explicit abstention rather than an observed 0-rate that
+        # would let a pipeline with no measured value look like a completed one.
+        return _metric(
+            timeline, 'coverage', status='insufficient_evidence', value=None, unit='ratio',
+            policy='measurement_coverage', events=tuple(events), aggregation=counts,
+            reason=f'No attempted turn produced an eligible measurement; the denominator is '
+                   f'retained ({attempted} attempted, 0 measured); {plan_note}')
     detail = f'Measured {measured} of {attempted} attempted turns; {abstained} abstained'
     if invalid:
         detail += f'; {invalid} invalid'
-    if planned_units is None:
-        detail += '; no plan was supplied, so planned coverage is not reported and a control or ' \
-                  'transport success is never substituted for measurement coverage'
-    else:
-        detail += f'; {planned_units} planned'
+    detail += f'; {plan_note}'
     return _metric(
         timeline, 'coverage', value=measured / attempted, unit='ratio',
         policy='measurement_coverage', events=tuple(events), aggregation=counts, reason=detail)
