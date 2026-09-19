@@ -295,7 +295,8 @@ def main(argv=None):
     acceptance_check.add_argument('--verify-artifacts', action='store_true',
                                   help='Re-hash every locally present declared artifact')
     acceptance_check.add_argument('--repository-root', type=Path,
-                                  help='Repository root to scan for committed audio artifacts')
+                                  help='Existing repository directory to scan for committed audio; '
+                                       'a non-existing path is an error, not a skipped control')
     args = parser.parse_args(argv)
     if args.command == 'import':
         import yaml
@@ -614,6 +615,11 @@ def main(argv=None):
             print(f'BLANK {args.output} ({len(record["gates"])} gates recorded as not_reached; '
                   'this template claims no verification)')
             return 2
+        if args.repository_root is not None and not args.repository_root.is_dir():
+            print(f'ACCEPTANCE ERROR: --repository-root {args.repository_root} does not exist or is '
+                  'not a directory; the PRD-N004 no-committed-audio control cannot be reported as '
+                  'scanned', file=sys.stderr)
+            return 1
         try:
             result = validate(load_record_file(args.record),
                               verify_artifacts=args.verify_artifacts,

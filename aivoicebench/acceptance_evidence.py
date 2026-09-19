@@ -180,15 +180,28 @@ def scan_secrets(document, *, repository_root=None):
     Scans the record tree and, when given, a set of files/directories on disk. Only
     the location and category are reported: echoing the offending text would move
     the secret into the report.
+
+    Returns ``(findings, unchecked_roots, inspected)``. ``unchecked_roots`` names
+    every declared or requested root that could not be walked: a control that was
+    never exercised must be reported as unexercised rather than as clean, because a
+    typo'd or stale path would otherwise read as "scanned, nothing found".
+    ``inspected`` counts the files actually examined.
     """
     findings = []
+    unchecked = []
+    inspected = 0
     _scan_record(document, '', findings)
     scan_roots = document.get('exposure_scan', {}).get('scan_roots') or []
-    for entry in scan_roots:
+    roots = list(scan_roots)
+    if repository_root is not None:
+        roots.append(str(repository_root))
+    for entry in roots:
         root = Path(entry)
-        if not root.exists():
+        if not root.is_dir():
+            unchecked.append(str(entry))
             continue
-        targets = [root] if root.is_file() else sorted(p for p in root.rglob('*') if p.is_file())
+        targets = sorted(p for p in root.rglob('*') if p.is_file())
+        inspected += len(targets)
         for target in targets:
             if target.suffix.lower() in REAL_AUDIO_SUFFIXES:
                 findings.append({
@@ -205,18 +218,7 @@ def scan_secrets(document, *, repository_root=None):
             except OSError:
                 continue
             _scan_text(text, str(target), findings)
-    if repository_root is not None:
-        root_path = Path(repository_root)
-        if root_path.exists():
-            tracked = sorted(p for p in root_path.rglob('*') if p.is_file())
-            for target in tracked:
-                if target.suffix.lower() in REAL_AUDIO_SUFFIXES:
-                    findings.append({
-                        'location': str(target),
-                        'category': 'real_recording_in_git',
-                        'detail': 'audio artifacts must stay outside the repository',
-                    })
-    return findings
+    return findings, unchecked, inspected
 
 
 def _evidence_ids(entries):
@@ -578,6 +580,94 @@ EVALUATION_STAGE = {
 }
 
 
+#: The stages every M1 real-recording acceptance must account for. A stage that is
+#: absent is indistinguishable from a stage where nothing failed, which is how a
+#: success-only denominator is built by omission, so a complete record names all of
+#: them (`not_applicable` is a valid answer).
+M1_STAGES = (
+    'import_normalization_qa',
+    'file_asr',
+    'acoustic_boundary',
+    'speaker_clustering',
+    'speaker_alignment',
+    'role_review',
+    'attribution',
+    'fusion',
+    'turns',
+    'timeline',
+    'metrics',
+    'semantic_judge',
+    'findings',
+    'report',
+    'browser_navigation',
+)
+
+
+def _check_evidence_references(document, errors, gaps):
+    """Resolve evidence references that authorize a real gate to a real artifact.
+
+    A gate is only as real as the artifact behind it. Under ``--verify-artifacts``
+    every reference that authorizes the real-cloud or real-recording gate, and every
+    denominator that reports a stage outcome, must resolve to a locally present file
+    whose digest matches the declared ``evidence.sha256``. A reference that resolves
+    to nothing is a blocking gap; a digest mismatch is an error.
+    """
+    targets = []
+    for index, gate in enumerate(document.get('gates') or []):
+        if gate['gate'] in ('real_cloud_verified', 'real_recording_verified') \
+                and gate['state'] == 'verified':
+            for position, entry in enumerate(gate.get('evidence') or []):
+                targets.append((f'/gates/{index}/evidence/{position}', entry))
+    for index, entry in enumerate(document.get('denominators') or []):
+        for position, item in enumerate(entry.get('evidence') or []):
+            targets.append((f'/denominators/{index}/evidence/{position}', item))
+    for location, entry in targets:
+        path = Path(entry['location'])
+        if not path.is_file():
+            gaps.append(f'{location} ({entry["evidence_id"]}) does not resolve to a locally present '
+                        'artifact, so the claim it authorizes is backed by nothing checkable')
+            continue
+        digest = entry.get('sha256')
+        if digest is None:
+            gaps.append(f'{location} ({entry["evidence_id"]}) is present but declares no sha256, so '
+                        'it is not bound to the artifact')
+            continue
+        try:
+            actual = sha256_file(path)
+        except OSError as error:
+            gaps.append(f'{location} ({entry["evidence_id"]}) is unreadable: {error}')
+            continue
+        if actual != digest:
+            errors.append(
+                f'{location} ({entry["evidence_id"]}): declared sha256 does not match the preserved '
+                'artifact')
+
+
+def _check_exposure_roots(document, errors, gaps, unchecked_roots, repository_root):
+    """A control that was not exercised is not a passed control."""
+    if repository_root is None:
+        gaps.append('the repository was not scanned for committed recordings '
+                    '(run `acceptance check --repository-root <repo>`), so the PRD-N004 '
+                    'no-committed-audio control was not exercised')
+    else:
+        requested = str(repository_root)
+        if not Path(requested).is_dir():
+            errors.append(f'--repository-root {requested}: the requested repository root does not '
+                          'exist or is not a directory, so the PRD-N004 no-committed-audio control '
+                          'was never exercised')
+    declared = (document.get('exposure_scan') or {}).get('scan_roots') or []
+    unresolved_declared = [entry for entry in declared if not Path(entry).is_dir()]
+    if unresolved_declared:
+        gaps.append('declared exposure_scan.scan_roots entries do not resolve to directories, so '
+                    'the recorded clean scan covers less than it claims: '
+                    + ', '.join(unresolved_declared))
+    if unchecked_roots and not unresolved_declared and repository_root is None:
+        # Defensive: any root that could not be walked must surface, whatever the
+        # reason, rather than being silently treated as clean.
+        gaps.append('these scan roots could not be walked and were therefore not scanned: '
+                    + ', '.join(sorted(set(unchecked_roots))))
+
+
 def _check_denominators(document, errors, gaps):
     seen = set()
     for index, entry in enumerate(document.get('denominators') or []):
@@ -602,29 +692,39 @@ def _check_denominators(document, errors, gaps):
 
 
 def _check_denominator_coverage(document, errors, stages):
-    """A measured stage must have its denominator reported.
+    """A declared evaluation must have its denominator reported.
 
     An omitted stage is indistinguishable from "nothing failed there", which is how
-    a success-only denominator gets built by omission. Each measured evaluation
-    therefore requires the denominator of the stage it was measured on. A record that
-    claims the real-recording gate must also report at least one evaluation; a record
-    that claims nothing is allowed to report nothing, and its emptiness is visible as
-    a pending gate rather than as an invalid claim.
+    a success-only denominator gets built by omission. This applies to **every**
+    declared evaluation, not only the measured ones: a `failed`, `abstained` or
+    `not_attempted` evaluation is exactly the failure/unknown/abstention that #85
+    requires to be counted, so it needs its denominator too. A record that claims the
+    real-recording gate must report at least one evaluation and must account for
+    every M1 stage; a record that claims nothing may report nothing, and its
+    emptiness is visible as a pending gate rather than as an invalid claim.
     """
-    measured = [evaluation for evaluation in document.get('evaluations') or []
-                if evaluation['status'] in ('measured', 'partial')]
+    evaluations = list(document.get('evaluations') or [])
     claims_real_recording = (_gate(document, 'real_recording_verified') or {}).get(
         'state') == 'verified'
-    if claims_real_recording and not (document.get('evaluations') or []):
-        errors.append('/evaluations: a record claiming the real-recording gate must report at least '
-                      'one evaluation; a record with no evaluation reports no measurement at all')
-    for evaluation in measured:
+    if claims_real_recording:
+        if not evaluations:
+            errors.append('/evaluations: a record claiming the real-recording gate must report at '
+                          'least one evaluation; a record with no evaluation reports no measurement '
+                          'at all')
+        missing = [stage for stage in M1_STAGES if stage not in stages]
+        if missing:
+            errors.append(
+                '/denominators: an M1 acceptance must account for every stage, including the stages '
+                'where nothing failed or that did not apply; these stages are absent, so their '
+                'failures, unknowns and abstentions are unreported: ' + ', '.join(missing))
+    for evaluation in evaluations:
         stage = EVALUATION_STAGE[evaluation['kind']]
         if stage not in stages:
             errors.append(
                 f'/denominators: the {stage} stage has no reported denominator, but evaluation '
-                f'{evaluation["evaluation_id"]} was measured on it; an omitted stage is '
-                'indistinguishable from "nothing failed", which is a success-only denominator')
+                f'{evaluation["evaluation_id"]} is declared with status {evaluation["status"]!r}; an '
+                'omitted stage is indistinguishable from "nothing failed", which is a success-only '
+                'denominator')
 
 
 def _check_traceability(document, errors, gaps, declared_evidence, observations):
@@ -717,7 +817,8 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
     _check_manual_role_corrections(document, errors, gaps)
     _check_human_review_coverage(document, errors, gaps)
 
-    secret_findings = scan_secrets(document, repository_root=repository_root)
+    secret_findings, unchecked_roots, files_inspected = scan_secrets(
+        document, repository_root=repository_root)
     declared_scan = document.get('exposure_scan') or {}
     for finding in secret_findings:
         errors.append(f'/exposure_scan: {finding["category"]} at {finding["location"]}')
@@ -727,16 +828,12 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
     if declared_scan.get('clean') is not True and not secret_findings:
         gaps.append('the exposure scan is not recorded as clean; run the scan before the record '
                     'is used as acceptance evidence')
-    if repository_root is None:
-        # The committed-audio control is opt-in, and an unperformed control is not a
-        # passed control: the verdict must say the repository was never scanned.
-        gaps.append('the repository was not scanned for committed recordings '
-                    '(run `acceptance check --repository-root <repo>`), so the PRD-N004 '
-                    'no-committed-audio control was not exercised')
+    _check_exposure_roots(document, errors, gaps, unchecked_roots, repository_root)
 
     artifacts_checked = None
     if verify_artifacts:
         artifacts_checked = _verify_artifact_hashes(document, errors, gaps)
+        _check_evidence_references(document, errors, gaps)
 
     real_gate = _gate(document, 'real_recording_verified') or {'state': 'not_reached'}
     real_authorized = any(item['gate'] == 'real_recording_verified' and item['authorized']
@@ -797,7 +894,13 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
         'stages_reported': sorted(stages),
         'artifacts_hashed': artifacts_checked,
         'artifacts_verification_requested': verify_artifacts,
-        'repository_scanned': repository_root is not None,
+        # Only a root that was actually walked counts as scanned; a missing or
+        # non-directory root is an error above, never a reported "scanned: yes".
+        'repository_scanned': bool(repository_root is not None
+                                   and Path(str(repository_root)).is_dir()),
+        'repository_root': str(repository_root) if repository_root is not None else None,
+        'repository_files_inspected': files_inspected,
+        'unchecked_scan_roots': unchecked_roots,
         'secret_findings': secret_findings,
         # Blocking gaps and non-blocking observations are reported separately so a
         # reader can tell "this must be fixed before acceptance" from "this is a fact
@@ -881,7 +984,13 @@ def render_report(result):
                  + (f' ({hashed} artifact(s) re-hashed)' if result['artifacts_verification_requested']
                     else ''))
     lines.append(f'- Repository scanned for committed recordings: '
-                 f'**{"yes" if result["repository_scanned"] else "no"}**')
+                 f'**{"yes" if result["repository_scanned"] else "no"}**'
+                 + (f' (root `{result["repository_root"]}`, '
+                    f'{result["repository_files_inspected"]} file(s) inspected)'
+                    if result['repository_scanned'] else ''))
+    if result['unchecked_scan_roots']:
+        lines.append(f'- Scan roots that could not be walked: '
+                     f'{", ".join(f"`{entry}`" for entry in result["unchecked_scan_roots"])}')
     lines.append('')
     lines.append('## Gates')
     lines.append('')

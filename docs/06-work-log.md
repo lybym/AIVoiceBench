@@ -1,5 +1,19 @@
 # Continuous work log
 
+## 2026-09-19 — Issue #85 Step 05（第二轮）：修复 PR #108 第二轮 Review findings（PRD-N001/N002/N004/N007）
+
+- **输入与核实。** 第二个全新独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5256747111`）对 `10c83c7` 给出 `REQUEST_CHANGES`：**无 P0**，3 条 P1 + 4 条 P2。它独立复现确认第一轮 P0 与 P1-1（人工层）、P1-2、P1-3 已真实修复，同时指出 P1-1 的 evidence 部分与 P1-4 只被部分关闭、且本轮的修复引入了一个新的同类缺陷。逐条结论如下。
+- **P1-A（成立，已修；本轮修复自己引入的新缺陷）。** `scan_secrets` 用 `if root_path.exists()` 守卫仓库遍历，而 `validate()` 把“传了 flag”当成“对照已执行”：因此 `--repository-root` 指向**不存在或不是目录**的路径时，扫描静默 no-op，却仍输出 `COMPLETE` + `real_recording_verified=True` + exit 0，报告还写着 `Repository scanned for committed recordings: **yes**`（与第一轮 P0-1 同类：未执行的对照被报告为已执行）。修复：`scan_secrets` 返回 `(findings, unchecked_roots, inspected)`；`--repository-root` 不存在或不是目录直接为 error（CLI 也提前以 1 拒绝）；记录声明的 `exposure_scan.scan_roots` 条目无法遍历时为 blocking gap；`repository_scanned` 只在**真实遍历过目录**时为真，并新增 `repository_root`/`repository_files_inspected`/`unchecked_scan_roots` 进入结果与报告。
+- **P1-B（成立，已修）。** 没有任何 `evidence.location`/`evidence.sha256` 被解析，因此 `complete` 所需的 `real_cloud_verified` gate 可以只靠一个**纯声明**的引用（指向不存在的路径、无摘要）获得授权——这不同于已接受的 P2-4（本地文件无法证明其内容确为授权录音），这里连 Artifact 都不存在。修复：新增 `_check_evidence_references()`，在 `--verify-artifacts` 下要求**授权真实 gate 的 evidence 与每个 stage 分母的 evidence** 都解析到本地真实存在的文件且摘要匹配：无法解析 → blocking gap，声明了摘要却不匹配 → error，缺少摘要 → blocking gap。
+- **P1-C（成立，已修）。** `_check_denominator_coverage` 只对 `measured`/`partial` 生效，`failed`/`abstained`/`not_attempted` 仍可整体省略其 stage 分母并通过——而这三种状态恰是 #85 要求显式计入的失败/未知/弃权；更广地说，通过路径的 fixture 本身只用 2/15 个 stage 就达到 `complete`，与 PR body “every stage reports …” 的表述不符。修复：对**任何**已声明 evaluation 都要求其 stage 分母；新增 `M1_STAGES`（15 个 stage），声明真实录音 gate 的记录必须覆盖全部 stage，`not_applicable` 是有效答案，整体缺席的 stage 计入 error。
+- **P2-1（成立，已修）。** 结果与报告现在给出解析后的仓库根与已检查文件数，使“遍历过但没发现问题”与“根本没遍历”可区分。
+- **P2-2（接受，已写入文档）。** 记录级 evidence id 唯一性比 schema 更严（同一 Artifact 不能在两处以同一 id 引用，作者必须显式复制条目）。这是刻意规则，已写入 `acceptance-status.md` 使其在作者踩到之前可发现。测试 fixture 相应改为给每个引用独立 Artifact。
+- **P2-3（成立，已修）。** `acceptance-status.md` 措辞改为：拒绝的是**声明授权与退出码**，gate 文档本身仍可写 `pending`；“未执行的对照不得被报告为已执行”成为显式条款。文档同时补上生成绿色结论所需的完整调用形式 `acceptance check <record> --verify-artifacts --repository-root <repo>`。
+- **P2-4（成立，已修）。** PR body 与工作日志中的“open item”表述已更新为 blocking gap；本轮 branch 的 PR 描述在下一轮 Review 前同步更新。
+- **测试（92 项，新增 15 项）。** 新增 `RepositoryControlTest`（不存在的仓库根为 error、根为普通文件为 error、真实遍历时报告根与文件数、声明的 scan_root 不存在为 blocking gap、存在的 scan root 被接受、scan root 内含音频被报告、CLI 拒绝不存在的根）、`EvidenceReferenceTest`（gate evidence 无法解析、分母 evidence 无法解析、摘要不匹配、缺摘要）、`StageAccountabilityTest`（**五种状态**下缺 stage 分母均被拒、补齐后可达 complete、逐一删除 15 个 stage 中的任意一个都必须报“must account for every stage”、`not_applicable` 合法）。fixture 改为物化**全部** evidence 引用的 Artifact 并覆盖全部 M1 stage。
+- **验证（实际执行）。** 定向：`tests.test_acceptance_evidence` → **92 tests, OK**。逐条 finding 在本机脚本化复现并确认修复后结论：根不存在 → `invalid`；声明 scan root 未遍历 → `real_recording_pending` + gap；云/分母 evidence 指向虚构路径 → `real_recording_pending` + gap；`failed`/`abstained`/`not_attempted` 缺 stage 分母 → `invalid`；省略 `role_review` stage → `invalid`；完整物化记录 → `complete`（通过路径仍可达）。受影响既有套件与全量套件由本 PR 的 CI 复跑。
+- **未验证边界（不升级为完成）。** 本 PR 仍为 **software_verified**：无真实录音、无真实云调用、无人工标注、无实体设备。`real_recording_verified` 保持**未声明**，#85 保持 Open，M1 仍未通过。
+
 ## 2026-09-19 — Issue #85 Step 05：修复 PR #108 首轮 Review findings（PRD-N001/N002/N004/N007）
 
 - **输入与核实。** 独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5256624543`）对 `7d267c9` 给出 `REQUEST_CHANGES`：1 条 P0 + 4 条 P1 + 4 条 P2。审查者同时独立确认了本 PR 的核心诚实声明成立（#85 仍 Open、`acceptance-status.md` 仍写“M1 尚未通过”、无任何 fixture 被当作真实证据、无 WeChat 知识泄漏进 Core、无既有持久化契约被改动、58 项测试真实通过）。每条 finding 均已在本机复现后再修，逐条结论如下。
