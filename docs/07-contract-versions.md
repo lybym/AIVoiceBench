@@ -16,6 +16,14 @@ no historical document stops validating:
   `barge_in_semantic_compliance` (PRD-M006), `false_endpoint_confirmed` (PRD-M007) and
   `coverage` (PRD-M010), each with its own unit/scope/method constraint.
 - `aggregation` gains optional `invalid_count`, `abstained_count` and `planned_count`.
+- `metric_id` gains a per-sample discriminator for names a single turn can produce
+  several samples of (`overlap_duration_ms` per overlap pair, `barge_in_stop_latency_ms`
+  per interruption). A `rate`/`micro` aggregate must link one eligible input `metric_id`
+  per sample, so the engine now upholds the identity that `aggregate_metrics` counts on
+  instead of emitting duplicates it then refuses. This is an id-format clarification, not
+  a schema change: the id pattern already allowed the extra segment.
+- Every emitted document now satisfies `metric_errors`, including `coverage` (one linked
+  input `metric_id` per measured turn) and `asr_cer` (the micro sample links itself).
 
 Migration for `prd_ref`: a stored document whose `definition_version` is `3.0.0` keeps
 its original id (`PRD-M002` = First Speech Latency). `aivoicebench.metrics` exposes
@@ -24,8 +32,17 @@ and `migrate_metric_document`; the last returns a **copy**, so history is never
 rewritten. `metric_errors` rejects a document whose `definition_version` maps its name
 to a different `prd_ref`, and rejects a PRD-less metric unless it is a declared legacy
 continuity name (`feedback_latency_ms`, `meaningful_response_latency_ms`,
-`barge_in_new_intent_latency_ms`, `barge_in_success`) carrying that reason. See
+`barge_in_new_intent_latency_ms`, `barge_in_success`) carrying that reason. Those names
+carry `prd_ref: null` because the current PRD defines no requirement for them; the PRD
+changelog records that product/technical split. See
 [指标定义](03-metric-definition.md) for the conflict and its resolution.
+
+The overall status of a metric document set is derived by the single helper
+`aivoicebench.metrics.run_status` (observed/pass/fail with a non-null value → `observed`,
+else any `invalid` → `invalid`, else timeline `invalid`/`blocked`, else
+`insufficient_evidence`). `compute_timeline_metrics`, the import pipeline and the classic
+`pipeline._integrate_llm_metrics` all use it, so one document set cannot yield two
+different run statuses.
 
 ## TestCase 2.0.0 (Issue #1)
 

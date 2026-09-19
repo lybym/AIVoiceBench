@@ -49,6 +49,19 @@ def find(metrics_list, name):
     return [m for m in metrics_list if m['name'] == name]
 
 
+def envelope_status_for(result):
+    """The metrics stage envelope status `import_pipeline._metrics` derives.
+
+    Mirrors that rule (an `observed` run status is the only path to `complete`) so a
+    completeness claim is pinned at the metric layer without staging a full import.
+    """
+    if result['status'] == 'observed':
+        return 'complete'
+    if result.get('metrics'):
+        return 'partial'
+    return 'insufficient_evidence'
+
+
 def semantic(kind, decision, turn_id='TURN-0001', **overrides):
     record = {'kind': kind, 'turn_id': turn_id, 'decision': decision,
               'criterion_id': 'CRIT-0001', 'criterion_version': '1.0.0',
@@ -541,6 +554,310 @@ class CoverageOutcomeTests(unittest.TestCase):
         self.assertEqual(schema_errors(coverage, 'metric'), [])
         self.assertFalse([m for m in result['metrics'] if m['status'] == 'observed'])
         self.assertEqual(result['status'], 'insufficient_evidence')
+
+
+class CompletionRuleTests(unittest.TestCase):
+    """The findings round: "no formal measurement" must never look complete.
+
+    The engine carries two notions of measured evidence — a per-turn measurement for
+    `coverage` and `aggregation.sample_count` for aggregates. These cases pin the
+    completion rule itself, not just the single fixture that failed CI: an observed
+    endpoint *candidate* is not a formal measurement, so a turn that only produces one
+    can no longer make the metrics envelope `complete`.
+    """
+
+    def timeline(self, events, **kwargs):
+        return compute_timeline_metrics(make_timeline(events), **kwargs)
+
+    def test_an_observed_endpoint_candidate_is_not_a_formal_measurement(self):
+        """P0: `tester_speech_start` + acoustic device end, with the request open."""
+        events = [
+            make_event('E1', 'tester_speech_start', 400),
+            make_event('E2', 'device_speech_start', 1500),
+            make_event('E3', 'device_speech_end', 2000, uncertainty_ms=30.0),
+        ]
+        result = self.timeline(events)
+        candidate = find(result['metrics'], 'response_end_candidate_ms')[0]
+        self.assertEqual(candidate['status'], 'insufficient_evidence')
+        self.assertIsNone(candidate['value'])
+        self.assertIn('no end boundary', candidate['reason'])
+        coverage = find(result['metrics'], 'coverage')[0]
+        self.assertEqual(coverage['status'], 'insufficient_evidence')
+        self.assertIsNone(coverage['value'])
+        self.assertEqual(coverage['aggregation']['sample_count'], 0)
+        self.assertEqual(coverage['aggregation']['total_count'], 1)
+        self.assertEqual(coverage['aggregation']['input_metric_ids'], [])
+        # The whole run, and therefore the metrics envelope, must not look finished.
+        self.assertEqual(result['status'], 'insufficient_evidence')
+        self.assertEqual(envelope_status_for(result), 'partial')
+
+    def test_the_completion_rule_holds_across_the_candidate_timelines(self):
+        """Every non-measuring timeline yields a non-`complete` envelope.
+
+        Row 1 is the PR's own regression fixture, row 2 the orphan/partial family this
+        round added, row 3 the turn whose tester utterance is still open, row 4 an
+        unresolved-attribution partial timeline.
+        """
+        rows = {
+            'orphan device turn': [
+                make_event('E1', 'device_speech_start', 500),
+                make_event('E2', 'device_speech_end', 1500),
+            ],
+            'open tester utterance': [
+                make_event('E1', 'tester_speech_start', 400),
+                make_event('E2', 'device_speech_start', 1500),
+                make_event('E3', 'device_speech_end', 2000),
+            ],
+            'open tester utterance with only an asr device end': [
+                make_event('E1', 'tester_speech_start', 400),
+                make_event('E2', 'device_speech_start', 1500),
+                make_event('E3', 'device_speech_end', 2400, source='asr'),
+            ],
+            'tester utterance without a device response': [
+                make_event('E1', 'tester_speech_start', 400),
+                make_event('E2', 'tester_speech_end', 1000),
+            ],
+        }
+        # Each row attempted at least one turn and produced no observed value, so
+        # `coverage` retains its denominator and abstains (never `not_applicable`).
+        expected_coverage = {
+            'orphan device turn': 'insufficient_evidence',
+            'open tester utterance': 'insufficient_evidence',
+            'open tester utterance with only an asr device end': 'insufficient_evidence',
+            'tester utterance without a device response': 'insufficient_evidence',
+        }
+        for label, events in rows.items():
+            with self.subTest(label):
+                result = self.timeline(events)
+                self.assertFalse([m for m in result['metrics']
+                                  if m['status'] == 'observed' and m['name'] == 'coverage'],
+                                 result['metrics'])
+                self.assertNotEqual(envelope_status_for(result), 'complete')
+                coverage = find(result['metrics'], 'coverage')[0]
+                self.assertIsNone(coverage['value'])
+                self.assertEqual(coverage['status'], expected_coverage[label])
+
+    def test_a_real_measurement_still_completes(self):
+        """The rule must not abstain its way out of reporting a genuine measurement."""
+        events = [
+            make_event('E1', 'tester_speech_start', 400),
+            make_event('E2', 'tester_speech_end', 1000),
+            make_event('E3', 'device_speech_start', 1500),
+            make_event('E4', 'device_speech_end', 2000),
+        ]
+        result = self.timeline(events)
+        coverage = find(result['metrics'], 'coverage')[0]
+        self.assertEqual(coverage['status'], 'observed')
+        self.assertEqual(coverage['value'], 1.0)
+        self.assertEqual(coverage['aggregation']['sample_count'], 1)
+        self.assertEqual(result['status'], 'observed')
+        self.assertEqual(envelope_status_for(result), 'complete')
+
+    def test_an_unresolved_attribution_gap_never_reports_an_observed_coverage(self):
+        """The partial/role-gap state a real import produces must stay non-complete."""
+        events = [make_event('E1', 'silence', 0, end=1000, response_id=None, source='derived')]
+        timeline = make_timeline(
+            events, status='partial',
+            gaps=[{'start_ms': 0, 'end_ms': 1000,
+                   'reason': 'Speaker attribution is unresolved'}])
+        result = compute_timeline_metrics(timeline)
+        coverage = find(result['metrics'], 'coverage')[0]
+        self.assertEqual(coverage['status'], 'insufficient_evidence')
+        self.assertIsNone(coverage['value'])
+        self.assertEqual(envelope_status_for(result), 'partial')
+
+    def test_the_run_status_rule_is_shared_by_every_calling_surface(self):
+        """AC2: one document set, one status — the pipeline surface agrees."""
+        from aivoicebench import pipeline
+        from aivoicebench.metrics import run_status
+
+        events = [
+            make_event('E1', 'tester_speech_start', 400),
+            make_event('E2', 'device_speech_start', 1500),
+            make_event('E3', 'device_speech_end', 2000),
+        ]
+        result = self.timeline(events)
+        self.assertEqual(result['status'], run_status(result['metrics']))
+        integrated = pipeline._integrate_llm_metrics(copy.deepcopy(result), [])
+        self.assertEqual(integrated['status'], result['status'])
+        self.assertEqual(integrated['status'], 'insufficient_evidence')
+
+
+class EmittedDocumentContractTests(unittest.TestCase):
+    """P1: every document the engine emits must satisfy the engine's own validator."""
+
+    def documents(self):
+        """A representative run: measurement, candidate, overlap, semantic and M008."""
+        events = [
+            make_event('E1', 'tester_speech_start', 400),
+            make_event('E2', 'tester_speech_end', 1000),
+            make_event('E3', 'device_speech_start', 1500, response_id='RESP-0001'),
+            make_event('E4', 'device_speech_end', 2400, response_id='RESP-0001',
+                       uncertainty_ms=25.0),
+            make_event('E5', 'possible_false_endpoint', 700, turn_id=None, response_id=None),
+            make_event('E6', 'planned_pause_start', 600, turn_id=None, response_id=None),
+            make_event('E7', 'planned_pause_end', 950, turn_id=None, response_id=None),
+        ]
+        return self.compute(events)
+
+    def compute(self, events, **kwargs):
+        return compute_timeline_metrics(
+            make_timeline(events),
+            reference_transcript={'text': 'hello device', 'reference_id': 'REF-1'},
+            device_transcript={'text': 'hello devise', 'source': 'device_internal',
+                               'artifact_id': 'ART-1', 'evidence_ids': ['EV-100']},
+            semantic_evidence=[semantic('semantic_response', True)],
+            **kwargs)
+
+    def test_every_emitted_document_passes_metric_errors(self):
+        """The blind spot that hid the `coverage` aggregation defect."""
+        result = self.documents()
+        self.assertTrue(result['metrics'])
+        for metric in result['metrics']:
+            self.assertEqual(metric_errors(metric), [],
+                             f"{metric['name']}: {metric_errors(metric)}")
+
+    def test_an_observed_coverage_links_one_input_metric_per_measured_turn(self):
+        events = [
+            make_event('E1', 'tester_speech_end', 1000, turn_id='TURN-0001'),
+            make_event('E2', 'device_speech_start', 1500, turn_id='TURN-0001'),
+            make_event('E3', 'tester_speech_end', 3000, turn_id='TURN-0002'),
+            make_event('E4', 'device_speech_start', 3400, turn_id='TURN-0002'),
+            make_event('E5', 'tester_speech_end', 5000, turn_id='TURN-0003'),
+        ]
+        coverage = find(compute_timeline_metrics(make_timeline(events))['metrics'], 'coverage')[0]
+        aggregation = coverage['aggregation']
+        self.assertEqual(coverage['status'], 'observed')
+        self.assertEqual(aggregation['sample_count'], 2)
+        self.assertEqual(aggregation['total_count'], 3)
+        self.assertEqual(aggregation['excluded_count'], 1)
+        self.assertEqual(len(aggregation['input_metric_ids']), aggregation['sample_count'])
+        self.assertEqual(len(set(aggregation['input_metric_ids'])), 2)
+        self.assertEqual(metric_errors(coverage), [])
+
+    def test_micro_cer_links_its_own_sample(self):
+        events = [make_event('E1', 'tester_speech_end', 1000),
+                  make_event('E2', 'device_speech_start', 1500)]
+        result = self.compute(events)
+        cer = find(result['metrics'], 'asr_cer')[0]
+        self.assertEqual(cer['status'], 'observed')
+        self.assertEqual(cer['aggregation']['kind'], 'micro')
+        self.assertEqual(cer['aggregation']['input_metric_ids'], [cer['metric_id']])
+        self.assertEqual(metric_errors(cer), [])
+
+    def test_the_invalid_envelope_declares_every_name(self):
+        """An omitted requirement must not read as an evaluated one."""
+        events = [make_event('E1', 'tester_speech_end', 1000)]
+        result = compute_timeline_metrics(
+            make_timeline(events),
+            integrity={'status': 'invalid', 'reason': 'Artifact SHA-256 mismatch'})
+        names = {m['name'] for m in result['metrics']}
+        self.assertTrue(set(PRD_REFS_V4) <= names, sorted(set(PRD_REFS_V4) - names))
+        self.assertTrue(set(metrics.LEGACY_METRIC_NAMES) <= names)
+        for metric in result['metrics']:
+            self.assertEqual(metric['status'], 'invalid')
+            self.assertIsNone(metric['value'])
+            self.assertEqual(metric['aggregation']['sample_count'], 0)
+            self.assertEqual(metric_errors(metric), [],
+                             f"{metric['name']}: {metric_errors(metric)}")
+        coverage = find(result['metrics'], 'coverage')[0]
+        self.assertEqual(coverage['aggregation']['abstained_count'],
+                         len(result['metrics']) - 1 - len(metrics.LEGACY_METRIC_NAMES))
+
+
+class MultiSampleIdentityTests(unittest.TestCase):
+    """P1: a name a turn can produce several samples of keeps a unique `metric_id`."""
+
+    def test_two_overlap_pairs_in_one_turn_are_aggregatable(self):
+        events = [
+            make_event('E1', 'tester_speech_end', 1000),
+            make_event('E2', 'device_speech_start', 1500),
+            make_event('E3', 'device_speech_end', 3000),
+            make_event('E4', 'overlap_start', 1600),
+            make_event('E5', 'overlap_end', 1800),
+            make_event('E6', 'overlap_start', 2000),
+            make_event('E7', 'overlap_end', 2200),
+        ]
+        result = compute_timeline_metrics(make_timeline(events))
+        durations = find(result['metrics'], 'overlap_duration_ms')
+        self.assertEqual(len(durations), 2)
+        ids = [m['metric_id'] for m in durations]
+        self.assertEqual(len(set(ids)), 2, ids)
+        for metric in result['metrics']:
+            self.assertEqual(metric_errors(metric), [], metric['name'])
+        container = aggregate_metrics(durations, name='overlap_duration_ms', percentile=50)
+        self.assertEqual(container['aggregation']['sample_count'], 2)
+        self.assertEqual(container['aggregation']['input_metric_ids'], sorted(ids))
+
+    def test_two_interruptions_in_one_turn_are_aggregatable(self):
+        events = [
+            make_event('E1', 'tester_speech_end', 1000),
+            make_event('E2', 'device_speech_start', 1500, response_id='RESP-0001'),
+            make_event('E3', 'device_speech_end', 2500, response_id='RESP-0001'),
+            make_event('E4', 'interrupt_start', 1600, response_id='RESP-0001'),
+            make_event('E5', 'interrupt_start', 2000, response_id='RESP-0001'),
+        ]
+        result = compute_timeline_metrics(make_timeline(events))
+        stops = find(result['metrics'], 'barge_in_stop_latency_ms')
+        self.assertEqual(len(stops), 2)
+        self.assertEqual(len({m['metric_id'] for m in stops}), 2)
+        container = aggregate_metrics(stops, name='barge_in_stop_latency_ms', percentile=50)
+        self.assertEqual(container['aggregation']['sample_count'], 2)
+
+    def test_a_sample_without_an_event_id_still_gets_a_unique_ordinal(self):
+        events = [
+            make_event('E1', 'tester_speech_end', 1000),
+            make_event('E2', 'device_speech_start', 1500),
+            make_event('E3', 'device_speech_end', 3000),
+            make_event('E4', 'overlap_start', 1600),
+            make_event('E5', 'overlap_end', 1800),
+            make_event('E6', 'overlap_start', 2000),
+            make_event('E7', 'overlap_end', 2200),
+        ]
+        for event in events:
+            event.pop('event_id')
+        result = compute_timeline_metrics(make_timeline(events))
+        ids = [m['metric_id'] for m in find(result['metrics'], 'overlap_duration_ms')]
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(set(ids)), 2, ids)
+        self.assertEqual(metric_errors(find(result['metrics'], 'overlap_duration_ms')[0]), [])
+
+
+class UnmeasurableOverlapTests(unittest.TestCase):
+    """P2: an unmeasurable overlap abstains explicitly instead of vanishing."""
+
+    def test_every_turn_emits_an_overlap_document(self):
+        cases = {
+            'declared but unpaired device interval': [
+                make_event('E1', 'tester_speech_start', 400),
+                make_event('E2', 'tester_speech_end', 1200),
+                make_event('E3', 'device_speech_start', 900, response_id='RESP-9'),
+                make_event('E4', 'device_speech_end', 800, response_id='RESP-9'),
+            ],
+            'tester intervals without a device interval': [
+                make_event('E1', 'tester_speech_start', 400),
+                make_event('E2', 'tester_speech_end', 1200),
+            ],
+            'identity cannot be established': [
+                make_event('E1', 'silence', 0, end=1000, response_id=None, source='derived'),
+            ],
+        }
+        expected = {'declared but unpaired device interval': 'insufficient_evidence',
+                    # `tester_speech_start` is an acoustic boundary, so role identity
+                    # holds; the declared tester interval simply has no counterpart to
+                    # intersect. That is missing evidence, reported as such.
+                    'tester intervals without a device interval': 'insufficient_evidence',
+                    'identity cannot be established': 'insufficient_evidence'}
+        for label, events in cases.items():
+            with self.subTest(label):
+                overlap = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                               'overlap_duration_ms')
+                self.assertEqual(len(overlap), 1, overlap)
+                self.assertEqual(overlap[0]['status'], expected[label])
+                self.assertIsNone(overlap[0]['value'])
+                self.assertTrue(overlap[0]['reason'])
+                self.assertEqual(overlap[0]['prd_ref'], 'PRD-M009')
+                self.assertEqual(metric_errors(overlap[0]), [])
 
 
 class DefinitionCompatibilityTests(unittest.TestCase):

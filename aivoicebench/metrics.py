@@ -26,7 +26,10 @@ Design rules enforced here:
   ineligible evidence is an explicit result state (`insufficient_evidence`,
   `not_applicable`, `invalid`) — never coerced to 0, false or success.
 - `source='asr'` is a transcript estimate, never an acoustic boundary. PRD-M002
-  therefore never treats an ASR final timestamp as the response end.
+  therefore never treats an ASR final timestamp as the response end; in the real
+  pipeline its candidate always comes from the acoustic `device_speech_end`,
+  because fusion's own `response_end` carries `source='derived'` and is filtered
+  out by the acoustic-boundary gate.
 - Unknown speaker role, missing acoustic boundary, missing semantic evidence and
   failed artifact integrity all abstain explicitly with a reason.
 """
@@ -93,6 +96,15 @@ LEGACY_METRIC_NAMES = (
 
 SEMANTIC_KINDS = ('semantic_response', 'barge_in_compliance', 'false_endpoint_confirmation')
 
+# Per-turn metrics that are a *formal measurement* for PRD-M010: each one closes a
+# real interval, so an observed value means a quantity was actually measured.
+# PRD-M002 `response_end_candidate_ms` is deliberately absent: it is an endpoint
+# candidate position, observable on a turn that produced no latency/gap/barge-in
+# measurement at all, and counting it as measured let a run with no formal
+# measurement report `coverage` observed 1.0 and a `complete` metrics envelope.
+FORMAL_MEASUREMENT_NAMES = ('first_speech_latency_ms', 'turn_gap_ms',
+                            'barge_in_stop_latency_ms')
+
 
 def prd_ref_for(name, definition_version=DEFINITION_VERSION):
     """Resolve the PRD requirement id a metric name carries under a definition."""
@@ -114,6 +126,9 @@ def migrate_prd_ref(prd_ref, name, from_version=LEGACY_DEFINITION_VERSION,
                     to_version=DEFINITION_VERSION):
     """Map a historical PRD ref onto the current decomposition by metric name.
 
+    A PRD label is not ambiguous in itself; the defect being handled is that the
+    *same label* was attached to different metric names by two PRD revisions, so a
+    stored `prd_ref` cannot be re-read without the name it was paired with.
     Returns (prd_ref, status) with status in `mapped`, `unchanged`,
     `no_current_requirement` (the name is legacy-only) or `unknown_name`.
     """
@@ -236,19 +251,44 @@ def _integrity_state(integrity):
     return integrity['status'], integrity.get('reason') or 'Artifact integrity is invalid'
 
 
+def _sample_key(index, *events):
+    """A stable per-sample discriminator for names emitted more than once per turn.
+
+    A turn can legitimately carry several samples of the same measurement (one
+    `overlap_duration_ms` per overlap pair, one `barge_in_stop_latency_ms` per
+    interruption). The event id is preferred because it is stable evidence; the
+    ordinal is the fallback for producers that omit it. Callers must not reuse a
+    key for two samples of the same name in one turn, because `metric_id` is the
+    identity `aggregate_metrics` counts on.
+    """
+    for event in events:
+        event_id = event.get('event_id') if isinstance(event, dict) else None
+        if event_id:
+            return str(event_id)
+    return f'sample-{index + 1:02d}'
+
+
 def _metric(timeline, name, *, value=None, unit='ms', status='observed', turn_id=None,
             response_id=None, events=(), reason=None, policy=None, policy_version=None,
             confidence=None, confidence_source=None, uncertainty_ms=None,
             measurement_scope='black_box', method='deterministic', judge_profile=None,
-            aggregation=None, prd_ref='derive'):
-    """Build one canonical MetricResult document under the current definition."""
+            aggregation=None, prd_ref='derive', sample_key=None):
+    """Build one canonical MetricResult document under the current definition.
+
+    `sample_key` disambiguates names that a single turn can produce several
+    samples of; without it two samples of the same name in one turn would share a
+    `metric_id` and could never be aggregated.
+    """
     run_id = timeline.get('run_id') or 'RUN-auto'
     if prd_ref == 'derive':
         prd_ref = prd_ref_for(name)
     measured = status in ('observed', 'pass', 'fail')
+    metric_id = f'{run_id}.{name}' + (f'.{turn_id}' if turn_id else '')
+    if sample_key is not None:
+        metric_id += f'.{sample_key}'
     metric = {
         'schema_version': SCHEMA_VERSION,
-        'metric_id': f'{run_id}.{name}' + (f'.{turn_id}' if turn_id else ''),
+        'metric_id': metric_id,
         'run_id': run_id,
         'case_id': timeline.get('case_id') or None,
         'analysis_id': timeline.get('analysis_id'),
@@ -298,28 +338,87 @@ def _counts(metrics):
     return counts
 
 
-def _global_state(metrics, timeline):
-    if any(m.get('status') in ('observed', 'pass', 'fail') for m in metrics):
+def metric_status(metric):
+    """The status a run derives from one metric document.
+
+    A metric only counts as an outcome when it carries a status *and* an actual
+    value; an `observed` document with a null value is not a measurement result.
+    """
+    status = metric.get('status')
+    if status in ('observed', 'pass', 'fail') and metric.get('value') is not None:
         return 'observed'
-    if any(m.get('status') == 'invalid' for m in metrics):
+    if status == 'invalid':
         return 'invalid'
-    if timeline.get('status') in ('invalid', 'blocked'):
+    return None
+
+
+def run_status(metrics, timeline=None):
+    """The single rule for the overall status of a metric document set.
+
+    Both calling surfaces (`import_pipeline`/CLI via `compute_timeline_metrics` and
+    the classic `pipeline._integrate_llm_metrics`) must derive the same status from
+    the same documents; two different rules would break the pipeline-invariance
+    claim of AC2.
+    """
+    derived = {metric_status(metric) for metric in metrics}
+    if 'observed' in derived:
+        return 'observed'
+    if 'invalid' in derived:
+        return 'invalid'
+    if timeline is not None and timeline.get('status') in ('invalid', 'blocked'):
         return timeline['status']
     return 'insufficient_evidence'
 
 
+def _global_state(metrics, timeline):
+    return run_status(metrics, timeline)
+
+
 def _invalid_metrics(timeline, reason):
+    """Every name the current decomposition defines, plus the legacy records.
+
+    An invalid-integrity run measured nothing, so a reader must not find PRD
+    requirements silently absent from the document set and read them as evaluated.
+    The legacy continuity names keep their `prd_ref: null` contract and their own
+    reason; they are emitted here so the invalid envelope has the same name
+    coverage as a normal run.
+    """
+    prd_names = sorted(PRD_REFS_V4)
+    # Mirror the unit/scope the name carries in a normal run, so the invalid
+    # envelope is schema-valid for every name it declares. `method` is the
+    # deterministic integrity determination itself: no judge ran, so no semantic
+    # name may claim `llm_judge` and carry a judge profile it never used.
+    specs = {
+        'first_speech_latency_ms': ('ms', 'black_box', 'deterministic'),
+        'response_end_candidate_ms': ('ms', 'black_box', 'deterministic'),
+        'semantic_response': ('boolean', 'black_box', 'deterministic'),
+        'turn_gap_ms': ('ms', 'black_box', 'deterministic'),
+        'barge_in_stop_latency_ms': ('ms', 'black_box', 'deterministic'),
+        'barge_in_semantic_compliance': ('boolean', 'black_box', 'deterministic'),
+        'false_endpoint_candidate': ('boolean', 'black_box', 'deterministic'),
+        'false_endpoint_confirmed': ('boolean', 'black_box', 'composite'),
+        'asr_cer': ('ratio', 'white_box', 'ground_truth_comparison'),
+        'asr_wer': ('ratio', 'white_box', 'ground_truth_comparison'),
+        'overlap_duration_ms': ('ms', 'black_box', 'deterministic'),
+        'overlap_ratio': ('ratio', 'black_box', 'deterministic'),
+    }
     metrics = []
-    for name in ('first_speech_latency_ms', 'response_end_candidate_ms', 'turn_gap_ms',
-                 'barge_in_stop_latency_ms', 'overlap_duration_ms'):
-        metrics.append(_metric(timeline, name, status='invalid', value=None, reason=reason,
-                               policy='artifact_integrity'))
+    for name in prd_names:
+        if name == 'coverage':
+            continue
+        unit, scope, method = specs[name]
+        metrics.append(_metric(
+            timeline, name, status='invalid', value=None, unit=unit,
+            measurement_scope=scope, method=method, reason=reason,
+            policy='artifact_integrity'))
+    abstained = len(metrics)
     metrics.append(_metric(
         timeline, 'coverage', status='invalid', value=None, unit='ratio',
         policy='artifact_integrity', reason=reason,
         aggregation={'kind': 'rate', 'sample_count': 0, 'total_count': 0, 'excluded_count': 0,
                      'algorithm': 'eligible_ratio', 'input_metric_ids': [],
-                     'invalid_count': 0, 'abstained_count': 0}))
+                     'invalid_count': 0, 'abstained_count': abstained}))
+    metrics.extend(_legacy_records(timeline, integrity_reason=reason))
     return metrics
 
 
@@ -382,7 +481,8 @@ def compute_timeline_metrics(timeline, *, semantic_evidence=None, device_transcr
         metrics.append(_first_speech_latency(timeline, turn_id, response_id,
                                              tester_end, device_start))
         metrics.append(_response_end_metric(timeline, turn_id, response_id, tester_present,
-                                            device_end, response_end_event, turn_events))
+                                            tester_end, device_end, response_end_event,
+                                            turn_events))
         metrics.append(_semantic_metric(timeline, 'semantic_response', 'PRD-M003',
                                         'semantic_response', turn_id, response_id,
                                         device_start is not None or device_end is not None,
@@ -476,24 +576,33 @@ def _turn_gap(timeline, turn_id, response_id, tester_end, device_start):
         reason='Turn has no tester utterance')
 
 
-def _response_end_metric(timeline, turn_id, response_id, tester_present, device_end,
-                         response_end_event, turn_events):
+def _response_end_metric(timeline, turn_id, response_id, tester_started, tester_end,
+                         device_end, response_end_event, turn_events):
     """PRD-M002: a response-end candidate with its uncertainty, never an ASR final.
 
     `device_speech_end` is an acoustic boundary; fusion also emits a `response_end`
-    derived event. Either may carry the candidate, but only an acoustic boundary
-    can. An ASR final timestamp is a transcript estimate and abstains.
+    derived event. Only an acoustic boundary can supply the candidate, so in the
+    real pipeline it always comes from the acoustic `device_speech_end`; a
+    `derived` `response_end` is filtered out and any ASR final abstains.
 
-    A response end belongs to a *response*, so a turn without any tester utterance
-    has no request whose answer could end: that is `not_applicable`, not a
-    measurement of unrelated device speech.
+    A response end belongs to a *response*, so the request has to have completed:
+    the turn needs a `tester_speech_end`, not merely a `tester_speech_start`. A
+    turn where the tester utterance is still open has no request whose answer
+    could end, and calling a bare device boundary a "formal measurement" there is
+    what let a pipeline with no measurement look complete.
     """
     policy = 'acoustic_boundary_candidate'
-    if not tester_present:
+    if not tester_started and tester_end is None:
         return _metric(
             timeline, 'response_end_candidate_ms', status='not_applicable', turn_id=turn_id,
             response_id=response_id, policy=policy,
             reason='Turn has no tester utterance; there is no response whose end could be measured')
+    if tester_end is None:
+        return _metric(
+            timeline, 'response_end_candidate_ms', status='insufficient_evidence', turn_id=turn_id,
+            response_id=response_id, policy=policy,
+            reason='The tester utterance has no end boundary, so the request never completed and '
+                   'there is no response whose end could be measured')
     boundaries = [e for e in (device_end, response_end_event) if e is not None]
     acoustic = [e for e in boundaries if _is_acoustic_boundary(e)]
     if acoustic:
@@ -566,7 +675,8 @@ def _barge_in_stop(timeline, events, turn_id, response_id, turn_events):
             response_id=response_id, policy=policy,
             reason='No interruption in this turn; there is no interrupted response to stop')]
     results = []
-    for interrupt in interrupt_starts:
+    for index, interrupt in enumerate(interrupt_starts):
+        sample_key = _sample_key(index, interrupt)
         interrupted_response = interrupt.get('response_id')
         old_end = None
         if interrupted_response is not None:
@@ -578,7 +688,7 @@ def _barge_in_stop(timeline, events, turn_id, response_id, turn_events):
             results.append(_metric(
                 timeline, 'barge_in_stop_latency_ms', status='insufficient_evidence',
                 turn_id=turn_id, response_id=interrupted_response, events=(interrupt,),
-                policy=policy,
+                policy=policy, sample_key=sample_key,
                 reason='No device_speech_end is bound to the interrupted response_id; the '
                        'interrupted old response cannot be identified'))
             continue
@@ -587,26 +697,34 @@ def _barge_in_stop(timeline, events, turn_id, response_id, turn_events):
                 timeline, 'barge_in_stop_latency_ms',
                 value=formulas.barge_in_stop_latency_ms(interrupt['start_ms'], old_end['start_ms']),
                 turn_id=turn_id, response_id=interrupted_response, events=(interrupt, old_end),
-                policy=policy))
+                policy=policy, sample_key=sample_key))
         except ValueError:
             results.append(_metric(
                 timeline, 'barge_in_stop_latency_ms', status='not_applicable', turn_id=turn_id,
                 response_id=interrupted_response, events=(interrupt, old_end), policy=policy,
+                sample_key=sample_key,
                 reason='Old response ended before interruption; no stop latency to measure'))
     return results
 
 
 def _overlap_metrics(timeline, turn_id, response_id, turn_events):
-    """PRD-M009: overlap of tester/device speech, or an explicit abstention."""
+    """PRD-M009: overlap of tester/device speech, or an explicit abstention.
+
+    Every branch returns at least one document. A turn whose role identity and
+    intervals exist but whose intersection cannot be formed must abstain
+    explicitly; returning nothing would let PRD-M010 read an unmeasurable turn as
+    an evaluated one (AC1 asks for an eligibility path, not a silent omission).
+    """
     starts = _find_all(turn_events, 'overlap_start')
     ends = _find_all(turn_events, 'overlap_end')
     if starts and ends:
         device_start = _find_event(turn_events, 'device_speech_start')
         device_end = _find_event(turn_events, 'device_speech_end')
         results = []
-        for overlap_start, overlap_end in zip(starts, ends):
+        for index, (overlap_start, overlap_end) in enumerate(zip(starts, ends)):
             results.extend(_overlap_pair(timeline, turn_id, response_id, overlap_start,
-                                        overlap_end, device_start, device_end))
+                                        overlap_end, device_start, device_end,
+                                        sample_key=_sample_key(index, overlap_start)))
         return results
     tester = _speech_intervals(turn_events, 'tester')
     device = _speech_intervals(turn_events, 'device')
@@ -638,18 +756,35 @@ def _overlap_metrics(timeline, turn_id, response_id, turn_events):
             timeline, 'overlap_duration_ms', status='insufficient_evidence', turn_id=turn_id,
             response_id=response_id, events=tuple(turn_events), policy='speech_interval_union_intersection',
             reason=reason)]
-    return []
+    if tester or device:
+        # Both roles are identified and at least one has intervals, but the
+        # intersection is not formable: the other role has no closing boundary, or
+        # its end precedes its start. That is missing evidence, not a zero overlap.
+        missing = 'device' if tester else 'tester'
+        return [_metric(
+            timeline, 'overlap_duration_ms', status='insufficient_evidence', turn_id=turn_id,
+            response_id=response_id, events=tuple(turn_events),
+            policy='speech_interval_union_intersection',
+            reason=f'Overlap is declared but not measurable: the {missing} speech interval set has '
+                   'no closed interval to intersect (a missing end boundary or an end at/before its '
+                   'start), so no overlap intersection exists')]
+    return [_metric(
+        timeline, 'overlap_duration_ms', status='not_applicable', turn_id=turn_id,
+        response_id=response_id, events=tuple(turn_events),
+        policy='speech_interval_union_intersection',
+        reason='Overlap is not applicable: neither role has a bounded speech interval in this turn, '
+               'so no overlap window was declared')]
 
 
 def _overlap_pair(timeline, turn_id, response_id, overlap_start, overlap_end,
-                  device_start, device_end):
+                  device_start, device_end, sample_key=None):
     results = []
     try:
         duration = formulas.overlap_duration_ms(overlap_start['start_ms'], overlap_end['start_ms'])
         results.append(_metric(
             timeline, 'overlap_duration_ms', value=duration, turn_id=turn_id,
             response_id=response_id, events=(overlap_start, overlap_end),
-            policy='overlap_event_pair'))
+            policy='overlap_event_pair', sample_key=sample_key))
         if device_start and device_end:
             device_duration = device_end['start_ms'] - device_start['start_ms']
             if device_duration > 0:
@@ -657,12 +792,12 @@ def _overlap_pair(timeline, turn_id, response_id, overlap_start, overlap_end,
                     timeline, 'overlap_ratio',
                     value=round(formulas.overlap_ratio(duration, device_duration), 4), unit='ratio',
                     turn_id=turn_id, response_id=response_id, events=(overlap_start, overlap_end),
-                    policy='overlap_event_pair'))
+                    policy='overlap_event_pair', sample_key=sample_key))
     except ValueError as error:
         results.append(_metric(
             timeline, 'overlap_duration_ms', status='insufficient_evidence', turn_id=turn_id,
             response_id=response_id, events=(overlap_start, overlap_end),
-            policy='overlap_event_pair', reason=str(error)))
+            policy='overlap_event_pair', reason=str(error), sample_key=sample_key))
     return results
 
 
@@ -761,15 +896,20 @@ def _transcript_quality_metrics(timeline, device_transcript, reference_transcrip
     cer = formulas.character_error_rate(reference, text)
     wer = formulas.word_error_rate(reference, text)
     events = ({'evidence_ids': evidence},)
+    # `metric_id` is the identity an aggregate links through, so the micro CER
+    # sample has to link itself; a `micro` aggregate with `sample_count` 1 and no
+    # linked metric id violates the metric contract's own invariant.
+    cer_metric = _metric(
+        timeline, 'asr_cer', value=cer['value'], unit='ratio',
+        method='ground_truth_comparison', measurement_scope='white_box', events=events,
+        policy=policy,
+        reason=f"Character error rate over {cer['reference_characters']} eligible reference "
+               f"characters ({cer['normalization']}); {cer['edits']} edits")
+    cer_metric['aggregation'] = {
+        'kind': 'micro', 'sample_count': 1, 'total_count': 1, 'excluded_count': 0,
+        'algorithm': 'micro_cer', 'input_metric_ids': [cer_metric['metric_id']]}
     return [
-        _metric(
-            timeline, 'asr_cer', value=cer['value'], unit='ratio',
-            method='ground_truth_comparison', measurement_scope='white_box', events=events,
-            policy=policy,
-            reason=f"Character error rate over {cer['reference_characters']} eligible reference "
-                   f"characters ({cer['normalization']}); {cer['edits']} edits",
-            aggregation={'kind': 'micro', 'sample_count': 1, 'total_count': 1, 'excluded_count': 0,
-                         'algorithm': 'micro_cer', 'input_metric_ids': []}),
+        cer_metric,
         _metric(
             timeline, 'asr_wer', value=wer['value'], unit='ratio',
             method='ground_truth_comparison', measurement_scope='white_box', events=events,
@@ -780,13 +920,34 @@ def _transcript_quality_metrics(timeline, device_transcript, reference_transcrip
 
 
 def _coverage_metric(timeline, turn_ids, events, metrics, planned_units):
-    """PRD-M010: planned / attempted / observed / measured / abstained stay distinct."""
+    """PRD-M010: planned / attempted / observed / measured / abstained stay distinct.
+
+    The measured unit is a **formal measurement**, not "the turn has some observed
+    metric". PRD-M002 `response_end_candidate_ms` is an endpoint *candidate* whose
+    gate is only "a completed tester request plus one acoustic device boundary" — it
+    becomes observed on a timeline that produced no latency, gap or barge-in
+    measurement at all. Counting it as measured made `coverage` report an observed
+    1.0 (and the metrics envelope `complete`) for a run with no formal measurement,
+    which is the defect this rule exists to prevent. Only the per-turn measurements
+    that close a real interval qualify: M001 first speech latency, M004 turn gap and
+    M005 barge-in stop latency.
+    """
     attempted = len(turn_ids)
-    measured = len({m.get('turn_id') for m in metrics
-                    if m.get('status') in ('observed', 'pass', 'fail') and m.get('turn_id')})
+    measured_turns = {}  # turn_id -> representative eligible metric id (deterministic)
+    for metric in sorted(metrics, key=lambda m: (m.get('name') or '', m.get('metric_id') or '')):
+        if metric.get('name') not in FORMAL_MEASUREMENT_NAMES:
+            continue
+        if metric.get('status') not in ('observed', 'pass', 'fail'):
+            continue
+        turn_id = metric.get('turn_id')
+        if not turn_id or not metric.get('metric_id'):
+            continue
+        measured_turns.setdefault(turn_id, metric['metric_id'])
+    measured = len(measured_turns)
     invalid = len({m.get('turn_id') for m in metrics
                    if m.get('status') == 'invalid' and m.get('turn_id')})
     abstained = attempted - measured
+    input_metric_ids = [measured_turns[turn_id] for turn_id in sorted(measured_turns)]
     if attempted == 0:
         return _metric(
             timeline, 'coverage', status='not_applicable', unit='ratio',
@@ -796,13 +957,18 @@ def _coverage_metric(timeline, turn_ids, events, metrics, planned_units):
                          'invalid_count': 0, 'abstained_count': 0},
             reason='No measurement unit was attempted in this timeline')
     counts = {'kind': 'rate', 'sample_count': measured, 'total_count': attempted,
-              'excluded_count': abstained, 'algorithm': 'eligible_ratio', 'input_metric_ids': [],
+              'excluded_count': abstained, 'algorithm': 'eligible_ratio',
+              'input_metric_ids': input_metric_ids,
               'invalid_count': invalid, 'abstained_count': abstained}
     if planned_units is not None:
         counts['planned_count'] = planned_units
     plan_note = ('no plan was supplied, so planned coverage is not reported and a control or '
                  'transport success is never substituted for measurement coverage'
                  if planned_units is None else f'{planned_units} planned')
+    link_note = ('each measured turn contributes its representative measurement id, so the linked '
+                 'metric ids stay one per measured turn'
+                 if input_metric_ids else 'no formal measurement was produced, so no input metric '
+                 'is linked')
     if measured == 0:
         # No formal measurement was produced. The denominator is retained and the
         # outcome stays an explicit abstention rather than an observed 0-rate that
@@ -810,34 +976,47 @@ def _coverage_metric(timeline, turn_ids, events, metrics, planned_units):
         return _metric(
             timeline, 'coverage', status='insufficient_evidence', value=None, unit='ratio',
             policy='measurement_coverage', events=tuple(events), aggregation=counts,
-            reason=f'No attempted turn produced an eligible measurement; the denominator is '
-                   f'retained ({attempted} attempted, 0 measured); {plan_note}')
+            reason=f'No attempted turn produced an eligible formal measurement (an observed '
+                   f'endpoint candidate is not a measurement); the denominator is retained '
+                   f'({attempted} attempted, 0 measured); {link_note}; {plan_note}')
     detail = f'Measured {measured} of {attempted} attempted turns; {abstained} abstained'
     if invalid:
         detail += f'; {invalid} invalid'
-    detail += f'; {plan_note}'
+    detail += f'; {link_note}; {plan_note}'
     return _metric(
         timeline, 'coverage', value=measured / attempted, unit='ratio',
         policy='measurement_coverage', events=tuple(events), aggregation=counts, reason=detail)
 
 
-def _legacy_records(timeline):
+def _legacy_records(timeline, integrity_reason=None):
     """Metric names the current PRD decomposition no longer defines.
 
     They stay in the output so historical documents and downstream readers keep
     their names, but they carry no PRD ref and are never computed into a new value.
+    Under an invalid-integrity run they take the `invalid` status too: the whole
+    envelope is invalid, and a legacy name must not be the one record that looks
+    like an ordinary abstention in an otherwise invalid document set.
     """
+    continuity_reason = (
+        'Legacy metric: the current PRD-M001..M010 decomposition no longer defines this '
+        'requirement. It is retained for continuity with historical MetricResult '
+        'documents, is never computed as a new value, and PRD-M003/M006 semantic '
+        'requirements require constrained semantic evidence instead')
     records = []
     for name, unit, method in (('feedback_latency_ms', 'ms', 'deterministic'),
                                ('meaningful_response_latency_ms', 'ms', 'deterministic'),
                                ('barge_in_new_intent_latency_ms', 'ms', 'deterministic'),
                                ('barge_in_success', 'boolean', 'composite')):
+        if integrity_reason is not None:
+            records.append(_metric(
+                timeline, name, status='invalid', value=None, unit=unit, method=method,
+                prd_ref=None, policy='artifact_integrity',
+                reason=f'{integrity_reason}; this legacy continuity name is invalid for the same '
+                       'run and carries no measurement'))
+            continue
         records.append(_metric(
             timeline, name, status='insufficient_evidence', unit=unit, method=method, prd_ref=None,
-            reason='Legacy metric: the current PRD-M001..M010 decomposition no longer defines this '
-                   'requirement. It is retained for continuity with historical MetricResult '
-                   'documents, is never computed as a new value, and PRD-M003/M006 semantic '
-                   'requirements require constrained semantic evidence instead'))
+            reason=continuity_reason))
     return records
 
 
