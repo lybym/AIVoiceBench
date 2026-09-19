@@ -844,8 +844,9 @@ def _run_role_dependent_chain(run, acoustic_result, transcript_doc, diarization_
                                 lambda: _findings(run, judge_document, timeline_doc,
                                                   metrics_result, findings_parents))
             else:
-                _abstain_role_dependent_stages(run, fusion_art_id or norm_art_id,
-                                               _role_gate_reason(run, diarization_result))
+                _abstain_role_dependent_stages(
+                    run, fusion_art_id or norm_art_id,
+                    _role_gate_reason(run, diarization_result, explicit_mapping))
     # Every revision publishes its own gate state and review surface, so a reader can
     # see which decisions that exact revision was produced from.
     _publish_role_review(run, diarization_result, transcript_doc)
@@ -867,22 +868,52 @@ def _publish_role_review(run, diarization_doc, transcript_doc):
     return document
 
 
-def _role_gate_reason(run, diarization_doc):
-    """Name the exact gate that blocks role-dependent stages.
+def _role_gate_reason(run, diarization_doc, explicit_mapping=None):
+    """Name the exact cause that blocks role-dependent stages.
 
     An anonymous cluster waiting for a human decision is a different state from a
     Run that produced no clusters at all, and from a complete mapping in which the
-    user deliberately chose `unknown` for everything.
+    user deliberately chose `unknown` for everything. Two further distinctions are
+    required for the reason to stay true to the persisted evidence:
+
+    * A revision whose **attribution stage failed** did not stop because of the role
+      gate — the gate may already be complete. Reporting the gate there would blame a
+      human decision for a processor failure and would contradict
+      `stages.attribution.status = failed` in the same document.
+    * A revision whose mapping **does** confirm tester/device but whose fused segments
+      carry no role stopped because the acoustic segments and the ASR speaker spans
+      produced no attributable overlap (the `speaker-alignment` artifact records
+      that). Reporting "no cluster was decided tester/device" there would contradict
+      the saved decision.
+
+    `explicit_mapping` is the mapping this revision was actually built from. Reading
+    the decisions back from the persisted revision history instead would be a second
+    source of truth for a value the caller already holds.
     """
-    from .role_review import load_revisions, review_status
+    from .role_review import review_status
     cluster_ids = list(dict.fromkeys(segment['speaker_id']
                                      for segment in (diarization_doc or {}).get('speaker_segments') or []))
-    revisions = load_revisions(run.directory)
-    decisions = revisions[-1]['decisions'] if revisions else {}
+    attribution = run.manifest['stages']['attribution']
+    if attribution['status'] == 'failed':
+        return ('Speaker attribution failed in this revision, so no speaker role was '
+                'established for any cluster and role-dependent stages cannot run: '
+                + (attribution.get('reason') or 'the attribution processor failed'))
+    if explicit_mapping is not None:
+        decisions = dict(explicit_mapping)
+    else:
+        from .role_review import load_revisions
+        revisions = load_revisions(run.directory)
+        decisions = revisions[-1]['decisions'] if revisions else {}
     status, detail = review_status(cluster_ids, decisions)
     if not cluster_ids:
         return 'No speaker roles are known: ' + detail
     if status == 'complete_review':
+        confirmed = sorted({role for role in decisions.values() if role in ('tester', 'device')})
+        if confirmed:
+            return ('Speaker roles are confirmed for this revision, but no fused segment carries a '
+                    'confirmed role: the acoustic segments and the ASR speaker spans produced no '
+                    'attributable overlap, so role-dependent stages cannot run (see the '
+                    'speaker-alignment evidence)')
         return ('All speaker clusters have a user decision, but none is tester/device; '
                 'role-dependent stages cannot run from an all-unknown mapping')
     return f'{status}: {detail}'

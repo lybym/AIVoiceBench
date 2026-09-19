@@ -31,10 +31,38 @@ if '--verify-history' in sys.argv:
         assert requests.get(base+actual['audio_url'],timeout=5).status_code==200
         from aivoicebench.import_artifacts import recording_run_errors
         directory=history_path.parent/run_id
-        assert not recording_run_errors(json.loads((directory/'manifest.json').read_text()),directory)
+        manifest=json.loads((directory/'manifest.json').read_text())
+        assert not recording_run_errors(manifest,directory)
+        assert actual['analysis_id']==manifest['analysis_id']==expected['analysis_id'], run_id
+        for name,stage in actual['stages'].items():
+            assert stage['status'] and (stage['reason'] or stage['output_artifact_ids']), name
+        for ref in actual.get('invocation_refs') or []:
+            assert (directory/ref['path']).is_file(), ref['path']
+        if run_id not in (before.get('revisions') or {}):
+            continue
+        # A container restart must reconstruct the *current* AnalysisRevision, the
+        # whole stage ledger, the evidence links (workbench/role review) and the
+        # report from the persistent volume - not from process memory.
+        assert actual['analysis_id']==before['revisions'][run_id], run_id
+        assert actual['stages']==expected['stages'], run_id
+        review=actual.get('role_review') or {}
+        # The saved human decision set is still the one this revision published as its
+        # current decision set, and the revision it produced is the revision the
+        # restart restored. `revision.analysis_id` records the revision the decision was
+        # applied to (the anonymous import), not the revision it produced.
+        assert review.get('status')=='complete_review', run_id
+        assert review.get('revision'), run_id
+        assert review['revision']['revision_index']==len(review['history'])>=1, run_id
+        assert review['revision']['decisions']==before['decisions'][run_id], run_id
+        assert review.get('gate',{}).get('role_dependent_stages_blocked') is False, run_id
+        assert actual.get('workbench'), 'the restart lost the evidence links'
+        assert (directory/'analysis'/actual['analysis_id']/'report.md').is_file(), run_id
+        assert actual['report_md']==expected['report_md'], run_id
+        assert actual['report_md'], run_id
     assert requests.get(base+'/api/models',timeout=5).json()==before['models']
     assert any(d.get('transcript',{}).get('segments') for d in before['runs'].values())
-    print('PASS: Docker restart preserved transcript, runs, configuration and artifact hashes (synthetic)')
+    print('PASS: Docker restart preserved transcript, runs, configuration, artifact hashes, '
+          'current AnalysisRevision, role gate, evidence links and report (synthetic)')
     raise SystemExit(0)
 settings=requests.get(base+'/api/models',timeout=5).json()
 profile={'id':'smoke','name':'Synthetic configuration','provider':'test','protocol':'openai_chat',
@@ -74,6 +102,7 @@ if '--save-history' in sys.argv:
     sys.path.insert(0,'/app/tests')
     from test_recording_backbone import Transport
     from aivoicebench.cloud_transport import SignedURLPublication
+    from aivoicebench.diarization import ASRNativeDiarizationProvider
     from aivoicebench.volcengine_asr import VolcengineASRProvider
     from aivoicebench.model_settings import RunProviders
     from aivoicebench.import_pipeline import import_recording
@@ -84,12 +113,34 @@ if '--save-history' in sys.argv:
         source=Path(tmp)/'synthetic.wav'
         with wave.open(str(source),'wb') as f:
             f.setparams((1,2,16000,0,'NONE','not compressed'));f.writeframes(b'\x00\x00'*16000)
-        import_recording(source,history_path.parent,synthetic=True,
+        directory,manifest=import_recording(source,history_path.parent,synthetic=True,
             profile={'device':'Synthetic ASR restart fixture'},
-            providers=RunProviders(asr=lambda root:VolcengineASRProvider(root,'secret-canary',
-                publication=publication,transport=transport)),model_snapshot={'synthetic_transport':True})
+            providers=RunProviders(
+                asr=lambda root:VolcengineASRProvider(root,'secret-canary',
+                    publication=publication,transport=transport),
+                # Speaker clusters are derived from the preserved recognition response
+                # (no second cloud call), exactly as the configured product route does.
+                diarization=lambda root:ASRNativeDiarizationProvider()),
+            model_snapshot={'synthetic_transport':True})
+    run_id=manifest['run_id']
+    # One saved human decision set creates a second AnalysisRevision through the real
+    # Web API, so the restart check covers the *current* revision, the role gate, the
+    # evidence links and the report instead of only the first anonymous import.
+    review=requests.get(base+'/api/runs/'+run_id+'/role-review',timeout=5).json()
+    clusters=[c['speaker_id'] for c in review['clusters']]
+    assert clusters,'the synthetic Run produced no speaker cluster to review'
+    mapping={cluster:('tester' if index==0 else 'unknown')
+             for index,cluster in enumerate(clusters)}
+    confirmed=requests.post(base+'/api/runs/'+run_id+'/role-review',
+        json={'mapping':mapping,'reviewer':'container-smoke',
+              'reason':'synthetic container restart check'},timeout=60)
+    confirmed.raise_for_status()
+    confirmed=confirmed.json()
+    assert (confirmed.get('role_review') or {}).get('status')=='complete_review',confirmed.get('role_review')
     runs=requests.get(base+'/api/runs',timeout=5).json()['runs']
     before={'runs':{r['run_id']:requests.get(base+'/api/runs/'+r['run_id'],timeout=5).json() for r in runs},
-            'models':requests.get(base+'/api/models',timeout=5).json()}
+            'models':requests.get(base+'/api/models',timeout=5).json(),
+            'revisions':{run_id:confirmed['analysis_id']},
+            'decisions':{run_id:mapping}}
     history_path.write_text(json.dumps(before,ensure_ascii=False),encoding='utf-8')
-    print('Saved synthetic Run/transcript state for restart verification')
+    print('Saved synthetic Run/transcript state and confirmed revision for restart verification')

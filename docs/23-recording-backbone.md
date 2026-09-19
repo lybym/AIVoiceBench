@@ -203,3 +203,13 @@ M1 真实验收至少需要：
 ## Stage states and evidence limits
 
 默认 Web/CLI 没有角色真值。Provider-estimated cluster boundaries 保留来源；ambiguous overlap 不强制分配。用户必须人工确认每个 cluster；保存 mapping 前不生成 role-dependent 指标与正式测试报告。`write_import_report()` 按 AnalysisRevision 产出该 revision 的 `report.json`/`report.md`：角色确认未完成时它是显式 provisional 的导入/诊断报告（并列出 role-dependent 轨道为何不可用），人工确认后同一入口产出含证据分级与证据索引的报告。人工确认、new revision 与重分析由 [#95](https://github.com/lybym/AIVoiceBench/issues/95) 跟踪，报告与证据工作台由 [#11](https://github.com/lybym/AIVoiceBench/issues/11) 跟踪；新 revision 不会覆盖旧 revision 的报告。
+
+## 集成范围与验证边界（#27）
+
+[#27](https://github.com/lybym/AIVoiceBench/issues/27) 把已实现的处理器收敛为**一条**可恢复的 Recording Analysis 编排，并把它与读取面、持久化和失败恢复一起验证。实现边界：
+
+1. **一个编排器。** `import_pipeline.py` 的 `import_recording()` / `resume_recording()` / `apply_role_mapping()` 是唯一写入 Run/AnalysisRevision 的入口；Web `POST /api/analyze`、`POST /api/runs/{id}/resume`、`POST /api/runs/{id}/role-review` 与 CLI `import` 都调用它，不维护第二套分析语义。阶段序列为 ingestion → normalization → audio_qa → asr → acoustic → diarization → attribution →（`awaiting_role_review` Gate）→ fusion → turns → timeline → judge → metrics → findings → report。
+2. **一个读取投影。** `run_view.py` 是唯一把持久化 Run 投影为 `status`/`analysis_id`/`stages`/证据链接/报告的模块；API 与 CLI 都渲染它（见 [Docker/API](20-docker-api.md)）。任何一方都不得自行推导状态。
+3. **失败保留。** `ImportRun.execute` 与 `_resolve_unrun_stages`/`_retain_failures` 保证失败阶段保留真实原因、未运行阶段发布显式 `insufficient_evidence` envelope、报告阶段照常执行，Run 仍通过 `recording_run_errors` 校验；已注册 artifact 是不可变字节。
+4. **Gate 原因真实。** 阻断 role-dependent 阶段的原因必须区分“等待人工决定”“部分决定”“人工判为 unknown”“已确认但无 acoustic↔speaker 可归属重叠”“Attribution 处理器自身失败”，不得用角色 Gate 掩盖处理器故障（见 [录音导入](14-recording-import.md)）。
+5. **验证分层记录。** 软件验证 = `tests/test_recording_orchestration.py`（全链执行、Gate 与恢复、逐阶段故障注入、冷拷贝重建、CLI/API 一致性与 secret 边界）；容器验证 = CI `Recording backbone container` job 的 `docker restart` + `--verify-history`（当前 revision、阶段账本、role Gate、证据链接、报告）；浏览器验证 = `tests/test_role_review_browser.py` 与 `tests/test_web_workbench.py`（真实页面 + wavesurfer Evidence Workbench）。三者与真实录音/真实云调用验收（[#85](https://github.com/lybym/AIVoiceBench/issues/85)）严格分开，#27 的完成不代表 `real_recording_verified`。

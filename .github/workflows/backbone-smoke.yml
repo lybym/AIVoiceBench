@@ -5,6 +5,7 @@ on:
       - 'aivoicebench/**'
       - 'schemas/**'
       - 'tests/test_recording_backbone.py'
+      - 'tests/test_recording_orchestration.py'
       - 'Dockerfile'
       - 'scripts/docker_smoke.py'
       - '.github/workflows/backbone-smoke.yml'
@@ -25,12 +26,18 @@ jobs:
           docker cp scripts/docker_smoke.py backbone-test:/app/docker_smoke.py
           docker cp tests backbone-test:/app/tests
           docker exec backbone-test python -m pip install httpx
-      - name: Codec and synthetic ASR evidence tests
+      - name: Codec, ASR evidence and orchestration acceptance inside the image
         run: |
           docker exec backbone-test python /app/docker_smoke.py
           docker exec backbone-test python -m unittest discover -s tests -p test_recording_backbone.py -v
+          # The staged Recording Analysis chain, its role gate, its per-stage failure
+          # retention and the CLI/API surface agreement, exercised against the code the
+          # image actually ships (Issue #27).
+          docker exec backbone-test python -m unittest tests.test_recording_orchestration -v
+          # One saved human decision set creates a second AnalysisRevision through the
+          # real Web API, so the restart below has a current revision to reconstruct.
           docker exec backbone-test python /app/docker_smoke.py --save-history
-      - name: Restart and verify persisted runs
+      - name: Restart and verify the persisted revision, ledger, evidence and report
         run: |
           docker restart backbone-test
           docker exec backbone-test python /app/docker_smoke.py --verify-history

@@ -1,6 +1,6 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.5.11
+prd_version: 1.5.12
 status: modularized_for_owner_review
 updated: 2026-09-19
 implementation_baseline: v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd
