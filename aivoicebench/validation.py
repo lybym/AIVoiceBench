@@ -759,6 +759,11 @@ def _result_reference_errors(results, timeline, turns_document):
     evidence = {item.get('evidence_id') for item in timeline.get('evidence') or ()}
     events = {item.get('event_id') for item in timeline.get('events') or ()}
     turns = {item.get('turn_id') for item in (turns_document or {}).get('turns') or ()}
+    # "No Turns document supplied" and "a Turns document declaring no turns" are
+    # different states: when a document is supplied, a non-null turn reference must
+    # resolve in it — otherwise the check would silently disappear exactly when a
+    # Turn-bearing result is validated against an empty turn set.
+    turns_supplied = turns_document is not None
     for index, result in enumerate(results):
         prefix = f'/results/{index}'
         for reference in result.get('evidence_refs') or ():
@@ -768,7 +773,7 @@ def _result_reference_errors(results, timeline, turns_document):
             if reference not in events:
                 errors.append(f'{prefix}/event_refs: unknown timeline event {reference!r}')
         turn_id = result.get('turn_id')
-        if turn_id is not None and turns and turn_id not in turns:
+        if turn_id is not None and turns_supplied and turn_id not in turns:
             errors.append(f'{prefix}/turn_id: unknown turn in the supplied Turns document')
     return errors
 
@@ -813,7 +818,7 @@ def semantic_evidence_errors(records, timeline, turns_document=None):
         if not (record.get('evidence_ids') or record.get('event_ids')):
             errors.append(f'{prefix}: requires evidence or event references')
         turn_id = record.get('turn_id')
-        if turn_id is not None and turns and turn_id not in turns:
+        if turn_id is not None and turns_document is not None and turn_id not in turns:
             errors.append(f'{prefix}/turn_id: unknown turn in the supplied Turns document')
         turn = turns.get(turn_id)
         if turn is not None:

@@ -135,5 +135,28 @@ class FullPipelineJudgeTests(unittest.TestCase):
         self.assertFalse((out / 'judge-results.json').exists())
 
 
+def test_a_run_with_no_acoustic_segments_still_publishes_valid_documents(self):
+        """The abstention branch must write artifacts a consumer can validate."""
+        silent = self.root / 'silence.wav'
+        with wave.open(str(silent), 'wb') as stream:
+            stream.setnchannels(1)
+            stream.setsampwidth(2)
+            stream.setframerate(16000)
+            stream.writeframes(array('h', [0] * 16000).tobytes())
+        out = self.root / 'run-silent'
+        summary = run_full_pipeline(silent, out, provider=MockLLMProvider())
+        self.assertEqual(summary['segment_count'], 0)
+
+        judge_data = self.read(out, 'judge-results.json')
+        self.assertEqual(judge_data['results'], [])
+        self.assertEqual(judge_document_errors(judge_data), [],
+                         'the abstention branch published an unvalidatable Judge artifact')
+        self.assertEqual(self.read(out, 'judge-raw.json')['invocations'], [])
+        findings_document = self.read(out, 'findings.json')
+        self.assertEqual(findings_document['schema_version'], '2.1.0')
+        self.assertEqual(findings_document['findings'], [])
+        self.assertTrue((out / 'report.md').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

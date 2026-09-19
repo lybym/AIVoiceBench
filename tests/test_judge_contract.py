@@ -428,6 +428,19 @@ class JudgeArtifactIntegrityTests(unittest.TestCase):
         errors = judge_document_errors(document, self.timeline, self.turns)
         self.assertTrue(any('unknown turn' in error for error in errors))
 
+    def test_an_empty_turns_document_still_enforces_turn_resolution(self):
+        """A supplied Turns document declaring none is not "no document"."""
+        document = copy.deepcopy(self.document)
+        target = next(item for item in document['results']
+                      if item['turn_id'] is not None)
+        errors = judge_document_errors(document, self.timeline, {'turns': []})
+        self.assertTrue(any('unknown turn' in error for error in errors))
+        # Without a Turns document at all the reference cannot be resolved, so the
+        # check is skipped rather than reporting a false failure.
+        self.assertEqual([error for error in judge_document_errors(document, self.timeline)
+                          if 'unknown turn' in error], [])
+        self.assertTrue(target['turn_id'])
+
     def test_raw_output_hash_must_match(self):
         document = copy.deepcopy(self.document)
         document['invocations'][0]['raw_response_sha256'] = '0' * 64

@@ -397,7 +397,7 @@ def _judge(run, fused_doc, turns_doc, timeline_doc, parent_ids, provider):
     from .llm import LLMJudge
     from .metrics import compute_timeline_metrics
     from .semantic_evidence import semantic_evidence_records
-    from .validation import judge_document_errors, semantic_evidence_errors
+    from .validation import judge_document_errors, semantic_evidence_errors, timeline_errors
 
     if provider is None:
         reason = ('No semantic Judge provider is configured; no semantic judgment was '
@@ -406,6 +406,26 @@ def _judge(run, fused_doc, turns_doc, timeline_doc, parent_ids, provider):
                               parent_ids)
         run.manifest['stages']['judge']['processor'] = {'name': 'none', 'version': '1.0.0'}
         return [output], None, reason
+
+    # An invalid *input* Timeline is not a Judge-contract violation. The Judge can
+    # only scope citations against an evidence graph that resolves, so it abstains
+    # with the timeline's own reason and no provider call is made — blaming the
+    # Judge artifact here would both misdiagnose the cause and turn any upstream
+    # Timeline defect into a blackout of the semantic stage.
+    input_problems = timeline_errors(timeline_doc)
+    if input_problems:
+        judge = LLMJudge(provider)
+        document = judge.judge_document([], run_id=run.manifest['run_id'],
+                                        analysis_id=run.manifest['analysis_id'])
+        reason = 'The Timeline is not valid: ' + input_problems[0]
+        document['abstentions'].append({
+            'dimension': 'timeline', 'turn_id': None, 'response_id': None,
+            'state': 'not_eligible', 'reason': reason, 'invocation_id': None})
+        errors = judge_document_errors(document)
+        if errors:
+            _retain_contract_violation(run, 'judge-results', errors, document)
+            raise ValueError('Judge artifact violates its own contract: ' + '; '.join(errors))
+        return _publish_judge_artifacts(run, document, [], parent_ids, reason)
 
     scoped_timeline = dict(timeline_doc)
     scoped_timeline['run_id'] = run.manifest['run_id']
@@ -442,6 +462,15 @@ def _judge(run, fused_doc, turns_doc, timeline_doc, parent_ids, provider):
     # The envelope owns analysis/judge-results.json; the full payload and the raw
     # provider output are registered separately and referenced from it, so a reader
     # can always recover both the accepted and the rejected judgments.
+    return _publish_judge_artifacts(run, document, semantic_records, parent_ids)
+
+
+def _publish_judge_artifacts(run, document, semantic_records, parent_ids, abstention_reason=None):
+    """Register the Judge payload, its raw output and the stage envelope.
+
+    Shared by the judged path and the "nothing to judge" path so an abstaining Run
+    still publishes a document a consumer can validate.
+    """
     document_path = run.analysis / 'judge-document.json'
     write_json(document_path, document)
     document_id = run.register(document_path, 'judge-results', list(parent_ids), 'judge:1.0.0')
@@ -452,8 +481,9 @@ def _judge(run, fused_doc, turns_doc, timeline_doc, parent_ids, provider):
     raw_id = run.register(raw_path, 'judge-raw', [document_id], 'judge:1.0.0')
     observed = [result for result in document['results'] if result['status'] == 'observed']
     status = 'complete' if observed else 'insufficient_evidence'
-    reason = (None if observed else
-              'No judge result was accepted; every judgment abstained or was rejected')
+    reason = None if observed else (abstention_reason or
+                                    'No judge result was accepted; every judgment abstained '
+                                    'or was rejected')
     output = run.envelope('judge-results', status,
                           reason or 'Schema-constrained Judge results with preserved raw output',
                           _envelope_data(document, status), list(parent_ids) + [document_id, raw_id],

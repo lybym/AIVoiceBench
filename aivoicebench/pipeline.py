@@ -21,7 +21,7 @@ from .findings import CURRENT_FINDING_VERSION, generate_findings_document
 from .report import render_report
 from .runner import write_json
 from .semantic_evidence import semantic_evidence_records
-from .validation import judge_document_errors, semantic_evidence_errors
+from .validation import judge_document_errors, semantic_evidence_errors, timeline_errors
 
 
 def run_full_pipeline(source, output, profile=None, *, provider=None,
@@ -126,22 +126,37 @@ def run_full_pipeline(source, output, profile=None, *, provider=None,
             else:
                 llm_provider = UnavailableLLMProvider()
         judge = LLMJudge(llm_provider)
-        judge_data = judge.evaluate(fused_doc, turns_doc, metrics_result, timeline,
-                                    run_id=out.name)
-        _assert_valid(judge_document_errors(judge_data, timeline, turns_doc),
-                      'Judge artifact violates its own contract')
+        # An invalid *input* Timeline is not a Judge-contract violation: the Judge
+        # can only scope citations against an evidence graph that resolves, so it
+        # abstains with the timeline's own reason and no provider call is made.
+        input_problems = timeline_errors(timeline)
+        if input_problems:
+            reason = 'The Timeline is not valid: ' + input_problems[0]
+            judge_data = judge.judge_document([], run_id=out.name)
+            judge_data['abstentions'].append({
+                'dimension': 'timeline', 'turn_id': None, 'response_id': None,
+                'state': 'not_eligible', 'reason': reason, 'invocation_id': None})
+            _assert_valid(judge_document_errors(judge_data),
+                          'Judge artifact violates its own contract')
+            semantic_records, semantic_abstentions = [], []
+        else:
+            judge_data = judge.evaluate(fused_doc, turns_doc, metrics_result, timeline,
+                                        run_id=out.name)
+            _assert_valid(judge_document_errors(judge_data, timeline, turns_doc),
+                          'Judge artifact violates its own contract')
+            # 5. Constrained semantic evidence feeds the canonical semantic metrics.
+            semantic_records, semantic_abstentions = semantic_evidence_records(
+                judge_data, timeline, turns_doc)
+            _assert_valid(semantic_evidence_errors(semantic_records, timeline, turns_doc),
+                          'Semantic evidence violates the engine contract')
+            judge_data['abstentions'] = ((judge_data.get('abstentions') or [])
+                                         + semantic_abstentions)
         write_json(out / 'judge-results.json', judge_data)
         write_json(out / 'judge-raw.json', {
             'schema_version': '1.0.0', 'run_id': out.name,
             'invocations': judge_data['invocations'],
         })
 
-        # 5. Constrained semantic evidence feeds the canonical semantic metrics.
-        semantic_records, semantic_abstentions = semantic_evidence_records(
-            judge_data, timeline, turns_doc)
-        _assert_valid(semantic_evidence_errors(semantic_records, timeline, turns_doc),
-                      'Semantic evidence violates the engine contract')
-        judge_data['abstentions'] = (judge_data.get('abstentions') or []) + semantic_abstentions
         metrics_result = compute_timeline_metrics(timeline, semantic_evidence=semantic_records)
         # Legacy semantic-latency names remain unverified anchors; the engine keeps
         # them abstained rather than resurrecting model-authored milliseconds.

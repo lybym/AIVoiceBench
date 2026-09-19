@@ -201,7 +201,51 @@ class FindingAbstentionTests(unittest.TestCase):
         document = self.document(self.candidate(attribution_confidence=1.0))
         self.assertLess(document['findings'][0]['attribution_confidence'], 1.0)
 
-    def test_invalid_timeline_produces_no_finding_at_all(self):
+    def test_a_candidate_without_a_cited_event_cannot_claim_a_turn(self):
+        """Evidence carries no turn binding; an event is what binds a Finding.
+
+        Without this rule a candidate citing one turn's evidence while linking a
+        metric of another turn would publish a multi-turn Finding resting on a
+        single turn's evidence.
+        """
+        timeline = dialogue_timeline()
+        timeline['evidence'].append(make_evidence('EVD-OTHER', 8000))
+        timeline['events'].append(make_event('EVT-OTHER', 'device_speech_start', 8000,
+                                             ['EVD-OTHER'], turn_id='TURN-0002'))
+        timeline['events'].sort(key=lambda event: event['start_ms'])
+        timeline['status'] = 'partial'
+        timeline['gaps'] = [{'reason': 'fixture: second turn is out of scope',
+                             'required_evidence': 'speaker_diarization_or_human_review',
+                             'start_ms': 8000, 'end_ms': 30000}]
+        metrics = copy.deepcopy(self.metrics)
+        metrics['metrics'] = [dict(metric, turn_id='TURN-0002') for metric in metrics['metrics']]
+        document = generate_findings_document(
+            [self.candidate(evidence_refs=['EVD-DEVICE-START'], event_refs=[])],
+            timeline, metrics, RUN_ID)
+        self.assertEqual(document['findings'], [])
+        self.assertIn('cites no event that resolves', document['abstentions'][0]['reason'])
+
+    def test_a_linked_metric_cannot_add_a_turn_the_evidence_does_not_reach(self):
+        timeline = dialogue_timeline()
+        timeline['evidence'].append(make_evidence('EVD-OTHER', 8000))
+        timeline['events'].append(make_event('EVT-OTHER', 'device_speech_start', 8000,
+                                             ['EVD-OTHER'], turn_id='TURN-0002'))
+        timeline['events'].sort(key=lambda event: event['start_ms'])
+        timeline['status'] = 'partial'
+        timeline['gaps'] = [{'reason': 'fixture: second turn is out of scope',
+                             'required_evidence': 'speaker_diarization_or_human_review',
+                             'start_ms': 8000, 'end_ms': 30000}]
+        metrics = copy.deepcopy(self.metrics)
+        metrics['metrics'] = [dict(metric, turn_id='TURN-0002') for metric in metrics['metrics']]
+        # The candidate cites only TURN-0001's event, while every metric belongs to
+        # TURN-0002. Nothing may be linked, and no second turn may be declared.
+        document = generate_findings_document(
+            [self.candidate(event_refs=['EVT-DEVICE-START'])], timeline, metrics, RUN_ID)
+        for finding in document['findings']:
+            self.assertEqual(finding['turn_ids'], ['TURN-0001'])
+            self.assertEqual(finding['metric_ids'], [])
+
+    def test_an_invalid_timeline_produces_no_finding_at_all(self):
         document = generate_findings_document([self.candidate()], {'events': []},
                                               self.metrics, RUN_ID)
         self.assertEqual(document['findings'], [])

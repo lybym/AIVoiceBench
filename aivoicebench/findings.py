@@ -98,6 +98,17 @@ def generate_findings_document(judge_results, timeline, metrics_result, run_id=N
                 candidate, 'insufficient_evidence',
                 'the candidate cites no evidence that resolves in the Timeline'))
             continue
+        # A Finding is bound to a Turn through the events it cited. Timeline
+        # evidence carries no turn binding of its own, so a candidate that cites
+        # evidence but no event cannot establish which Turn it is about — and
+        # without that, metric linkage could not be turn-scoped either. Abstain
+        # rather than publish a Finding that claims a Turn it has no event for.
+        if not _event_turns(event_ids, events_by_id):
+            abstentions.append(_abstention(
+                candidate, 'insufficient_evidence',
+                'the candidate cites no event that resolves in the Timeline, so it cannot be '
+                'bound to a Turn'))
+            continue
         metric_ids = _linked_metric_ids(candidate, metrics_by_id, events_by_id, event_ids)
         turn_ids = _turn_ids(candidate, event_ids, metric_ids, events_by_id, metrics_by_id)
         if not turn_ids:
@@ -166,36 +177,44 @@ def _linked_metric_ids(candidate, metrics_by_id, events_by_id, event_ids):
     measured by another turn's numbers.
     """
     decision = candidate.get('decision') or ''
-    candidate_turns = {events_by_id[event_id].get('turn_id') for event_id in event_ids
-                       if events_by_id[event_id].get('turn_id')}
+    candidate_turns = _event_turns(event_ids, events_by_id)
     linked = []
     for metric_id, metric in metrics_by_id.items():
         if not _metric_relevant(metric, decision):
             continue
         if metric.get('status') not in ('observed', 'pass', 'fail'):
             continue
-        if candidate_turns and metric.get('turn_id') not in candidate_turns:
+        # Always turn-scoped: a candidate reaches this point with at least one
+        # cited event, so an unscoped link is never possible.
+        if metric.get('turn_id') not in candidate_turns:
             continue
         linked.append(metric_id)
     return sorted(linked)
 
 
+def _event_turns(event_ids, events_by_id):
+    """Turns the cited events belong to.
+
+    Timeline evidence itself carries no turn binding, so an event is the only
+    object through which a Finding can establish *which* Turn it is about.
+    """
+    return {events_by_id[event_id].get('turn_id') for event_id in event_ids
+            if events_by_id[event_id].get('turn_id')}
+
+
 def _turn_ids(candidate, event_ids, metric_ids, events_by_id, metrics_by_id):
     """Turns the Finding is actually bound to.
 
-    The candidate's own turn is only accepted when it is also reachable from the
-    cited events or linked metrics; otherwise the claim would not be traceable.
+    Only turns established by the cited events count. A linked metric cannot add
+    a turn the evidence does not reach, because that would let one turn's numbers
+    declare another turn's Finding. The candidate's own turn is accepted only when
+    the cited events already establish it.
     """
-    reachable = {events_by_id[event_id].get('turn_id') for event_id in event_ids
-                 if events_by_id[event_id].get('turn_id')}
-    reachable |= {metrics_by_id[metric_id].get('turn_id') for metric_id in metric_ids
-                  if metrics_by_id[metric_id].get('turn_id')}
+    reachable = _event_turns(event_ids, events_by_id)
     claimed = candidate.get('turn_id')
     if claimed and claimed not in reachable:
         return []
-    if claimed:
-        reachable.add(claimed)
-    return sorted(turn for turn in reachable if turn)
+    return sorted(reachable)
 
 
 def _build_finding(candidate, run_id, case_id, execution_kind, evidence_ids, event_ids,
