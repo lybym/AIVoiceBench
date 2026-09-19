@@ -632,16 +632,35 @@ function wbLinkedRows(regionId) {
     });
     wbTranscriptRows(document).forEach(row => {
         if (wbTranscriptRegionId(document, row) === regionId) {
-            // The backend decides whether the served region *is* the utterance's interval or
-            // merely contains it; the panel repeats that rather than implying equality.
-            const relation = row.region_span_matches === false
-                ? ' · 容器区间（该话语为其子区间，非等值）'
-                : '';
+            // The backend decides which relation holds between the served region and the
+            // utterance; the panel repeats exactly that one and never upgrades a partial
+            // overlap into containment.
+            const relation = wbRegionRelationLabel(row);
             rows.push(['转写', wbButton(wbValueText(row.segment_id), regionId),
                 wbValueText(row.text) + relation]);
         }
     });
     return rows;
+}
+/**
+ * The served relation between a transcript segment and its region, as a label.
+ *
+ * The backend distinguishes equality, containment, partial overlap and an unknown
+ * span, so the panel must not collapse them: asserting "the utterance is a sub-interval"
+ * for a region that is actually *narrower* than the utterance states the opposite of
+ * what the evidence says.
+ */
+function wbRegionRelationLabel(row) {
+    switch (row.region_basis) {
+        case 'fused_acoustic_segment_container':
+            return ' · 容器区间（该话语为其子区间，非等值）';
+        case 'fused_acoustic_segment_partial_overlap':
+            return ' · 区间与话语部分重叠（非包含）';
+        case 'fused_acoustic_segment_span_unknown':
+            return ' · 区间关系未知（缺少可解析区间）';
+        default:
+            return '';
+    }
 }
 /** The synchronized evidence panel: every value is a served field, verbatim. */
 function wbRenderEvidence(row) {

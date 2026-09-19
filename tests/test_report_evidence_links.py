@@ -229,6 +229,20 @@ class ReportEvidenceIntegrityTests(unittest.TestCase):
         self.assertEqual(payload['evidence_integrity']['unreadable_documents'], [])
         self.assertNotIn('证据链不完整', markdown)
 
+    def test_a_skipped_duplicate_record_is_banner_reported_too(self):
+        # A skipped record makes the chain incomplete exactly as an unreadable document
+        # does: the banner must match `evidence_integrity.status`, not just one cause.
+        path = self.run.analysis / 'timeline.json'
+        timeline = json.loads(path.read_text(encoding='utf-8'))
+        timeline['data']['events'] = [timeline['data']['events'][0], dict(timeline['data']['events'][0])]
+        path.write_text(json.dumps(timeline, ensure_ascii=False), encoding='utf-8')
+        payload, markdown = self._write()
+        self.assertEqual(payload['evidence_integrity']['status'], 'incomplete')
+        self.assertEqual(payload['evidence_integrity']['skipped_records'],
+                         [{'document': 'timeline.json', 'region_id': 'event:EVT-1'}])
+        self.assertIn('证据链不完整', markdown)
+        self.assertIn('因 id 重复未能发布', markdown)
+
     def _write(self):
         _, payload, _ = write_import_report(self.run)
         return payload, (self.run.analysis / 'report.md').read_text(encoding='utf-8')

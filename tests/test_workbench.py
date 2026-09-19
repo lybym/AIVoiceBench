@@ -630,12 +630,44 @@ class DuplicateRecordTests(unittest.TestCase):
         path = self.analysis() / 'acoustic-segments.json'
         acoustic = json.loads(path.read_text(encoding='utf-8'))
         duplicate = dict(acoustic['data']['segments'][0], start_ms=1000.0, end_ms=2000.0)
-        acoustic['data']['segments'] = [acoustic['data']['segments'][0], duplicate]
+        acoustic['data']['segments'].append(duplicate)
         write_json(path, acoustic)
         document = build_workbench(self.directory)
         self.assertEqual([region['region_id'] for region in document['regions']
-                          if region['track_id'] == 'acoustic'], ['acoustic:SEG-1'])
+                          if region['track_id'] == 'acoustic'],
+                         ['acoustic:SEG-1', 'acoustic:SEG-2'])
         self.assertEqual(document['abstentions']['skipped_records'][0]['region_id'], 'acoustic:SEG-1')
+
+    def test_a_skipped_duplicate_does_not_withdraw_the_surviving_links(self):
+        # Skipping a duplicate must cost only the duplicated record. When the skip also
+        # cleared the index entry for the *surviving* region, every transcript row in the
+        # revision lost its link — including rows whose own region was never duplicated.
+        path = self.analysis() / 'acoustic-segments.json'
+        acoustic = json.loads(path.read_text(encoding='utf-8'))
+        acoustic['data']['segments'].append(
+            dict(acoustic['data']['segments'][0], end_ms=1900.0))
+        write_json(path, acoustic)
+        document = build_workbench(self.directory)
+        rows = {row['segment_id']: row for row in document['transcript']}
+        self.assertEqual(rows['ASR-0001']['region_id'], 'acoustic:SEG-1')
+        self.assertEqual(rows['ASR-0001']['region_basis'], 'fused_acoustic_segment')
+        # ...and an unrelated utterance keeps its own, untouched region.
+        self.assertEqual(rows['ASR-0002']['region_id'], 'acoustic:SEG-2')
+
+    def test_a_skipped_duplicate_turn_does_not_withdraw_the_surviving_turn(self):
+        path = self.analysis() / 'turns.json'
+        turns = json.loads(path.read_text(encoding='utf-8'))
+        turns['data']['turns'].append(dict(turns['data']['turns'][0]))
+        write_json(path, turns)
+        document = build_workbench(self.directory)
+        published = [region['region_id'] for region in document['regions'] if region['track_id'] == 'turn']
+        self.assertEqual(published, ['turn:TURN-1'])
+        # The rows mirror the persisted array (two records share one id); both name the
+        # single region that was actually published, and the duplicate is a named gap.
+        self.assertEqual([row['region_id'] for row in document['turns']],
+                         ['turn:TURN-1', 'turn:TURN-1'])
+        self.assertEqual([gap['region_id'] for gap in document['abstentions']['skipped_records']],
+                         ['turn:TURN-1'])
 
     def test_a_duplicate_id_leaves_the_rest_of_the_evidence_navigable(self):
         path = self.analysis() / 'timeline.json'
@@ -697,6 +729,26 @@ class TranscriptContainmentTests(unittest.TestCase):
         self.assertEqual(row['region_basis'], 'fused_acoustic_segment')
         self.assertTrue(row['region_span_matches'])
 
+    def test_a_narrower_acoustic_region_is_not_claimed_as_a_container(self):
+        # Fusion matches on the largest positive overlap, so a *shorter* acoustic segment
+        # can pair with a longer utterance. Calling that a container would assert the
+        # opposite of what the evidence says.
+        path = self.analysis() / 'acoustic-segments.json'
+        acoustic = json.loads(path.read_text(encoding='utf-8'))
+        acoustic['data']['segments'][0]['end_ms'] = 500.0
+        write_json(path, acoustic)
+        transcript_path = self.analysis() / 'transcript.json'
+        transcript = json.loads(transcript_path.read_text(encoding='utf-8'))
+        transcript['data']['segments'][0]['end_ms'] = 2500.0
+        write_json(transcript_path, transcript)
+        row = build_workbench(self.directory)['transcript'][0]
+        self.assertEqual(row['region_id'], 'acoustic:SEG-1')
+        self.assertEqual(row['region_basis'], 'fused_acoustic_segment_partial_overlap')
+        self.assertFalse(row['region_span_matches'])
+        region = next(item for item in build_workbench(self.directory)['regions']
+                      if item['region_id'] == 'acoustic:SEG-1')
+        self.assertLess(region['end_ms'], row['end_ms'])
+
 
 class ConsumedDocumentIntegrityTests(unittest.TestCase):
     """Documents the projection consumes are all integrity-checked, not just the named ones."""
@@ -723,6 +775,46 @@ class ConsumedDocumentIntegrityTests(unittest.TestCase):
         # invention, and the broken document is still named as a gap.
         self.assertEqual(document['audio']['duration_ms'], 3000.0)
         self.assertEqual(document['audio']['sample_rate'], 16000)
+
+    def test_a_metric_with_no_resolvable_interval_claims_no_origin(self):
+        # `span_origin` names the reference that actually produced the interval. Left at a
+        # default it would report "from event" for a record that has no interval at all.
+        path = self.analysis() / 'metrics.json'
+        metrics = json.loads(path.read_text(encoding='utf-8'))
+        metrics['data']['metrics'][0].update({'evidence_ids': [], 'event_ids': [], 'turn_id': None})
+        write_json(path, metrics)
+        metric = build_workbench(self.directory)['metrics'][0]
+        self.assertIsNone(metric['span_origin'])
+        self.assertIsNone(metric['region_id'])
+
+    def test_a_finding_with_no_resolvable_interval_claims_no_origin(self):
+        path = self.analysis() / 'findings.json'
+        findings = json.loads(path.read_text(encoding='utf-8'))
+        findings['data']['findings'][0].update({
+            'evidence_ids': [], 'event_ids': [], 'turn_ids': [], 'metric_ids': ['MET-missing']})
+        write_json(path, findings)
+        finding = build_workbench(self.directory)['findings'][0]
+        self.assertIsNone(finding['span_origin'])
+        self.assertIsNone(finding['region_id'])
+        gaps = {(gap['record'], gap['field']): gap
+                for gap in build_workbench(self.directory)['abstentions']['unresolved_references']}
+        self.assertEqual(gaps[('finding', 'metric_ids')]['references'], ['MET-missing'])
+
+    def test_a_metric_citing_a_missing_turn_reports_the_citation_gap(self):
+        path = self.analysis() / 'metrics.json'
+        metrics = json.loads(path.read_text(encoding='utf-8'))
+        metrics['data']['metrics'][0].update({'evidence_ids': [], 'event_ids': [],
+                                             'turn_id': 'TURN-missing'})
+        write_json(path, metrics)
+        document = build_workbench(self.directory)
+        gaps = {(gap['record'], gap['field']): gap
+                for gap in document['abstentions']['unresolved_references']}
+        gap = gaps[('metric', 'turn_ids')]
+        self.assertEqual(gap['cause'], 'not_declared')
+        self.assertEqual(gap['references'], ['TURN-missing'])
+        # A value with no drawable interval must not look like one that simply abstained.
+        self.assertEqual(document['metrics'][0]['value'], METRIC_VALUE)
+        self.assertIsNone(document['metrics'][0]['region_id'])
 
     def test_an_evidence_record_without_an_interval_is_a_named_gap(self):
         path = self.analysis() / 'timeline.json'

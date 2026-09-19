@@ -1,5 +1,16 @@
 # Continuous work log
 
+## 2026-09-19 — Issue #11 Step 05（第三轮）：修复 PR #106 第三轮 Review findings
+
+- **输入与核实。** 第三轮独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5256158705`）对 `5a9d527` 给出 `REQUEST_CHANGES`：第二轮 1 条 P1 + 3 条 P2 经其独立复现确认已修好，本轮新增 1 条 P1 + 4 条 P2。
+- **P1-1（本轮自己引入，已修）。** `acoustic_region_by_segment[segment_id] = builder.add(...)` 无条件覆写索引，而 `add()` 对重复 id 返回 `None`，于是重复记录一出现就把**未重复**的首条记录的关联也清成 `None`——`transcript_link()` 随之对**每一行**返回 `unresolved`，整份 revision 的转写↔区间关联塌掉（复现：加入一条重复 `SEG-1` 后，连 `ASR-0002 → acoustic:SEG-2` 也变为 `None`）。这与本轮刚写进文档的契约相反，正是「一条脏记录拖垮整个 revision」的残留形态。修复：`if region_id:` 守卫（`acoustic` 与 `turn` 两处同形代码一并修），并补两条测试断言「被跳过的重复只影响它自己，其余未重复记录的关联照常解析」。
+- **P2-1「部分重叠」被误标为「包含」。** 确认成立：`matches is False` 一律翻译成 `_container`，而 UI 断言「该话语为其子区间」；但 `fusion.find_asr_overlap` 取最大正重叠，声学区间**比话语更窄**时该断言与事实相反。修复：`region_basis` 细分为等值 / `_container`（真包含：`region.start <= own.start and own.end <= region.end`）/ `_partial_overlap` / `_span_unknown`；前端 `wbRegionRelationLabel` 按后端给出的那一种关系如实标注（部分重叠显示「区间与话语部分重叠（非包含）」），渲染门禁新增第 28 项检查断言部分重叠**不得**被升级为包含。
+- **P2-2 `span_origin` 在无任何区间时仍默认 `'event'`。** 确认成立：finding 只引用不存在的 `metric_id` 时 `span_origin='event'`、`region_id=None`，即用一个来源名描述并不存在的区间。修复：`origin` 初始为 `None`，只在某个来源**真正解析出 span** 时取该来源名。
+- **P2-3 引用缺口覆盖不全（`declared_turns` 成为死代码）。** 确认成立：metric 的 `turn_id` 与 finding 的 `metric_ids` 缺失时不产生任何缺口。修复：metric 的 `turn_id` 纳入 `declared_gaps`；finding 的 `metric_ids` 以「已发布 metric region」为索引纳入缺口检查。补两条测试。
+- **P2-4 `import_report.py` 侧无状态入口未收敛 + 报告横幅条件不全。** 确认成立：上一轮 work log 声称「只保留单一带状态入口」在报告侧并不成立。修复：`_load` 改为 `_load_checked` 的薄包装（全仓仅一个读取实现），消除「两个入口两套语义」；`_availability_section` 的「证据链不完整」横幅改为在 `unreadable_documents` **或** `skipped_records` 非空时出现，与 `evidence_integrity.status` 一致。补一条报告侧测试。
+- **验证（实际执行）。** `tsc -p tsconfig.json` → exit 0；`npm run verify` → exit 0（render gate **28/28**）；`python -m unittest tests.test_workbench tests.test_report_evidence_links tests.test_web_workbench tests.test_web_station_build` → **98 tests, OK**（单模块 54 / 17 / 12 / 15）；全量套件见下。
+- **未验证边界（不升级为完成）。** 真实浏览器波形/seek/zoom/Regions/Timeline 与 ≥5 分钟 Minimap 仍未在本机验证（CI `container` 与 `browser-acceptance` 承担，实机与真实录音由 #85 承载）。本 PR 不声明 `real_recording_verified`。
+
 ## 2026-09-19 — Issue #11 Step 05（第二轮）：修复 PR #106 第二轮 Review findings
 
 - **输入与核实。** 第二轮独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5256000284`）对 `14a1ec094621e4415092c6e4461af89f2f42ed7d` 给出 `REQUEST_CHANGES`：上轮 6 条 finding（3 P1 + 3 P2）经其独立复现**全部确认已真实修复**，本轮新增 1 条 P1 + 3 条 P2。

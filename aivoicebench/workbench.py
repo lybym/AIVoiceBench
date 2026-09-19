@@ -368,7 +368,7 @@ def build_workbench(directory):
         if span is None:
             continue
         segment_id = str(segment.get('segment_id') or f'#{index}')
-        acoustic_region_by_segment[segment_id] = builder.add(_region(
+        region_id = builder.add(_region(
             'acoustic', f'acoustic:{segment_id}', 'acoustic_segment',
             str(segment.get('segment_id') or f'acoustic {index + 1}'), span,
             detail=segment, status=segment.get('status'),
@@ -376,6 +376,11 @@ def build_workbench(directory):
             source={'document': 'acoustic-segments.json', 'document_id': segment.get('document_id'),
                     'processor': acoustic_processor, 'artifact_ref': None,
                     'evidence_ids': [], 'event_ids': [], 'metric_ids': [], 'turn_ids': []}))
+        # A skipped duplicate returns `None`: assigning unconditionally would take the
+        # *surviving* record's link away too, withdrawing every transcript row in the
+        # revision rather than only the duplicated one.
+        if region_id:
+            acoustic_region_by_segment[segment_id] = region_id
 
     diarization_envelope, diarization = load('speaker-assignments')
     diarization_processor = document_processor('speaker-assignments.json')
@@ -444,12 +449,14 @@ def build_workbench(directory):
         turn_spans[turn_id] = span
         if 'turn' in ROLE_DEPENDENT_TRACKS and not gate_complete:
             continue
-        turn_regions[turn_id] = builder.add(_region(
+        turn_region_id = builder.add(_region(
             'turn', f'turn:{turn_id}', 'turn', turn_id, span,
             detail=turn, status=turn.get('status') or 'observed',
             source={'document': 'turns.json', 'document_id': turns_doc.get('document_id'),
                     'processor': document_processor('turns.json'), 'artifact_ref': None,
                     'evidence_ids': [], 'event_ids': [], 'metric_ids': [], 'turn_ids': [turn_id]}))
+        if turn_region_id:  # a skipped duplicate must not withdraw the surviving turn
+            turn_regions[turn_id] = turn_region_id
 
     # --- deterministic / semantic regions that resolve their own span --------
     def resolve_ids(ids, index):
@@ -498,12 +505,22 @@ def build_workbench(directory):
         metric_id = str(metric.get('metric_id') or f'#{index}')
         declared_gaps('metric', metric_id, (
             ('evidence_ids', list(metric.get('evidence_ids') or []), evidence_spans, declared_evidence),
-            ('event_ids', list(metric.get('event_ids') or []), event_spans, declared_events)))
+            ('event_ids', list(metric.get('event_ids') or []), event_spans, declared_events),
+            # `turn_id` is a citation too: a metric that names a turn which is not in this
+            # revision (or has no interval) would otherwise report a value with no
+            # interval and no stated gap.
+            ('turn_ids', [metric['turn_id']] if metric.get('turn_id') else [], turn_spans, declared_turns)))
         spans = resolve_ids(metric.get('evidence_ids') or [], evidence_spans)
-        origin = 'evidence'
+        # `origin` names the reference that actually resolved the interval. It stays
+        # None when nothing resolved: claiming "event" for a record that produced no
+        # span would describe an interval that does not exist.
+        origin = None
+        if spans:
+            origin = 'evidence'
         if not spans:
             spans = resolve_ids(metric.get('event_ids') or [], event_spans)
-            origin = 'event'
+            if spans:
+                origin = 'event'
         if not spans and metric.get('turn_id') in turn_spans:
             spans = [turn_spans[metric['turn_id']]]
             origin = 'turn'
@@ -545,12 +562,17 @@ def build_workbench(directory):
         declared_gaps('finding', finding_id, (
             ('evidence_ids', list(finding.get('evidence_ids') or []), evidence_spans, declared_evidence),
             ('event_ids', list(finding.get('event_ids') or []), event_spans, declared_events),
-            ('turn_ids', list(finding.get('turn_ids') or []), turn_spans, declared_turns)))
+            ('turn_ids', list(finding.get('turn_ids') or []), turn_spans, declared_turns),
+            # A metric the finding cites that produced no region is a citation the
+            # finding cannot draw on, exactly like a missing evidence id.
+            ('metric_ids', list(finding.get('metric_ids') or []),
+             {key: value for key, value in metric_regions.items() if value}, metric_regions)))
         spans = resolve_ids(finding.get('evidence_ids') or [], evidence_spans)
-        origin = 'evidence'
+        origin = 'evidence' if spans else None
         if not spans:
             spans = resolve_ids(finding.get('event_ids') or [], event_spans)
-            origin = 'event'
+            if spans:
+                origin = 'event'
         if not spans:
             for metric_id in finding.get('metric_ids') or []:
                 region = builder.resolved_region(metric_regions.get(str(metric_id)) or '')
@@ -625,11 +647,13 @@ def build_workbench(directory):
         """``(region_id, candidates, basis, span_matches)`` for one transcript segment.
 
         The fused cross-reference states that the utterance and the acoustic segment
-        describe the same audio, but not that their intervals are *equal*: an acoustic
-        segment may cover several utterances, and splitting one at speaker boundaries
-        leaves every piece carrying the parent's ``acoustic_segment_id``. So an
-        utterance navigates to its containing region and the relation is published
-        explicitly, rather than presented as an exact match.
+        describe the same audio, but not that their intervals are *equal*. Fusion picks
+        the largest positive overlap, so an acoustic segment may cover several
+        utterances, a parent split at speaker boundaries leaves every piece citing the
+        parent, and a shorter acoustic segment may simply overlap a longer utterance.
+        Only the first two are containment; the third is a partial overlap, and naming
+        it "container" would assert a relation the evidence does not support. The basis
+        therefore reports which of the three actually holds.
         """
         segment_id = segment.get('segment_id')
         candidates = []
@@ -646,10 +670,14 @@ def build_workbench(directory):
             return None, [], 'unresolved', False
         region = builder.resolved_region(candidates[0])
         own = _span(segment)
-        matches = bool(region is not None and own is not None
-                       and (region['start_ms'], region['end_ms']) == own)
-        basis = 'fused_acoustic_segment' if matches else 'fused_acoustic_segment_container'
-        return candidates[0], candidates, basis, matches
+        if region is None or own is None:
+            return candidates[0], candidates, 'fused_acoustic_segment_span_unknown', False
+        region_span = (region['start_ms'], region['end_ms'])
+        if region_span == own:
+            return candidates[0], candidates, 'fused_acoustic_segment', True
+        if region_span[0] <= own[0] and own[1] <= region_span[1]:
+            return candidates[0], candidates, 'fused_acoustic_segment_container', False
+        return candidates[0], candidates, 'fused_acoustic_segment_partial_overlap', False
 
     transcript_rows = []
     for segment in (transcript.get('segments') or []):

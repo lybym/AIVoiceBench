@@ -447,6 +447,15 @@ const DOCUMENT = {
       start_ms: 30000.0, end_ms: 31000.0, text: '容器区间话语',
       speaker_id: 'speaker_0', speaker_role: null, timestamp_source: 'asr',
     },
+    {
+      // ...and here the region merely *overlaps* the utterance: fusion matches the
+      // largest positive overlap, so the region can be the narrower one. Calling this a
+      // container would assert the opposite of what the evidence says.
+      segment_id: 'ASR-0003', region_id: 'metric:MET-1', region_ids: ['metric:MET-1'],
+      region_basis: 'fused_acoustic_segment_partial_overlap', region_span_matches: false,
+      start_ms: 21000.0, end_ms: 25000.0, text: '部分重叠话语',
+      speaker_id: 'speaker_0', speaker_role: null, timestamp_source: 'asr',
+    },
   ],
   unavailable: [{ stage: 'judge', status: 'insufficient_evidence', reason: '合成缺失' }],
   abstentions: {
@@ -824,6 +833,11 @@ if (servedDocumentPath) {
       row: await vm.runInContext('window.WB.selectEvidence(__turn)', sandbox),
       evidence: elements.get('wb-evidence').innerHTML,
     };
+    sandbox.__partial = 'metric:MET-1';
+    confirmed.partial = {
+      row: await vm.runInContext('window.WB.selectEvidence(__partial)', sandbox),
+      evidence: elements.get('wb-evidence').innerHTML,
+    };
     await vm.runInContext('window.WB.mount(__hostProvisional)', sandbox);
     provisional.regions = seen.regions.slice(confirmed.regions.length);
   } catch (error) {
@@ -920,6 +934,21 @@ if (servedDocumentPath) {
     }
     if (!panel.evidence.includes('容器区间（该话语为其子区间，非等值）')) {
       return 'a containing region must be labelled instead of shown as an exact match';
+    }
+    return true;
+  });
+
+  check('a partial overlap is never labelled as containment', () => {
+    const panel = confirmed.partial;
+    if (!panel) return 'the partial-overlap panel probe did not run';
+    if (!panel.evidence.includes('部分重叠话语')) {
+      return 'the partially overlapping transcript row is missing from the panel';
+    }
+    if (!panel.evidence.includes('区间与话语部分重叠（非包含）')) {
+      return 'a partial overlap must be labelled as such';
+    }
+    if (panel.evidence.includes('容器区间（该话语为其子区间，非等值）')) {
+      return 'a partial overlap was upgraded into containment';
     }
     return true;
   });

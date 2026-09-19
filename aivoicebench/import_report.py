@@ -81,17 +81,6 @@ def _fmt_confidence(value):
     return f'{float(value):.2f}'
 
 
-def _load(analysis, name):
-    path = analysis / name
-    if not path.is_file():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def _load_checked(analysis, name):
     """Return ``(payload, status)`` where status is ``ok``/``missing``/``unreadable``.
 
@@ -109,6 +98,17 @@ def _load_checked(analysis, name):
     if not isinstance(payload, dict):
         return {}, 'unreadable'
     return payload, 'ok'
+
+
+def _load(analysis, name):
+    """Payload of a document, ignoring whether it was absent or unreadable.
+
+    Thin wrapper over :func:`_load_checked` so the report has exactly one read path
+    (and therefore one failure semantics) rather than two entrances a caller has to
+    choose between correctly. Callers that must distinguish the two states — anything
+    whose absence would change what the report claims — use `_load_checked` directly.
+    """
+    return _load_checked(analysis, name)[0]
 
 
 def _data(document, analysis):
@@ -280,9 +280,16 @@ def _availability_section(workbench, payload=None):
                  or workbench.get('evidence_integrity') or {})
     lines = ['', '## 未完成、失败与弃权', '']
     unreadable = integrity.get('unreadable_documents') or []
+    skipped = integrity.get('skipped_records') or []
     if unreadable:
         lines += [f'**证据链不完整：** {", ".join(_text(name) for name in unreadable)} '
                   '存在但无法解析；这些证据从本次投影中缺失，报告不把它们当作“空证据”。', '']
+    if skipped:
+        # Skipped records also make the chain incomplete; say so here rather than only in
+        # the table below, so the banner matches `evidence_integrity.status`.
+        names = ', '.join(sorted({_text(item.get('document')) for item in skipped}))
+        lines += [f'**证据链不完整：** {names} 中有记录因 id 重复未能发布；'
+                  '被跳过的记录不绘制，其区间在本报告中不可复核。', '']
     if not unavailable:
         lines += ['本次 revision 的每个阶段都已 complete。', '']
     else:
