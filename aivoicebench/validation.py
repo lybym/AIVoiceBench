@@ -422,19 +422,25 @@ def _finding_version_errors(finding):
 
 
 def _finding_turn_errors(finding, events, metric_map):
-    """A Finding's declared Turns must be reachable from its own citations."""
+    """A Finding's declared Turns must be reachable from its own cited events.
+
+    Timeline evidence carries no turn binding of its own, so an event is the only
+    object through which a Finding can establish *which* Turn it is about. A
+    linked metric therefore cannot supply the turn: linking one turn's numbers must
+    not let a Finding declare another turn. This is the same rule the generator
+    enforces, so producer and contract agree rather than the generator being
+    silently stricter.
+    """
     turn_ids = finding.get('turn_ids')
     if turn_ids is None:
         return []
     errors = []
     reachable = {events[event_id].get('turn_id') for event_id in finding.get('event_ids') or []
                  if event_id in events and events[event_id].get('turn_id')}
-    reachable |= {metric_map[metric_id].get('turn_id') for metric_id in finding.get('metric_ids') or []
-                  if metric_id in metric_map and metric_map[metric_id].get('turn_id')}
     for turn_id in turn_ids:
         if turn_id not in reachable:
-            errors.append(f'/turn_ids: {turn_id!r} is not reachable from this finding\'s events '
-                          'or metrics; a turn link must be traceable to evidence')
+            errors.append(f'/turn_ids: {turn_id!r} is not reachable from this finding\'s events; '
+                          'a turn link must be traceable to evidence')
     for turn_id in sorted(reachable):
         if turn_id not in turn_ids:
             errors.append(f'/turn_ids: {turn_id!r} is reachable from this finding\'s citations but '

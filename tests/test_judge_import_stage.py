@@ -262,6 +262,58 @@ class JudgeImportStageTests(unittest.TestCase):
                             for error in violation['errors']))
         self.assertEqual(recording_run_errors(manifest, directory), [])
 
+    def test_an_invalid_input_timeline_abstains_instead_of_failing_the_judge(self):
+        """A broken Timeline is an input-evidence problem, not a Judge violation.
+
+        The injected defect is a dangling evidence reference, so the Timeline is
+        invalid regardless of its status — the same class of defect as the
+        unpaired `interrupt_start` a real producer had before Issue #10 closed it.
+        """
+        import aivoicebench.fusion as fusion_module
+        original = fusion_module.detect_events
+        provider = _CountingProvider()
+        directory, manifest = self.import_once(provider)
+
+        def dangling_evidence(fused_doc, turns_doc, **kwargs):
+            events, evidence, status, reason = original(fused_doc, turns_doc, **kwargs)
+            last_start = max((event['start_ms'] for event in events), default=0)
+            events.append({
+                'schema_version': '2.0.0', 'event_id': 'EVT-INJECTED',
+                'run_id': kwargs.get('run_id'), 'case_id': kwargs.get('case_id'),
+                'turn_id': 'TURN-0001', 'response_id': 'RESP-0001',
+                'type': 'interrupt_start',
+                'start_ms': last_start, 'end_ms': last_start, 'source': 'derived',
+                'observation_scope': 'black_box', 'confidence': None,
+                'confidence_source': None, 'uncertainty_ms': None,
+                'evidence_ids': ['EVD-DOES-NOT-EXIST']})
+            return events, evidence, status, reason
+
+        fusion_module.detect_events = dangling_evidence
+        try:
+            directory, manifest, _review = self.confirm_roles(
+                directory, {'1': 'tester', '2': 'device'}, RunProviders(judge=provider))
+        finally:
+            fusion_module.detect_events = original
+
+        files = self.analysis_files(directory, manifest)
+        stage = manifest['stages']['judge']
+        # The stage ran and abstained; it did not fail, and no provider was called.
+        self.assertIn(stage['status'], ('partial', 'insufficient_evidence'))
+        self.assertEqual(provider.calls, 0)
+        self.assertIn('judge-document.json', files)
+        document = files['judge-document.json']
+        abstention = next(item for item in document['abstentions']
+                          if item['dimension'] == 'timeline')
+        self.assertEqual(abstention['state'], 'not_eligible')
+        self.assertIn('unknown evidence_id', abstention['reason'])
+        self.assertEqual(files['judge-results.json']['status'], 'insufficient_evidence')
+        self.assertIsNone(files['judge-results.json']['data'])
+        self.assertIn('The Timeline is not valid', files['judge-results.json']['reason'])
+        # Findings still publishes an (empty) document and abstains explicitly.
+        self.assertEqual(files['findings.json']['status'], 'insufficient_evidence')
+        self.assertEqual(files['findings-document.json']['findings'], [])
+        self.assertEqual(recording_run_errors(manifest, directory), [])
+
     def test_run_without_confirmed_roles_never_reaches_the_judge(self):
         """Anonymous clusters still wait for a human decision, not a model."""
         provider = _CountingProvider()

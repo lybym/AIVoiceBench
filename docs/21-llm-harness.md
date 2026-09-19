@@ -42,6 +42,7 @@ JudgeResult 1.0.0（validated）+ Invocation（raw response + provider/model/pro
 - **一次判定一个消费者。** `barge_in_compliance` 只在 Turn 真的带 `interrupt_start` 事件时请求（`semantic_evidence.has_interrupt_evidence`），这与 PRD-M006 判定适用性的谓词是同一条；不会出现"花了一次 provider 调用但没有任何 metric 消费该记录"的情况，也不会用 turn flag 与事件两种规则推导同一语义。
 - 保存角色 revision（`apply_role_mapping`）会**重跑** Judge/Findings 并沿用同一 provider 配置；确认角色不会静默丢掉语义阶段或换掉模型。
 - 引擎校验自身产物：Judge artifact 违反自身契约时该阶段 `failed`，并把被拒文档与逐条校验错误写成 `retained_diagnostic`（`judge-results-contract-violation.json`）便于诊断；不合格文档绝不发布为证据。
+- **输入 Timeline 无效 ≠ Judge 违约。** 两个引擎都先跑 `timeline_errors`：无效输入不调用任何 provider，发布一份带 `dimension: timeline` 弃权记录的 JudgeResults，并以 Timeline 自身的原因弃权。此时**信封** `judge-results.json` 的状态是 `insufficient_evidence`，而 manifest 阶段状态是 `partial`——这是 `ImportRun.execute` 既有的有损映射（非空 reason → `partial`，与 `metrics` 阶段一致），代表"跑过但未产出完整结果"，真正的证据状态以信封为准。envelope 与 stage 的这一区别在本 Issue 的 PR 说明与 work log 中都被明确写出，不把 `partial` 读成"未完成"。
 
 ## 原始输出与 provenance
 

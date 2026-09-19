@@ -55,7 +55,11 @@ Run records the rejected document and its errors as a `retained_diagnostic`.
 
 - 2.1.0 requires `turn_ids` (possibly empty) and adds an optional, nullable
   `analysis_id`. Every declared turn must be reachable from the finding's own
-  events/metrics, and every reachable turn must be declared.
+  **events**, and every reachable turn must be declared. Timeline evidence has no
+  turn binding of its own, so an event is the only object that can establish which
+  Turn a Finding is about: a linked metric cannot supply the turn, or one turn's
+  numbers could declare another turn's Finding. The generator and
+  `finding_errors` enforce the same rule.
 - 2.0.0 must not carry `turn_ids`/`analysis_id`; a 2.0.0 document is re-emitted
   under 2.1.0 with `migrate_finding_document()`, which resolves `turn_ids` from
   the Timeline when one is supplied and leaves the list empty — never guessed —

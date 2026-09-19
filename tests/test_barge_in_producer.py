@@ -70,18 +70,46 @@ class ProducerBargeInTests(unittest.TestCase):
         self.events = events
         self.timeline = generate_timeline(self.fused, self.turns, events, evidence, status,
                                           reason, run_id=RUN_ID, case_id=CASE_ID)
+        self.interrupted_response_id = next(
+            turn['interrupted_response_id'] for turn in self.turns['turns']
+            if turn.get('has_interruption'))
 
     def test_the_producer_emits_a_paired_interrupt_interval(self):
-        """An interruption must not leave the Timeline invalid."""
+        """An interruption must not leave the Timeline invalid, and must bind right.
+
+        The binding is the property at risk: `metrics._barge_in_stop` (PRD-M005)
+        finds the interrupted response through the interrupt event's own
+        `response_id` inside the *interrupted* turn's event group, so a rebind to
+        the interrupting turn — or to `response_id: null`, as the legacy example
+        does — must fail here rather than silently produce no M005 value.
+        """
         interrupt_events = [event for event in self.events
                             if event['type'].startswith('interrupt')]
         self.assertEqual([event['type'] for event in interrupt_events],
                          ['interrupt_start', 'interrupt_end'])
         self.assertEqual(interrupt_events[0]['start_ms'], 2500)
         self.assertEqual(interrupt_events[1]['start_ms'], 3000)
+        for event in interrupt_events:
+            self.assertEqual(event['turn_id'], 'TURN-0001',
+                             'the interruption belongs to the interrupted turn')
+            self.assertEqual(event['response_id'], self.interrupted_response_id,
+                             'PRD-M005 needs the interrupted response id')
+            self.assertEqual(event['evidence_ids'], ['EV-0003'])
         self.assertEqual(turns_errors(self.turns), [])
         self.assertEqual(timeline_errors(self.timeline), [],
                          'the producer emitted a barge-in Timeline that is not valid')
+
+    def test_canonical_prd_m005_uses_that_binding(self):
+        """The binding is only correct if the canonical engine can consume it."""
+        result = compute_timeline_metrics(self.timeline)
+        stop = [metric for metric in result['metrics']
+                if metric['name'] == 'barge_in_stop_latency_ms']
+        self.assertTrue(stop)
+        self.assertEqual(stop[0]['prd_ref'], 'PRD-M005')
+        self.assertEqual(stop[0]['status'], 'observed')
+        # Interruption onset (2500) to the end of the interrupted old response (5000).
+        self.assertEqual(stop[0]['value'], 2500)
+        self.assertEqual(stop[0]['units'] if 'units' in stop[0] else stop[0]['unit'], 'ms')
 
     def test_producer_timeline_drives_prd_m006_to_an_observed_value(self):
         self.assertTrue(has_interrupt_evidence(self.turns['turns'][0], self.timeline))

@@ -134,8 +134,7 @@ class FullPipelineJudgeTests(unittest.TestCase):
         # Nothing that failed its contract was published as evidence.
         self.assertFalse((out / 'judge-results.json').exists())
 
-
-def test_a_run_with_no_acoustic_segments_still_publishes_valid_documents(self):
+    def test_a_run_with_no_acoustic_segments_still_publishes_valid_documents(self):
         """The abstention branch must write artifacts a consumer can validate."""
         silent = self.root / 'silence.wav'
         with wave.open(str(silent), 'wb') as stream:
@@ -156,6 +155,59 @@ def test_a_run_with_no_acoustic_segments_still_publishes_valid_documents(self):
         self.assertEqual(findings_document['schema_version'], '2.1.0')
         self.assertEqual(findings_document['findings'], [])
         self.assertTrue((out / 'report.md').exists())
+
+
+def test_an_invalid_input_timeline_abstains_instead_of_blaming_the_judge(self):
+        """An invalid *input* Timeline is not a Judge-contract violation."""
+        import aivoicebench.pipeline as pipeline_module
+        original = pipeline_module.generate_timeline
+
+        def invalid_timeline(*args, **kwargs):
+            timeline = original(*args, **kwargs)
+            # A dangling evidence reference makes the Timeline invalid regardless of
+            # its status, without touching the Judge's own output.
+            timeline['events'].append({
+                'schema_version': '2.0.0', 'event_id': 'EVT-INJECTED',
+                'run_id': timeline['run_id'], 'case_id': timeline['case_id'],
+                'turn_id': None, 'response_id': None, 'type': 'interrupt_start',
+                'start_ms': 0, 'end_ms': 0, 'source': 'derived',
+                'observation_scope': 'black_box', 'confidence': None,
+                'confidence_source': None, 'uncertainty_ms': None,
+                'evidence_ids': ['EVD-DOES-NOT-EXIST'],
+            })
+            return timeline
+
+        provider = _CountingProvider()
+        pipeline_module.generate_timeline = invalid_timeline
+        try:
+            out = self.root / 'run-invalid-timeline'
+            run_full_pipeline(self.source, out, provider=provider)
+        finally:
+            pipeline_module.generate_timeline = original
+
+        # No provider call was made for an unusable Timeline.
+        self.assertEqual(provider.calls, 0)
+        judge_data = self.read(out, 'judge-results.json')
+        self.assertEqual(judge_data['results'], [])
+        abstention = next(item for item in judge_data['abstentions']
+                          if item['dimension'] == 'timeline')
+        self.assertEqual(abstention['state'], 'not_eligible')
+        self.assertIn('EVD-DOES-NOT-EXIST', abstention['reason'])
+        self.assertEqual(judge_document_errors(judge_data), [])
+        self.assertTrue(self.read(out, 'metrics.json')['metrics'] == [])
+        self.assertEqual(self.read(out, 'findings.json')['findings'], [])
+
+
+class _CountingProvider(MockLLMProvider):
+    """Fixture that records whether the Judge was invoked at all."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def complete(self, system_prompt, user_prompt, dimension, context):
+        self.calls += 1
+        return super().complete(system_prompt, user_prompt, dimension, context)
 
 
 if __name__ == '__main__':

@@ -7,8 +7,12 @@ Finding schema 2.0.0 links the first-class Evidence 1.0.0 catalog in a valid Tim
 Finding **2.1.0** (Issue #10) adds explicit Turn linkage:
 
 - `turn_ids` records the Turns the finding is bound to. Each declared turn must be
-  reachable from the finding's own linked events or metrics, and every reachable
-  turn must be declared — a Turn link is never asserted independently of evidence.
+  reachable from the finding's own linked **events**, and every reachable turn must
+  be declared — a Turn link is never asserted independently of evidence. Timeline
+  evidence carries no turn binding of its own, so an event is the only object
+  through which a Finding can establish which Turn it is about; a linked metric
+  cannot supply it, otherwise one turn's numbers could declare another turn's
+  Finding. The generator and this validator apply the same rule.
 - `analysis_id` (nullable) records the AnalysisRevision the finding was produced
   in. `case_id` stays required and non-null in both versions: a Finding resolves
   against the persisted Timeline, which always carries a Case identity, so a
