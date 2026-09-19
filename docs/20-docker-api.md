@@ -72,6 +72,7 @@ host
 | GET | `/api/runs/{run_id}/audio` | 标准化音频回放 |
 | POST | `/api/runs/{run_id}/resume` | 显式 retry ASR；不是通用重分析接口 |
 | GET | `/api/runs/{run_id}/role-review` | 人工说话人角色复核面：匿名聚类、代表性区间、转写片段、试听范围、已保存 revision 与 diff |
+| GET | `/api/runs/{run_id}/evidence-workbench` | Evidence Workbench 投影：region/track、Gate 状态、指标与 Findings、不可用/弃权阶段、`evidence_integrity`、provenance；坐标全部来自持久化证据（同 `AnalysisResponse.workbench`）。**三态契约**：Run 目录缺 manifest、缺 `analysis_id` 或没有任何可读证据 → **404**（“该记录没有可复核的证据工作台”）；证据存在但投影失败（例如投影层自身出错）→ **500**（“证据工作台投影失败：该 Run 的证据存在但无法投影”），绝不折叠成 404；投影成功 → **200**，并把该 revision 的全部缺口放在 `unavailable`（`not_run`/`incomplete`/`failed`/`unreadable`/`invalid`）与 `evidence_integrity`（`unreadable_documents`、`skipped_records`）中 |
 | POST | `/api/runs/{run_id}/role-review` | 保存 `{mapping, reviewer, reason}`：要求每个聚类都有明确决定（`unknown` 有效），创建不可变 revision 并重跑 Attribution 及下游；不调用 Provider |
 | GET / POST | `/api/models` | 脱敏模型配置；长期凭据留在 server |
 | GET | `/api/voice-test/capabilities/{mode}` | 能力预检；不默认发起付费探测 |

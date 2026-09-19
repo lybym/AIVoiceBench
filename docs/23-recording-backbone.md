@@ -202,4 +202,4 @@ M1 真实验收至少需要：
 
 ## Stage states and evidence limits
 
-默认 Web/CLI 没有角色真值。Provider-estimated cluster boundaries 保留来源；ambiguous overlap 不强制分配。用户必须人工确认每个 cluster；保存 mapping 前不生成 role-dependent 指标与正式测试报告。`write_import_report()` 只可作为 provisional import-stage 状态报告；人工确认、new revision、重分析和 final report 由 [#95](https://github.com/lybym/AIVoiceBench/issues/95) 跟踪。
+默认 Web/CLI 没有角色真值。Provider-estimated cluster boundaries 保留来源；ambiguous overlap 不强制分配。用户必须人工确认每个 cluster；保存 mapping 前不生成 role-dependent 指标与正式测试报告。`write_import_report()` 按 AnalysisRevision 产出该 revision 的 `report.json`/`report.md`：角色确认未完成时它是显式 provisional 的导入/诊断报告（并列出 role-dependent 轨道为何不可用），人工确认后同一入口产出含证据分级与证据索引的报告。人工确认、new revision 与重分析由 [#95](https://github.com/lybym/AIVoiceBench/issues/95) 跟踪，报告与证据工作台由 [#11](https://github.com/lybym/AIVoiceBench/issues/11) 跟踪；新 revision 不会覆盖旧 revision 的报告。

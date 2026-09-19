@@ -62,7 +62,7 @@ Browser Station 不保存长期 Provider Credential，不负责 Judge、Metric �
 
 ### 2.1 Browser Station 实现语言：TypeScript
 
-2026-09-17 决定将 Browser Station 的实现语言收敛为 **TypeScript**，2026-09-19 由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 完成等价迁移：手写源码为 `web/src/{app,models,voice_test,pcm_capture_worklet}.ts`（AudioWorklet 全局作用域声明见 `audioworklet-globals.d.ts`），编译产物 `aivoicebench/static/*.js` 仍由现有 FastAPI/Docker 静态链交付，`index.html`/`app.css` 仍是手写资产。
+2026-09-17 决定将 Browser Station 的实现语言收敛为 **TypeScript**，2026-09-19 由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 完成等价迁移：手写源码为 `web/src/{app,models,voice_test,workbench,pcm_capture_worklet}.ts`（AudioWorklet 全局作用域声明见 `audioworklet-globals.d.ts`；`workbench.ts` 由 #11 加入，是 Evidence Workbench 渲染层），编译产物 `aivoicebench/static/*.js` 仍由现有 FastAPI/Docker 静态链交付，`index.html`/`app.css` 仍是手写资产，第三方浏览器库见 `aivoicebench/static/vendor/`。
 
 这项迁移的目的不是更换 UI 框架，而是让 Browser Station 作为 Measurement Agent 时的高风险状态具有静态类型约束，重点包括：
 
@@ -174,6 +174,10 @@ highlight Evidence Region
 
 wavesurfer.js 只负责显示和交互，不产生 Measurement Event，也不能成为正式时间真值。Region 必须来自 AIVoiceBench Artifact/Evidence 的 `audio_relative_ms`。
 
+**当前实现状态（Issue #11）。** vendored 集成已经落地：固定 wavesurfer.js **7.12.12**（BSD-3-Clause，npm tarball sha1 `f402d88f56091d09e045c98f48075859b37719dd`），逐字节复制到 `aivoicebench/static/vendor/`，由 `vendor/VENDOR.json` 记录每个文件的 sha256；浏览器只从同源 `/static/vendor/...` 惰性加载 core → regions → timeline（≥5 分钟录音再启用 minimap），不使用 CDN，也不在运行时请求任何第三方库。渲染层是 `web/src/workbench.ts` 编译出的 `workbench.js`（`window.WB`），Region 直接使用后端 `regions[].start_sec`/`end_sec` 且禁用 drag/resize，`unknown`/`uncertain`/`provisional` 区间使用独立配色，指标值原样显示（`null` → `N/A`），角色依赖证据不可用时只渲染 provisional 横幅与后端 `unavailable` 列表。确定性门禁见 `scripts/verify-workbench-render.mjs`（已接入 `npm run verify`，随 CI 的 `contracts` job 执行；并支持 `--document <workbench.json>` 用真实 `build_workbench()` 输出复跑渲染不变量）、`scripts/smoke-web-station.mjs` 与 `tests/test_web_workbench.py`。转写行只在后端发布了指向已发布 region 的 `region_id` 时可导航：该关联由后端从 fused segment 的 `asr_segment_id`→`acoustic_segment_id` 交叉引用解析（ASR utterance id 与声学片段 id 是独立命名空间），前端不按 `detail.segment_id` 同名匹配。
+
+**仍未验证。** Docker 镜像内真实浏览器中的波形渲染、seek/zoom、Regions/Timeline 交互与 Minimap 启用尚未验收（由 #85 承载）。因此本组件状态是“vendor 与投影集成已实现（software/artifact 级证据）”，不是完成的浏览器验收，也不构成 `real_recording_verified`。
+
 - wavesurfer.js: https://github.com/katspaugh/wavesurfer.js
 
 ## 7. 推荐数据流
@@ -233,6 +237,6 @@ TypeScript 迁移本身不是 UI 框架升级，也不扩大 Browser Station 的
 3. TEN VAD Browser Adapter 与 RMS fallback 并存并可观测；
 4. Silero VAD Server Adapter 接入 Recording Analysis，并能对 Measurement Audio replay；
 5. 火山 speaker separation 请求/响应契约完成真实服务验证；
-6. wavesurfer.js Evidence UI 可由 Finding/Event/Metric 定位音频；
+6. 🟡 wavesurfer.js Evidence UI 集成已落地（vendor 7.12.12、同源 `/static/vendor/`、`web/src/workbench.ts` → `workbench.js`，Finding/Metric/Event/转写 → Region seek + highlight + 证据面板同步）；**真实浏览器 Docker 验收未完成**（#85），尚不能判定“可由 Finding/Event/Metric 定位音频”已验收；
 7. 使用目标 AI 玩具真实录音建立人工标注集，比较 boundary error、speaker coverage/abstention 和最终指标稳定性；
 8. 达不到门槛时再引入额外 diarization/source-separation 组件。

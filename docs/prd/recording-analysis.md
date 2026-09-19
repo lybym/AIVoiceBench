@@ -16,8 +16,8 @@
 | F010 | Structured LLM Harness/Judge 受 schema、Evidence、版本与失败状态约束 | ✅ implemented（软件）：ImportRun 在配置了 Judge 且角色已确认时执行完整 Judge，结果通过 schema + Evidence/Event/Turn 引用校验后才成为语义证据（#10）；**真实 provider 调用与真实验收未完成**，仍由 #85 承载 |
 | F011 | Findings 必须关联指标、证据、置信度、影响和复核状态 | ✅ implemented（软件）：Finding 2.1.0 显式记录 Turn/Event/Metric/Evidence 链接，缺可解析证据引用只记录弃权、不生成 Finding（#10）；真实录音复核待验收 |
 | F012 | 人工修订为新 revision，不覆盖机器原件；可重算并显示差异 | ✅ implemented（软件）：角色 mapping 每次保存生成不可变 `role-review/role-mapping-REV-NNNN.json` 与新 AnalysisRevision，旧 artifact 字节不变并显示 diff（#95） |
-| F013 | 生成 Markdown/JSON 报告，保留结论至证据的回溯路径 | 🟡 partial；指标可用性原因已进入报告（#94），正式报告仍需人工角色确认后才产出（#95） |
-| F014 | Web/CLI 统一分析工作台；Web Evidence Workbench 使用 wavesurfer.js 展示 waveform、Regions/Timeline 与点击证据定位，不自研 waveform renderer | 🟡 partial；人工角色确认面板与区间试听已实现（#95），wavesurfer.js 集成 planned |
+| F013 | 生成 Markdown/JSON 报告，保留结论至证据的回溯路径 | 🟡 partial；报告已改为按 AnalysisRevision 产出，含证据分级（deterministic/semantic/human_reviewed）、证据索引、阶段失败/弃权与 provenance（#11）；正式 role-dependent 结论仍需人工角色确认（#95），真实录音报告待验收 |
+| F014 | Web/CLI 统一分析工作台；Web Evidence Workbench 使用 wavesurfer.js 展示 waveform、Regions/Timeline 与点击证据定位，不自研 waveform renderer | 🟡 partial；wavesurfer.js 工作台（waveform + Regions/Timeline + Finding/Metric/Event 定位 + 同步 transcript/role/provenance）与人工角色确认面板已实现（#11/#95）；Docker/远端 Chrome 实机与真实录音视觉复核待完成（#85） |
 | F015 | 后端托管的 Provider 配置、路由、快照与调用审计；目标由服务器侧外置 `providers.yaml` / `storage.yaml` 提供非敏感配置，密钥仅以 env/secret reference 解析 | 🟡 partial；#87 已实现外置 YAML loader/validator + SQLite migration/conflict + Docker read-only mount，software_verified；真实部署验收待完成 |
 | F016 | File ASR、Streaming ASR 与 TTS 按生命周期分家族；File ASR 支持 `inline | object_storage | auto`，Streaming ASR 不经过对象存储；浏览器不持有长期凭据 | 🟡 partial；#87 已实现 transport selection + TOS adapter，software_verified；真实云/设备待验收 |
 | F017 | 同一原件可产生新 AnalysisRevision；旧产物、配置和差异可追溯 | ✅ implemented（软件）：角色确认与 ASR retry 都生成新 AnalysisRevision，旧产物保留并在 `role_review.diff` 显示变化（#95） |
@@ -69,6 +69,24 @@ wavesurfer.js 负责 Web 端波形与区间交互：
 - 同步展示 transcript、speaker role、confidence、uncertainty、processor/model provenance。
 
 wavesurfer.js 不产生 Event，不改变 Artifact，也不是声学时间真值；所有 Region 坐标必须来自 AIVoiceBench Evidence/Timeline。
+
+实现口径（#11）：
+
+- `aivoicebench/workbench.py` 是唯一的投影点：它把当前 AnalysisRevision 的持久化文档投影为 `regions`/`tracks`/`metrics`/`findings`/`unavailable`/`abstentions`/`evidence_integrity`/`provenance`，并通过 `GET /api/runs/{run_id}/evidence-workbench` 与 `AnalysisResponse.workbench` 发布。
+- Region 坐标：acoustic/speaker/turn/event 直接取持久化区间；metric/finding 取其**自身引用**的证据区间包络（`evidence_ids` → `event_ids` → `turn_ids` 固定优先级），并记录 `envelope_of` 与引用列表。这是坐标解析，不是重新计算指标。记录声明了却无法解析的引用会进入 `abstentions.unresolved_references`，不静默丢弃。
+- 转写行到 Region 的关联由后端解析并作为 `region_id` 发布：ASR utterance id（`ASR-####`）与声学片段 id（`SEG-*`）是**互相独立的证据命名空间**，二者唯一的持久化对应关系来自 fused segment 的 `asr_segment_id`/`acoustic_segment_id` 交叉引用。前端不得按命名约定猜 id；一个 utterance 对应多个声学片段时发布候选列表并保持不可点击，不任选其一。
+- 该交叉引用只保证「同一段音频」，不保证「区间相等」：fusion 取**最大正重叠**，因此一个声学片段可以覆盖多句转写、父片段按说话人切开后每个子片段仍带父片段的 `acoustic_segment_id`，也可能出现声学区间**比话语更窄**的部分重叠。因此转写行同时发布 `region_basis`（`fused_acoustic_segment` 等值 / `fused_acoustic_segment_container` 真包含 / `fused_acoustic_segment_partial_overlap` 非包含的部分重叠 / `fused_acoustic_segment_span_unknown` 缺可解析区间 / `ambiguous` / `unresolved`）与 `region_span_matches`；只有真正的包含才可标注为「容器区间」，部分重叠不得被升级为包含关系。
+- 同一份文档内出现重复记录 id 时，重复项不绘制、不抛出，而是作为显式缺口进入 `unavailable`（`status: invalid`）与 `abstentions.skipped_records`，`evidence_integrity.status = incomplete`。一条脏记录不得让整个 revision 变成不可复核。
+- `region.source.processor` 取自发布该文档的 artifact（stage envelope 按 schema 不含 `processor`），不再恒为 null。
+- 毫秒到秒只在后端换算一次（`start_sec`/`end_sec`），浏览器只绘制后端给的值，不重算边界。
+- 角色确认未完成时，role-dependent 轨道（turn/metric/finding）**不发布**，并在 `unavailable` 中给出 `awaiting_role_review` 原因；解析出的区间仅以 `resolved_span` 供审计。浏览器只呈现明确标注的 provisional 视图。
+- 所有被投影消费的文档（含 `audio-metadata.json` 与 model configuration 快照）走同一次带状态检查的读取；存在但无法解析时在 `unavailable` 中给出 `status: unreadable` 条目并置 `evidence_integrity.status = incomplete`：损坏证据不得与“该阶段没有证据”同形。
+- 记录声明却无法解析的引用进入 `abstentions.unresolved_references`，并用 `cause` 区分 `not_declared`（引用了本 revision 不存在的 id）与 `no_interval`（记录存在但没有可用区间）；覆盖 metric 的 `evidence_ids`/`event_ids`/`turn_id` 与 finding 的 `evidence_ids`/`event_ids`/`turn_ids`/`metric_ids`。`span_origin` 只在某个来源**真正解析出区间**时才取该来源名，全程无区间时为 `null`——不得用一个默认来源名描述并不存在的区间。
+- 跳过重复记录时，只有被跳过的那一条失去发布；其余未重复记录（含转写行到 region 的关联）必须保持可解析。
+- `unavailable` 条目标注类别：`not_run`（尚未执行）与 `incomplete`/`failed`（已尝试但未产出结论）；`abstentions.stages` 只包含后者。
+- `GET /api/runs/{run_id}/evidence-workbench` 为三态契约：Run/Revision 缺席 → 404；证据存在但投影失败 → 500（不得折叠为 404）；投影成功 → 200 并自带全部缺口。
+- wavesurfer.js 7.12.12 以同源 `/static/vendor/` 方式随仓库分发（版本、来源与逐文件 SHA256 记录在 `VENDOR.json`），不依赖 CDN，浏览器不持有 Provider 凭据。
+- `scripts/verify-workbench-render.mjs` 已接入 `npm run verify`；除合成文档外支持 `--document <workbench.json>`，用真实 `build_workbench()` 输出校验渲染契约。
 
 ## 共同验收边界
 

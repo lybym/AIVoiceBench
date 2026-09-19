@@ -26,8 +26,12 @@ The gates shell out to `scripts/verify-web-build.mjs` and
 the browser tests, an absent toolchain is a skip by default - and a hard failure
 when ``VT_REQUIRE_WEB_BUILD=1``, which CI sets so "the build gate was skipped" can
 never be reported as a pass.
+
+The vendored wavesurfer.js bundle that the Evidence Workbench loads from
+`/static/vendor/` is guarded separately by `tests/test_web_workbench.py`.
 """
 
+import contextlib
 import json
 import os
 import shutil
@@ -54,14 +58,57 @@ ENTRY_POINTS = {
     'app.ts': 'app.js',
     'models.ts': 'models.js',
     'voice_test.ts': 'voice_test.js',
+    'workbench.ts': 'workbench.js',
     'pcm_capture_worklet.ts': 'pcm_capture_worklet.js',
 }
 
 #: Static assets that stayed hand-written because they are not browser logic.
+#: The vendored wavesurfer.js bundle lives in `static/vendor/` and is covered by
+#: `tests/test_web_workbench.py`.
 NON_COMPILED_ASSETS = ('index.html', 'app.css')
 
 #: Compiled entry points the page loads with <script src>.
-PAGE_SCRIPTS = ('app.js', 'models.js', 'voice_test.js')
+PAGE_SCRIPTS = ('app.js', 'models.js', 'voice_test.js', 'workbench.js')
+
+
+@contextlib.contextmanager
+def _scratch_directory(label):
+    """A writable scratch directory for one gate run.
+
+    `tempfile.TemporaryDirectory()` is deliberately not used. Some CI/container
+    sandboxes hand a `tempfile`-created directory an ACL that denies even its own
+    creator, which turns "the gate could not write its runner script" into a reported
+    test failure instead of a skip. The repository already keeps its throwaway build
+    tree under the git-ignored `.test-tmp/` (see `scripts/verify-web-build.mjs`), so
+    the scratch tree lives there and the mechanism is unchanged: a runner script is
+    written to disk, and Node writes its structured JSON result to a second file.
+    """
+    root = REPO_ROOT / '.test-tmp' / label
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def _outside_repo_scratch_directory(label):
+    """A scratch root that Node's module resolution cannot climb out of.
+
+    `verify-web-build.mjs` resolves the pinned `typescript` through Node's directory
+    walk, so the "the compiler is missing" probe has to live *outside* this checkout;
+    inside it, `node_modules/typescript` would be found in an ancestor directory and
+    the probe would stop testing what it claims to test. The directory is created with
+    `os.makedirs` rather than `tempfile.mkdtemp` for the same sandbox reason as above.
+    """
+    root = Path(tempfile.gettempdir()) / f'aivoicebench-{label}'
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def _unavailable(message):
@@ -86,16 +133,26 @@ def _run_node(script_path, cwd):
 
 
 def _node_json(script_path):
-    """Return the structured result of a Browser Station Node gate."""
-    with tempfile.TemporaryDirectory() as tmp:
-        output = Path(tmp) / 'result.json'
-        runner = Path(tmp) / 'run.mjs'
+    """Return the structured result of a Browser Station Node gate.
+
+    The nested Node call writes its stdout/stderr straight to a file descriptor
+    rather than to a pipe. Piped stdio is denied to child processes in some sandboxes,
+    and a denied pipe would silently turn a real gate result into an empty string -
+    which is exactly the "a gate that did not run must not look like a pass" failure
+    this module exists to prevent.
+    """
+    with _scratch_directory('web-station-node-gate') as scratch:
+        output = scratch / 'result.json'
+        status = scratch / 'status.txt'
+        runner = scratch / 'run.mjs'
         runner.write_text(
             "import { spawnSync } from 'node:child_process';\n"
-            "import { writeFileSync } from 'node:fs';\n"
+            "import { closeSync, openSync, writeFileSync } from 'node:fs';\n"
+            f"const fd = openSync({json.dumps(str(output))}, 'w');\n"
             f"const r = spawnSync(process.execPath, [{json.dumps(str(script_path))}, '--json'],"
-            f" {{ cwd: {json.dumps(str(REPO_ROOT))}, encoding: 'utf8' }});\n"
-            f"writeFileSync({json.dumps(str(output))}, (r.stdout || '') + (r.stderr || ''));\n",
+            f" {{ cwd: {json.dumps(str(REPO_ROOT))}, stdio: ['ignore', fd, fd] }});\n"
+            "closeSync(fd);\n"
+            f"writeFileSync({json.dumps(str(status))}, String(r.status));\n",
             encoding='utf-8')
         _run_node(runner, REPO_ROOT)
         text = output.read_text(encoding='utf-8') if output.exists() else ''
@@ -183,8 +240,8 @@ class BrowserStationBuildGateTests(unittest.TestCase):
 
     def test_missing_compiler_fails_the_gate_instead_of_passing_silently(self):
         """A missing TypeScript install must fail; 'no compiler' is not a pass."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+        with _outside_repo_scratch_directory('missing-compiler-probe') as tmp:
+            root = tmp
             (root / 'scripts').mkdir()
             (root / 'web' / 'src').mkdir(parents=True)
             (root / 'package.json').write_text('{"name":"probe","private":true}', encoding='utf-8')
@@ -197,32 +254,36 @@ class BrowserStationBuildGateTests(unittest.TestCase):
             shutil.copyfile(VERIFY_SCRIPT, root / 'scripts' / 'verify-web-build.mjs')
             (root / '.test-tmp').mkdir()
 
-            result_path = root / 'result.json'
+            result_path = root / 'probe-output.json'
+            status_path = root / 'probe-status.txt'
             runner = root / 'runner.mjs'
             runner.write_text(
                 "import { spawnSync } from 'node:child_process';\n"
-                "import { writeFileSync } from 'node:fs';\n"
+                "import { closeSync, openSync, writeFileSync } from 'node:fs';\n"
+                f"const fd = openSync({json.dumps(str(result_path))}, 'w');\n"
                 "const r = spawnSync(process.execPath, ['./scripts/verify-web-build.mjs', '--json'],"
-                " { cwd: process.cwd(), encoding: 'utf8',"
-                "   env: { ...process.env, NODE_PATH: 'nonexistent' } });\n"
-                "writeFileSync('./result.json', JSON.stringify({"
-                " code: r.status, out: (r.stdout || '') + (r.stderr || '') }));\n",
+                " { cwd: process.cwd(), env: { ...process.env, NODE_PATH: 'nonexistent' },"
+                "   stdio: ['ignore', fd, fd] });\n"
+                "closeSync(fd);\n"
+                f"writeFileSync({json.dumps(str(status_path))}, String(r.status));\n",
                 encoding='utf-8')
             _node, completed = _run_node(runner, root)
             self.assertEqual(completed.returncode, 0, 'the probe runner must not fail')
-            payload = json.loads(result_path.read_text(encoding='utf-8'))
-            self.assertNotEqual(payload['code'], 0,
+            code = int((status_path.read_text(encoding='utf-8').strip() or '0'))
+            out = result_path.read_text(encoding='utf-8') if result_path.exists() else ''
+            self.assertNotEqual(code, 0,
                                 'verify-web-build.mjs must exit non-zero without TypeScript')
-            self.assertIn('typescript_not_installed', payload['out'])
+            self.assertIn('typescript_not_installed', out)
 
 
 class BrowserStationDeliveryContractTests(unittest.TestCase):
     """The compiled artifacts must keep the contracts the browser tests rely on."""
 
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self._patch = patch.object(api, 'OUTPUT_ROOT', Path(self._tmp.name))
+        self._scratch = _scratch_directory('web-station-delivery')
+        self._tmp = self._scratch.__enter__()
+        self.addCleanup(self._scratch.__exit__, None, None, None)
+        self._patch = patch.object(api, 'OUTPUT_ROOT', Path(self._tmp))
         self._patch.start()
         self.addCleanup(self._patch.stop)
         self.client = TestClient(api.app)
@@ -289,6 +350,26 @@ class BrowserStationDeliveryContractTests(unittest.TestCase):
         self.assertIn('roleReviewNote(data)', script)
         self.assertIn('role-save', script)
         self.assertIn('请为每个说话人聚类选择角色（未知也是明确选择）', script)
+
+    def test_workbench_contract_survives_compilation(self):
+        """The compiled Evidence Workbench keeps its published surface (PRD-F014).
+
+        This is the artifact half of the contract; the projection behaviour itself is
+        checked by `scripts/verify-workbench-render.mjs` and the vendored library's
+        provenance by `tests/test_web_workbench.py`.
+        """
+        script = self.client.get('/static/workbench.js').text
+        for token in ('window.WB', 'regionsFromDocument', 'metricRows', 'findingRows',
+                      'eventRows', 'turnRows', 'transcriptRows', 'selectEvidence',
+                      'playerState', 'mount', 'unmount', 'state'):
+            self.assertIn(token, script, f'compiled workbench lost {token!r}')
+        # Evidence is re-read from the backend, never recomputed in the browser.
+        self.assertIn('evidence-workbench', script)
+        # The library is loaded lazily from the same origin, never from a CDN.
+        self.assertIn('/static/vendor/', script)
+        # No credential literal may be baked into the renderer.
+        for token in ('ARK_API_KEY=', 'OPENAI_API_KEY=', 'sk-', 'Bearer ', 'api_key'):
+            self.assertNotIn(token, script)
 
     def test_model_settings_contract_survives_compilation(self):
         script = self.client.get('/static/models.js').text
