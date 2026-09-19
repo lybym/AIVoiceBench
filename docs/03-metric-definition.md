@@ -141,7 +141,35 @@ Chinese ASR suites may classify numbers, dates, proper nouns, Chinese/English mi
 
 ## Structured semantic Judge contract
 
-For context, instruction and new-response intent, return a boolean decision or insufficient_evidence, criterion/rubric ID and version, explicit evidence IDs/intervals, rationale and confidence. Log provider/model/Prompt/config version separately through judge_profile and run snapshot. Evaluate only supplied observations. A Judge cannot return technical timings or invent internal cause. Preserve human sampling for subjective judgments; serious safety remains human-reviewed. The concrete Judge output schema and adapter are Issue #10.
+For context, instruction and new-response intent, return a boolean decision or insufficient_evidence, criterion/rubric ID and version, explicit evidence IDs/intervals, rationale and confidence. Log provider/model/Prompt/config version separately through judge_profile and run snapshot. Evaluate only supplied observations. A Judge cannot return technical timings or invent internal cause. Preserve human sampling for subjective judgments; serious safety remains human-reviewed.
+
+The Judge output schema (`JudgeResult 1.0.0`) and its adapter are implemented by
+Issue #10 (`aivoicebench/llm.py`, `aivoicebench/semantic_evidence.py`):
+
+- **Timing is selected, not authored.** `meaningful_response` and
+  `feedback_detection` report milliseconds that come from a measured anchor the
+  provider selected by id from the boundaries that already exist inside the
+  judged Turn. A model-authored millisecond, an unknown anchor id, or an anchor
+  without evidence is rejected; without a usable anchor the result abstains.
+  `derived` boundaries (fusion's `response_start`/`response_end`) are not
+  measured anchors.
+- **A boolean semantic verdict is eligible evidence only with its criterion.**
+  `semantic_response` (PRD-M003) and `barge_in_compliance` (PRD-M006) require a
+  boolean decision, `criterion_id`/`criterion_version`, a `judge_profile` and at
+  least one reference that resolves inside the judged Turn. Anything less is an
+  explicit abstention with a reason — never a `false` value.
+- **Citations are scoped.** A per-turn judgment cites only that turn's events and
+  their evidence; a run-level judgment may cite any object of the same Timeline.
+  The adapter expands a selected event to that event's own evidence, so the
+  metric invariant "event evidence must be included in metric evidence_ids" holds
+  by construction.
+- A suspected cause always carries `requires_log_verification=true` and a
+  non-certain `attribution_confidence`; nothing here promotes it to a verified
+  root cause.
+
+Raw provider output, provider/model/prompt/criteria provenance and every
+abstention are preserved on the Judge artifact, and credential-shaped material is
+rejected before publication (PRD-N004).
 
 ## Aggregation
 

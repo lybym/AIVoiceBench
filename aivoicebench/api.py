@@ -414,7 +414,8 @@ async def save_role_review(run_id: str, request: Request):
 
     def apply():
         with run_lock(directory):
-            apply_role_mapping(directory, mapping, reviewer, reason=reason, model_snapshot=snapshot)
+            apply_role_mapping(directory, mapping, reviewer, reason=reason,
+                               model_snapshot=snapshot, providers=_providers)
 
     try:
         await run_in_threadpool(apply)

@@ -6,7 +6,9 @@ from pathlib import Path
 import sys
 import wave
 
-from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors, transcript_errors, acoustic_errors, fused_errors, turns_errors, judge_result_errors
+from .validation import (case_errors, load_document, timeline_errors, metric_errors,
+                         finding_errors, transcript_errors, acoustic_errors, fused_errors,
+                         turns_errors, judge_result_errors, judge_document_errors)
 
 
 def _load_json_document(path):
@@ -119,6 +121,8 @@ def main(argv=None):
     judge.add_argument('fused', type=Path, help='Path to fused-segments JSON')
     judge.add_argument('--turns', type=Path, required=True, help='Path to turns JSON')
     judge.add_argument('--metrics', type=Path, required=True, help='Path to metrics JSON')
+    judge.add_argument('--timeline', type=Path, help='Path to EventTimeline JSON; required for an '
+                                                    'evidence-linked semantic verdict')
     judge.add_argument('--output', type=Path, default=Path('artifacts/judge'))
     judge.add_argument('--provider', choices=['none', 'mock'], default='none', help='LLM provider (mock for testing)')
     audio = subparsers.add_parser('audio', help='Optional explicit audio station commands')
@@ -180,9 +184,10 @@ def main(argv=None):
     revise_cmd.add_argument('--reason', default='')
     validate = subparsers.add_parser('validate', help='Validate TestCase JSON/YAML without hardware or network')
     validate.add_argument('paths', nargs='+', type=Path)
-    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding', 'transcript', 'acoustic-segments', 'fused-segments', 'turns', 'judge-result'], default='test-case')
+    validate.add_argument('--kind', choices=['test-case', 'timeline', 'metric', 'finding', 'transcript', 'acoustic-segments', 'fused-segments', 'turns', 'judge-result', 'judge-results'], default='test-case')
     validate.add_argument('--timeline', type=Path, help='Required context for metric references')
     validate.add_argument('--metrics', nargs='*', type=Path, default=[], help='MetricResult files referenced by a finding')
+    validate.add_argument('--turns', type=Path, help='Turns document; resolves turn references of a Judge artifact')
     validate.add_argument('--regression-case', type=Path, help='Linked TestCase for a frozen regression candidate')
     args = parser.parse_args(argv)
     if args.command == 'import':
@@ -360,8 +365,10 @@ def main(argv=None):
         from .llm import judge_pipeline, MockLLMProvider, UnavailableLLMProvider
         try:
             provider = MockLLMProvider() if args.provider == 'mock' else UnavailableLLMProvider()
-            results, invocations = judge_pipeline(
-                args.fused, args.turns, args.metrics, args.output, provider)
+            document = judge_pipeline(
+                args.fused, args.turns, args.metrics, args.output, provider,
+                timeline_path=args.timeline)
+            results = document['results']
             observed = [r for r in results if r['status'] == 'observed']
             insufficient = [r for r in results if r['status'] == 'insufficient_evidence']
             print(f'{len(results)} judge results ({len(observed)} observed, {len(insufficient)} insufficient)')
@@ -369,6 +376,8 @@ def main(argv=None):
                 val = ''
                 if r.get('meaningful_response_start_ms') is not None:
                     val = f' ms_start={r["meaningful_response_start_ms"]}'
+                elif r.get('semantic_decision') is not None:
+                    val = f' decision={r["semantic_decision"]}'
                 elif r.get('score') is not None:
                     val = f' score={r["score"]}'
                 elif r.get('intent_label'):
@@ -376,6 +385,9 @@ def main(argv=None):
                 elif r.get('finding_severity'):
                     val = f' severity={r["finding_severity"]} layer={r.get("suspected_layer")}'
                 print(f'  {r["dimension"]}: {r["decision"]} [{r["status"]}]{val} conf={r["confidence"]}')
+            for abstention in document['abstentions']:
+                print(f'  abstained: {abstention["dimension"]} ({abstention["state"]}) — '
+                      f'{abstention["reason"]}')
             return 0 if observed else 2
         except (OSError, ValueError) as error:
             print(f'JUDGE ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
@@ -389,7 +401,8 @@ def main(argv=None):
             observations = [f for f in findings if f['kind'] == 'observation']
             print(f'{len(findings)} findings ({len(defects)} defects, {len(observations)} observations)')
             for f in findings:
-                print(f'  [{f["severity"] or "—"}] {f["title"]} ({f["status"]})')
+                print(f'  [{f["severity"] or "—"}] {f["title"]} ({f["status"]}) '
+                      f'turns={",".join(f["turn_ids"]) or "—"}')
             return 0 if findings else 2
         except (OSError, ValueError) as error:
             print(f'FINDINGS ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
@@ -490,6 +503,11 @@ def main(argv=None):
                 errors = turns_errors(load_document(path))
             elif args.kind == 'judge-result':
                 errors = judge_result_errors(load_document(path))
+            elif args.kind == 'judge-results':
+                errors = judge_document_errors(
+                    load_document(path),
+                    load_document(args.timeline) if args.timeline else None,
+                    load_document(args.turns) if args.turns else None)
             elif args.kind == 'finding':
                 errors = finding_errors(load_document(path), load_document(args.timeline),
                                         [load_document(item) for item in args.metrics],

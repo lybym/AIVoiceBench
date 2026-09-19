@@ -26,7 +26,7 @@ RECORDING_ARTIFACT_KINDS = frozenset({
     'acoustic-segments', 'speaker-assignments', 'speaker-alignment', 'attribution',
     'speaker-role-review', 'speaker-role-mapping',
     'fused-segments',
-    'turns', 'timeline', 'metrics', 'judge-results', 'findings',
+    'turns', 'timeline', 'metrics', 'judge-results', 'judge-raw', 'findings',
     'retained_diagnostic', 'model_configuration', 'analysis_checkpoint',
     'report_json', 'report_markdown',
 })

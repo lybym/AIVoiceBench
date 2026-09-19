@@ -2,6 +2,73 @@
 
 > Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
 
+## JudgeResult 1.0.0 extension, JudgeResults 1.0.0 and Finding 2.1.0 (Issue #10)
+
+### JudgeResult 1.0.0 — additive only, version unchanged
+
+`schemas/judge-result.schema.json` keeps `schema_version: "1.0.0"`. No member was
+removed and no previously valid document changed meaning; the additions are
+optional members plus two new dimension enum values:
+
+- members `criterion_id`, `criterion_version`, `judge_profile`, `semantic_decision`,
+  `anchor_refs`, `abstention_reason`;
+- dimensions `semantic_response` (PRD-M003) and `barge_in_compliance` (PRD-M006),
+  which conditionally require `semantic_decision`, `criterion_id`,
+  `criterion_version` and `judge_profile`;
+- `evidence_refs`/`event_refs` items gained the shared identifier pattern, so a
+  malformed reference is a schema error rather than a silent lookup miss.
+
+`judge_result_errors` additionally enforces what a schema cannot state: an
+observed semantic verdict must cite evidence and must not come from an
+`unavailable` provider; an abstaining semantic result must state why and must not
+carry a decision; an anchor role may be selected at most once and the reported
+millisecond must equal the selected anchor.
+
+Why no version bump: the contract only *gains* optional members and a stricter
+validator for dimensions that did not previously exist, so a 1.0.0 document that
+was valid under the old rules stays valid and keeps its meaning. The eligibility
+rules that decide whether a judgment may become a measurement live in the
+separately versioned semantic-evidence contract (`semantic_evidence.CRITERIA_VERSION`
+= `1.0.0`), not in the document version.
+
+### JudgeResults 1.0.0 — new artifact contract
+
+`schemas/judge-results.schema.json` governs one Judge invocation artifact:
+`criteria_version`, `judge_profile`, the validated `results`, the `invocations`
+(with preserved `raw_response` + `raw_response_sha256` + provider/model/prompt/
+latency/status/failure_code) and the explicit `abstentions`
+(`state` ∈ `insufficient_evidence`/`invalid`/`failed`/`not_eligible` + `reason`).
+`validation.judge_document_errors` resolves every result's `run_id`,
+`invocation_id`, `evidence_refs`, `event_refs` and `turn_id` against the supplied
+Timeline/Turns, rejects unresolvable references, requires a successful invocation
+to preserve its raw output, requires the preserved hash to match, and scans for
+credential-shaped fields or values (PRD-N004).
+
+Migration: none needed — this is a new artifact, and no historical document is
+reinterpreted. A Judge artifact that fails this contract is not published: the
+Run records the rejected document and its errors as a `retained_diagnostic`.
+
+### Finding 2.1.0 — Turn linkage and nullable case identity
+
+`schemas/finding.schema.json` accepts `2.0.0` and `2.1.0` structurally, and
+`finding_errors` applies version-specific rules:
+
+- 2.1.0 requires `turn_ids` (possibly empty) and allows a nullable `case_id` plus
+  an optional `analysis_id`, so an unscripted Recording Analysis Run can carry
+  findings without a fabricated Case. Every declared turn must be reachable from
+  the finding's own events/metrics, and every reachable turn must be declared.
+- 2.0.0 still requires a case identity and must not carry `turn_ids`/`analysis_id`;
+  a 2.0.0 document is re-emitted under 2.1.0 with `migrate_finding_document()`,
+  which resolves `turn_ids` from the Timeline when one is supplied and leaves the
+  list empty — never guessed — when it cannot.
+
+Additive/behavioural summary: `metric_ids` on generated findings now hold canonical
+`metric_id` values resolved against the supplied metrics document (previous output
+wrote metric *names* there), and only decided metrics of the finding's own turns
+are linked. This tightens generated output; historical 2.0.0 documents are
+unaffected, and no data migration is required because no stored document changes
+meaning under its own version tag.
+
 ## MetricResult 3.0.0 / definition_version 4.0.0 (Issue #25)
 
 MetricResult **schema_version stays `3.0.0`**; the independent

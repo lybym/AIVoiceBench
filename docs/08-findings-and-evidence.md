@@ -4,6 +4,30 @@
 
 Finding schema 2.0.0 links the first-class Evidence 1.0.0 catalog in a valid Timeline. A finding is either a defect or an observation. A normal observation has null severity and cannot become a regression defect candidate. The seed passing VAD finding was migrated to an explicitly synthetic observation, rather than counting a pass as a P3 defect.
 
+Finding **2.1.0** (Issue #10) adds explicit Turn linkage and a nullable case
+identity so an unscripted Recording Analysis Run can carry findings without a
+fabricated Case:
+
+- `turn_ids` records the Turns the finding is bound to. Each declared turn must be
+  reachable from the finding's own linked events or metrics, and every reachable
+  turn must be declared — a Turn link is never asserted independently of evidence.
+- `analysis_id` (nullable) and a nullable `case_id` follow the MetricResult 3.0.0
+  convention. 2.0.0 documents still require a case identity and must not carry
+  2.1.0-only members; `migrate_finding_document()` re-emits one under 2.1.0 with
+  `turn_ids` resolved from the Timeline, left empty when unresolved.
+- Generated findings link MetricResults by canonical `metric_id`, and only decided
+  metrics (`observed`/`pass`/`fail`) belonging to the finding's own turns. A metric
+  that abstained cannot support a defect claim.
+- A candidate that cannot cite resolvable evidence produces an explicit
+  abstention, never a finding. There is no "nearest evidence" fallback: an
+  unsubstantiated candidate must not become a reviewable defect.
+
+Objective, semantic and human evidence stay distinguishable: a deterministic
+MetricResult (`method=deterministic`) and acoustic or human-annotated Evidence are
+linked separately from a semantic one (`method=llm_judge`,
+`confidence_source=semantic_event`, `judge_profile`), and human review state is
+recorded on `human_review`.
+
 ## Severity guidance
 
 | Level | Impact guidance |

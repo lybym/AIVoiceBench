@@ -48,18 +48,27 @@ def make_event(eid, etype, start, turn_id='TURN-0001', evidence_ids=None):
 
 class FindingGenerationTests(unittest.TestCase):
     def test_generates_finding_from_high_latency_candidate(self):
+        # A judge result now always cites the references it relied on: the engine
+        # refuses an observed candidate that cannot name its evidence, so there is
+        # no "nearest evidence" fallback to fall back on.
         judge_results = [{
             'dimension': 'finding_candidate', 'decision': 'high_latency',
             'status': 'observed', 'confidence': 0.6,
             'reason': 'Latency 3000ms exceeds 2000ms',
             'finding_severity': 'medium', 'suspected_layer': 'llm',
             'attribution_confidence': 0.4, 'requires_log_verification': True,
+            'turn_id': 'TURN-0001', 'evidence_refs': ['EV-T', 'EV-D'],
+            'event_refs': ['E1', 'E2'],
         }]
-        evidence = [make_evidence('EV-001', 1000, 3000)]
+        evidence = [make_evidence('EV-T', 700, 1000), make_evidence('EV-D', 4000, 4500)]
+        # Interval events must be paired and each event's evidence must cover its
+        # own interval: a Finding is only generated from a Timeline that is itself
+        # valid, and this fixture is a canonical synthetic Timeline.
         events = [
-            make_event('E1', 'tester_speech_end', 1000),
-            make_event('E2', 'device_speech_start', 4000),
-            make_event('E3', 'response_start', 4000),
+            make_event('E0', 'tester_speech_start', 700, evidence_ids=['EV-T']),
+            make_event('E1', 'tester_speech_end', 1000, evidence_ids=['EV-T']),
+            make_event('E2', 'device_speech_start', 4000, evidence_ids=['EV-D']),
+            make_event('E3', 'device_speech_end', 4500, evidence_ids=['EV-D']),
         ]
         timeline = make_timeline(events, evidence)
         metrics = {'metrics': [{'name': 'first_speech_latency_ms', 'value': 3000, 'status': 'observed'}]}
@@ -96,6 +105,7 @@ class FindingGenerationTests(unittest.TestCase):
             'reason': '1 false endpoint detected',
             'finding_severity': 'medium', 'suspected_layer': 'endpoint',
             'attribution_confidence': 0.5, 'requires_log_verification': True,
+            'turn_id': 'TURN-0001', 'evidence_refs': ['EV-001'], 'event_refs': ['E1'],
         }]
         evidence = [make_evidence('EV-001', 700, 750)]
         events = [make_event('E1', 'possible_false_endpoint', 700)]

@@ -3,19 +3,25 @@
 Runs the complete chain from a canonical WAV file or pre-existing
 acoustic-segments JSON, producing all intermediate artifacts and a final
 evidence-linked report in one command.
+
+The Judge stage is evidence-bound end to end: it may only cite objects of the
+Timeline it is given, its timing comes from measured anchors it selected, and its
+output is validated before it becomes metrics or findings input. A Judge artifact
+that fails its own contract stops the run instead of being written as evidence.
 """
 
-import json
 import os
 from pathlib import Path
 
 from .acoustic import resolve_segmenter
 from .fusion import fuse, build_turns, detect_events, generate_timeline
 from .metrics import compute_timeline_metrics, run_status
-from .llm import LLMJudge, MockLLMProvider, UnavailableLLMProvider
-from .findings import generate_findings
+from .llm import LLMJudge, UnavailableLLMProvider
+from .findings import generate_findings_document
 from .report import render_report
 from .runner import write_json
+from .semantic_evidence import semantic_evidence_records
+from .validation import judge_document_errors, semantic_evidence_errors
 
 
 def run_full_pipeline(source, output, profile=None, *, provider=None,
@@ -71,12 +77,12 @@ def run_full_pipeline(source, output, profile=None, *, provider=None,
         write_json(out / 'turns.json', turns_doc)
         write_json(out / 'timeline.json', timeline)
 
-        # 3. Metrics
+        # 3. Deterministic metrics — they take precedence wherever the question is
+        # deterministic, so they are computed before any semantic judgment.
         metrics_result = compute_timeline_metrics(timeline)
         write_json(out / 'metrics.json', metrics_result)
 
         # 4. LLM Judge
-        from .llm import LLMJudge, MockLLMProvider, UnavailableLLMProvider
         from .llm_provider import create_provider_from_config
 
         # Determine LLM provider: explicit > env config > unavailable
@@ -101,21 +107,42 @@ def run_full_pipeline(source, output, profile=None, *, provider=None,
                     }
                 })
             elif provider_name == 'mock':
+                # A fixture is never the production default: an unconfigured run
+                # must abstain, not publish fixture semantics as measurement.
                 llm_provider = UnavailableLLMProvider()
             else:
                 llm_provider = UnavailableLLMProvider()
         judge = LLMJudge(llm_provider)
-        judge_results, invocations = judge.evaluate_all(fused_doc, turns_doc, metrics_result)
-        judge_data = {'results': judge_results, 'invocations': invocations}
+        judge_data = judge.evaluate(fused_doc, turns_doc, metrics_result, timeline,
+                                    run_id=out.name)
+        _assert_valid(judge_document_errors(judge_data, timeline, turns_doc),
+                      'Judge artifact violates its own contract')
         write_json(out / 'judge-results.json', judge_data)
+        write_json(out / 'judge-raw.json', {
+            'schema_version': '1.0.0', 'run_id': out.name,
+            'invocations': judge_data['invocations'],
+        })
 
-        # 5. Integrate LLM meaningful_response_start back into metrics
-        metrics_result = _integrate_llm_metrics(metrics_result, judge_results)
+        # 5. Constrained semantic evidence feeds the canonical semantic metrics.
+        semantic_records, semantic_abstentions = semantic_evidence_records(
+            judge_data, timeline, turns_doc)
+        _assert_valid(semantic_evidence_errors(semantic_records, timeline, turns_doc),
+                      'Semantic evidence violates the engine contract')
+        judge_data['abstentions'] = (judge_data.get('abstentions') or []) + semantic_abstentions
+        metrics_result = compute_timeline_metrics(timeline, semantic_evidence=semantic_records)
+        # Legacy semantic-latency names remain unverified anchors; the engine keeps
+        # them abstained rather than resurrecting model-authored milliseconds.
+        metrics_result = _integrate_llm_metrics(metrics_result, judge_data['results'])
         write_json(out / 'metrics.json', metrics_result)
 
         # 6. Findings
-        findings = generate_findings(judge_results, timeline, metrics_result)
-        write_json(out / 'findings.json', {'findings': findings})
+        findings_document = generate_findings_document(judge_data, timeline, metrics_result,
+                                                      run_id=out.name)
+        if findings_document['rejected']:
+            raise ValueError('Generated findings violate the Finding contract: '
+                             + '; '.join(item['reason'] for item in findings_document['rejected']))
+        findings = findings_document['findings']
+        write_json(out / 'findings.json', findings_document)
 
     # 7. Profile
     write_json(out / 'profile.json', profile)
@@ -139,6 +166,17 @@ def run_full_pipeline(source, output, profile=None, *, provider=None,
         'judge_result_count': len(judge_data.get('results', [])),
         'finding_count': len(findings),
     }
+
+
+def _assert_valid(errors, headline):
+    """Stop the run when this engine's own output breaks its contract.
+
+    Writing a document that the project's validator rejects would publish
+    evidence no consumer can legitimately trust, so it is a hard error rather
+    than a warning.
+    """
+    if errors:
+        raise ValueError(headline + ': ' + '; '.join(errors))
 
 
 def _integrate_llm_metrics(metrics_result, judge_results):

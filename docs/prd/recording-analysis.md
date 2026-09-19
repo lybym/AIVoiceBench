@@ -7,14 +7,14 @@
 | F001 | 导入 WAV/MP3/M4A 与可选设备资料；不要求 TestCase；损坏输入也保留 Import Run 与失败原因 | ✅ implemented；真实 5–20 分钟录音验收待完成 |
 | F002 | 原始/标准化/派生资产不可变，记录 Hash、元数据、父引用、转换器与参数 | ✅ implemented（限定导入资产） |
 | F003 | 统一标准化与 Audio QA；格式、时长、空音频、解码失败等须明确诊断 | ✅ implemented；QA 不等于准确率保证 |
-| F004 | 可恢复分阶段编排，阶段输入输出、失败、重试与审计可追溯 | 🟡 partial；Judge/Findings 尚未接入主链 |
+| F004 | 可恢复分阶段编排，阶段输入输出、失败、重试与审计可追溯 | 🟡 partial；Judge/Findings 已接入 Recording Analysis 主链（#10，受配置与角色 Gate 约束），真实 provider 调用与发布验收待完成 |
 | F005 | File ASR 的完整录音识别、原生响应审计与时间戳；默认豆包 Seed ASR 2.0 `volc.seedasr.auc` 异步 submit/query，极速版为兼容模式；部分时间戳缺陷不得删除其余有效证据 | 🟡 partial；#87 已实现 transport，#93 跟踪 Seed recovery/partial evidence；真实质量待验收 |
 | F006 | Speaker/source attribution：消费火山 File ASR 匿名 speaker labels；tester/device/unknown 只由用户人工确认，不使用 LLM 角色判断，不按先后猜角色 | ✅ implemented（软件）；匿名聚类、人工确认 Gate、不可变 revision 与 diff 已实现（#95）；真实录音人工标注验收待完成 |
 | F007 | Turn/Response 关联必须有可解释角色和时序证据；歧义可弃权 | 🟡 partial；#94 提供确定性 acoustic↔speaker-span 对齐与覆盖诊断，#24 使 Turn/Response 关联在已确认角色下确定且可复现（连续同角色、设备先发言、编号唯一连续），未确认/冲突/未匹配一律弃权且不谎报 complete；真实混音打断判定待验收 |
 | F008 | 自动 EventTimeline 由 Canonical Event 组成，并可追溯音频/转写/归属 Evidence | 🟡 partial；#94 对齐证据已可追溯，#24 保证事件证据覆盖其区间、声学时间证据只发布声学置信度、非 complete 时间线必须写 gaps；真实场景验收待完成 |
-| F009 | 唯一确定性 Metric Engine 产出 MetricResult；不并行计算同名公式 | 🟡 partial；指标不可用时的原因与计数已在 API/报告/Web 显式输出（#94） |
-| F010 | Structured LLM Harness/Judge 受 schema、Evidence、版本与失败状态约束 | 🟡 partial；ImportRun 未执行完整 Judge |
-| F011 | Findings 必须关联指标、证据、置信度、影响和复核状态 | 🟡 partial |
+| F009 | 唯一确定性 Metric Engine 产出 MetricResult；不并行计算同名公式 | 🟡 partial；指标不可用时的原因与计数已在 API/报告/Web 显式输出（#94）；PRD-M003/M006 的受约束语义证据现已由 #10 Judge 供给，未供给或不合格时显式弃权 |
+| F010 | Structured LLM Harness/Judge 受 schema、Evidence、版本与失败状态约束 | ✅ implemented（软件）：ImportRun 在配置了 Judge 且角色已确认时执行完整 Judge，结果通过 schema + Evidence/Event/Turn 引用校验后才成为语义证据（#10）；**真实 provider 调用与真实验收未完成**，仍由 #85 承载 |
+| F011 | Findings 必须关联指标、证据、置信度、影响和复核状态 | ✅ implemented（软件）：Finding 2.1.0 显式记录 Turn/Event/Metric/Evidence 链接，缺可解析证据引用只记录弃权、不生成 Finding（#10）；真实录音复核待验收 |
 | F012 | 人工修订为新 revision，不覆盖机器原件；可重算并显示差异 | ✅ implemented（软件）：角色 mapping 每次保存生成不可变 `role-review/role-mapping-REV-NNNN.json` 与新 AnalysisRevision，旧 artifact 字节不变并显示 diff（#95） |
 | F013 | 生成 Markdown/JSON 报告，保留结论至证据的回溯路径 | 🟡 partial；指标可用性原因已进入报告（#94），正式报告仍需人工角色确认后才产出（#95） |
 | F014 | Web/CLI 统一分析工作台；Web Evidence Workbench 使用 wavesurfer.js 展示 waveform、Regions/Timeline 与点击证据定位，不自研 waveform renderer | 🟡 partial；人工角色确认面板与区间试听已实现（#95），wavesurfer.js 集成 planned |

@@ -20,6 +20,8 @@
       "enum": [
         "intent",
         "meaningful_response",
+        "semantic_response",
+        "barge_in_compliance",
         "feedback_detection",
         "conversation_quality",
         "context_understanding",
@@ -97,7 +99,8 @@
       "type": "array",
       "items": {
         "type": "string",
-        "minLength": 1
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
       },
       "uniqueItems": true
     },
@@ -105,7 +108,8 @@
       "type": "array",
       "items": {
         "type": "string",
-        "minLength": 1
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
       },
       "uniqueItems": true
     },
@@ -132,6 +136,59 @@
     "latency_ms": {
       "type": ["number", "null"],
       "minimum": 0
+    },
+    "criterion_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Stable rubric/criterion identity the judgment applied. Required for a boolean semantic decision."
+    },
+    "criterion_version": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Version of the criterion. A decision without a criterion version is not reproducible."
+    },
+    "judge_profile": {
+      "type": ["object", "null"],
+      "description": "Provider/model/prompt/config provenance for the judgment. Credentials are never recorded here.",
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+          "description": "Stable identity a MetricResult records as its judge_profile."
+        },
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "prompt_version": { "type": "string", "minLength": 1 },
+        "criteria_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "config_version": { "type": ["string", "null"] }
+      },
+      "required": ["profile_id", "provider", "model", "prompt_version", "criteria_version"],
+      "additionalProperties": false
+    },
+    "semantic_decision": {
+      "type": ["boolean", "null"],
+      "description": "Boolean outcome for semantic_response / barge_in_compliance. Null abstains; it is never a stand-in for a false verdict."
+    },
+    "anchor_refs": {
+      "type": "array",
+      "description": "Measured boundaries the judgment selected from supplied candidate anchors. The milliseconds come from that anchor, never from model-authored text.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "anchor_id", "start_ms", "end_ms", "source"],
+        "properties": {
+          "role": { "enum": ["meaningful_start", "feedback_start", "feedback_end", "response_start"] },
+          "anchor_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+          "start_ms": { "type": "number", "minimum": 0 },
+          "end_ms": { "type": "number", "minimum": 0 },
+          "source": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "abstention_reason": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Why an eligible judgment abstained instead of returning a verdict."
     },
     "status": {
       "enum": ["observed", "insufficient_evidence", "low_confidence", "error"]
@@ -198,6 +255,17 @@
       },
       "then": {
         "required": ["finding_severity", "suspected_layer"]
+      }
+    },
+    {
+      "if": {
+        "required": ["dimension"],
+        "properties": {
+          "dimension": { "enum": ["semantic_response", "barge_in_compliance"] }
+        }
+      },
+      "then": {
+        "required": ["semantic_decision", "criterion_id", "criterion_version", "judge_profile"]
       }
     },
     {
