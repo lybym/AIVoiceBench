@@ -387,6 +387,7 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None, alignm
         output.extend(pieces)
         continue
 
+    _renumber_segments(output)
     fused_doc['segments'] = output
     fused_doc['unattributed_texts'] = unattributed
     unclustered = sum(1 for seg in output if seg.get('speaker_id') is None)
@@ -405,6 +406,22 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None, alignm
             notes.append(f'{unroled} segment(s) have no role evidence')
         fused_doc['reason'] = '; '.join(notes)
     return fused_doc
+
+
+def _renumber_segments(segments):
+    """Give every emitted segment a unique identity.
+
+    Splitting one acoustic segment at speaker boundaries produces several segments
+    that all leave ``_split_by_speaker`` carrying the parent's ``segment_id``. They
+    must each get their own id: Turn association and the timeline's ``ev_map`` key on
+    it, so a duplicate silently makes one segment's evidence stand in for another's,
+    and a canonical event can end up citing an interval that does not cover it.
+
+    The acoustic origin stays fully traceable because every piece keeps the shared
+    ``acoustic_segment_id`` of the segment it was cut from.
+    """
+    for index, segment in enumerate(segments):
+        segment['segment_id'] = f'FSEG-{index:04d}'
 
 
 def _unattributed(seg):
@@ -538,6 +555,13 @@ def build_turns(fused_doc):
     """
     segments = fused_doc.get('segments', [])
     fused_doc_id = fused_doc.get('document_id')
+    # A turn is a claim about who spoke and in what order. When the fused evidence
+    # itself abstained -- unresolved roles, conflicting clusters, segments with no
+    # cluster -- the turn document must inherit that abstention. Reporting
+    # "complete" here would present a turn set built from a subset of the evidence
+    # as if every segment had been accounted for.
+    upstream_status = fused_doc.get('status')
+    upstream_reason = fused_doc.get('reason')
 
     if not segments:
         return {
@@ -551,8 +575,10 @@ def build_turns(fused_doc):
 
     turns = []
     current_turn = None
-    turn_num = 0
-    response_num = 0
+    # Turn and response identifiers are derived from the turns already built rather
+    # than from a counter bumped inside each branch. Numbering therefore follows
+    # document order exactly: no gaps when a turn starts on device speech, and no
+    # two turns can share an index.
 
     for seg in segments:
         role = seg['speaker_role']
@@ -571,7 +597,6 @@ def build_turns(fused_doc):
                     current_turn['interrupted_response_id'] = current_turn.get('response_id')
                     current_turn['interrupting_segment_ids'] = [seg_id]
                     turns.append(_finalize_turn(current_turn))
-                    turn_num += 1
                     current_turn = None
                 elif current_turn.get('device_speech_start_ms') is None:
                     # Same turn, another tester segment
@@ -582,13 +607,11 @@ def build_turns(fused_doc):
                 else:
                     # Previous turn complete, start new one
                     turns.append(_finalize_turn(current_turn))
-                    turn_num += 1
                     current_turn = None
 
             if current_turn is None:
-                response_num += 1
                 current_turn = {
-                    'turn_id': f'TURN-{turn_num + 1:04d}',
+                    'turn_id': f'TURN-{len(turns) + 1:04d}',
                     'tester_segment_ids': [seg_id],
                     'device_segment_ids': [],
                     'response_id': None,
@@ -606,14 +629,17 @@ def build_turns(fused_doc):
 
         elif role == 'device':
             if current_turn is None:
-                # Device speech without preceding tester — orphan response
-                turn_num += 1
-                response_num += 1
+                # Device speech with no preceding tester: the device spoke without
+                # being prompted. It still owns a turn and a response identity, because
+                # every device speech event in the canonical timeline must resolve to
+                # the response it belongs to (Event 2.0.0 requires a response_id for
+                # device_speech_start/end). The missing tester turn stays visible as an
+                # empty tester_segment_ids list rather than being invented.
                 current_turn = {
-                    'turn_id': f'TURN-{turn_num + 1:04d}',
+                    'turn_id': f'TURN-{len(turns) + 1:04d}',
                     'tester_segment_ids': [],
                     'device_segment_ids': [seg_id],
-                    'response_id': f'RESP-{response_num:04d}',
+                    'response_id': f'RESP-{len(turns) + 1:04d}',
                     'start_ms': start,
                     'end_ms': end,
                     'tester_speech_start_ms': None,
@@ -627,7 +653,7 @@ def build_turns(fused_doc):
                 }
             else:
                 if current_turn['device_speech_start_ms'] is None:
-                    current_turn['response_id'] = f'RESP-{response_num:04d}'
+                    current_turn['response_id'] = f'RESP-{len(turns) + 1:04d}'
                     current_turn['device_speech_start_ms'] = start
                 current_turn['device_segment_ids'].append(seg_id)
                 current_turn['device_speech_end_ms'] = end
@@ -644,18 +670,34 @@ def build_turns(fused_doc):
     if current_turn is not None:
         turns.append(_finalize_turn(current_turn))
 
+    if not turns:
+        # No turn can be claimed at all. Name the upstream cause when there is one,
+        # so a role gate is never reported as "no turns could be built".
+        status = 'insufficient_evidence'
+        reason = upstream_reason or 'No turns could be built from the fused segments'
+    elif upstream_status == 'complete':
+        status, reason = 'complete', None
+    else:
+        # Turns exist, but they cover only the segments whose role evidence was
+        # resolved. The partial state and its cause are carried forward instead of
+        # being rounded up to a complete turn set.
+        status = 'partial'
+        reason = ('Turns were built only from segments with confirmed roles; the fused '
+                  'evidence is incomplete')
+        if upstream_reason:
+            reason += f': {upstream_reason}'
     return {
         'schema_version': '1.0.0',
         'document_id': 'TURNS-' + uuid.uuid4().hex,
         'fused_document_id': fused_doc_id,
-        'status': 'complete' if turns else 'insufficient_evidence',
-        'reason': None if turns else 'No turns could be built',
+        'status': status,
+        'reason': reason,
         'turns': turns,
     }
 
 
 def _finalize_turn(t):
-    """Convert internal turn dict to schema-compliant output."""
+    """Convert internal turn state to the schema-compliant Turns 1.0.0 shape."""
     return {
         'turn_id': t['turn_id'],
         'tester_segment_ids': t['tester_segment_ids'],
@@ -706,14 +748,14 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
     ev_map = {}  # segment_id -> evidence_id
     for seg in segments:
         eid = f'EV-{evidence_num + 1:04d}'
-        # Confidence stays None when no defensible number exists. A semantic role
-        # proposal publishes no role confidence, so it must not become 0.0 here.
-        role_conf = seg.get('role_attribution_confidence')
-        cluster_conf = seg.get('speaker_cluster_confidence')
-        if role_conf is not None:
-            confidence, confidence_source = role_conf, 'role_attribution'
-        elif cluster_conf is not None:
-            confidence, confidence_source = cluster_conf, 'speaker_cluster'
+        # This snippet's interval is acoustic, so the only defensible confidence on it
+        # is the acoustic boundary confidence. A speaker-cluster or role-attribution
+        # number measures a different dimension and must not be published as the
+        # quality of an acoustic measurement; a boundary whose edge came from a
+        # provider estimate publishes no confidence at all. Absent stays None.
+        acoustic_confidence = seg.get('acoustic_boundary_confidence')
+        if acoustic_confidence is not None:
+            confidence, confidence_source = acoustic_confidence, 'acoustic_boundary'
         else:
             confidence, confidence_source = None, 'none'
         evidence.append({
@@ -874,8 +916,20 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
         event['run_id'] = run_id
         event['case_id'] = case_id
 
-    status = 'complete' if events else 'insufficient_evidence'
-    reason = None if events else 'No events could be detected'
+    if not events:
+        status = 'insufficient_evidence'
+        reason = 'No events could be detected'
+    elif all(seg.get('speaker_role') in ('tester', 'device') for seg in segments):
+        status, reason = 'complete', None
+    else:
+        # Events exist only for the attributed part of the recording. Saying
+        # "complete" would present a partial observation as the whole recording, so
+        # the timeline stays partial and the untranscribed remainder is recorded.
+        status = 'partial'
+        unattributed = sum(1 for seg in segments
+                           if seg.get('speaker_role') not in ('tester', 'device'))
+        reason = (f'{unattributed} segment(s) have no confirmed speaker role; only the '
+                  'attributed portions of the recording are represented')
     return events, evidence, status, reason
 
 
@@ -934,12 +988,16 @@ def generate_timeline(fused_doc, turns_doc, events, evidence, status, reason,
             },
         },
         'status': status if status != 'insufficient_evidence' else 'partial',
+        # A gap is recorded whenever the timeline cannot claim complete coverage:
+        # either nothing is attributed at all, or part of the recording carries no
+        # confirmed role. The Run is then readable as partial-with-cause instead of
+        # as a complete observation that happens to be missing some speech.
         'gaps': [{
             'reason': reason or 'Automatic event detection did not produce complete coverage',
             'required_evidence': 'speaker_diarization_or_human_review',
             'start_ms': 0,
             'end_ms': round(duration_ms, 3),
-        }] if status == 'insufficient_evidence' or not events else [],
+        }] if status != 'complete' else [],
         'tracks': [{
             'track_id': 'TRACK-mix',
             'role': 'room_mix',

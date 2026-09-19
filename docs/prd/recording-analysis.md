@@ -10,8 +10,8 @@
 | F004 | 可恢复分阶段编排，阶段输入输出、失败、重试与审计可追溯 | 🟡 partial；Judge/Findings 尚未接入主链 |
 | F005 | File ASR 的完整录音识别、原生响应审计与时间戳；默认豆包 Seed ASR 2.0 `volc.seedasr.auc` 异步 submit/query，极速版为兼容模式；部分时间戳缺陷不得删除其余有效证据 | 🟡 partial；#87 已实现 transport，#93 跟踪 Seed recovery/partial evidence；真实质量待验收 |
 | F006 | Speaker/source attribution：消费火山 File ASR 匿名 speaker labels；tester/device/unknown 只由用户人工确认，不使用 LLM 角色判断，不按先后猜角色 | ✅ implemented（软件）；匿名聚类、人工确认 Gate、不可变 revision 与 diff 已实现（#95）；真实录音人工标注验收待完成 |
-| F007 | Turn/Response 关联必须有可解释角色和时序证据；歧义可弃权 | 🟡 partial；#94 已提供确定性 acoustic↔speaker-span 对齐与覆盖诊断，真实混音打断判定待验收 |
-| F008 | 自动 EventTimeline 由 Canonical Event 组成，并可追溯音频/转写/归属 Evidence | 🟡 partial；对齐证据已可追溯，真实场景验收待完成 |
+| F007 | Turn/Response 关联必须有可解释角色和时序证据；歧义可弃权 | 🟡 partial；#94 提供确定性 acoustic↔speaker-span 对齐与覆盖诊断，#24 使 Turn/Response 关联在已确认角色下确定且可复现（连续同角色、设备先发言、编号唯一连续），未确认/冲突/未匹配一律弃权且不谎报 complete；真实混音打断判定待验收 |
+| F008 | 自动 EventTimeline 由 Canonical Event 组成，并可追溯音频/转写/归属 Evidence | 🟡 partial；#94 对齐证据已可追溯，#24 保证事件证据覆盖其区间、声学时间证据只发布声学置信度、非 complete 时间线必须写 gaps；真实场景验收待完成 |
 | F009 | 唯一确定性 Metric Engine 产出 MetricResult；不并行计算同名公式 | 🟡 partial；指标不可用时的原因与计数已在 API/报告/Web 显式输出（#94） |
 | F010 | Structured LLM Harness/Judge 受 schema、Evidence、版本与失败状态约束 | 🟡 partial；ImportRun 未执行完整 Judge |
 | F011 | Findings 必须关联指标、证据、置信度、影响和复核状态 | 🟡 partial |
