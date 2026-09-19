@@ -11,7 +11,7 @@
 | ⬜ `planned` | 无可交付实现；设计、配置或关闭 Issue 不算实现 |
 | ⏸ `deferred` | 不在当前 MVP 排程，保留已有基础 |
 
-验证状态独立：`software_verified`、`container_verified`、`browser_verified`、`real_recording_pending`、`real_device_pending`、`validation_pending`。除非有直接证据，不能声明 `real_recording_verified` 或 `measurement_equivalence_verified`。
+验证状态独立：`software_verified`、`container_verified`、`browser_verified`、`real_recording_pending`、`real_device_pending`、`validation_pending`。除非有直接证据，不能声明 `real_recording_verified` 或 `measurement_equivalence_verified`。状态语言由 `AcceptanceRecord 1.0.0` 逐 gate 落盘（见下）。
 
 ## 非功能要求
 
@@ -32,6 +32,18 @@ M1 尚未通过。最终验收需要授权的真实 5–20 分钟录音、有效
 - 导入、标准化、QA、File ASR、聚类/归属、Timeline、MetricResult、语义、Findings、人工修订和报告的实际链路必须分别呈现成功、失败、缺失和弃权。
 - 软件 fixture、预览版或 CI 只能证明有限契约，不能代替真实录音质量、真实云服务、实体设备或人工标注。
 - 验收记录必须保留 Artifact/Hash、版本、环境、样本选择、分母、失败样本和不确定性。
+
+### 验收证据契约（不改变门槛）
+
+M1 的五个 gate（`software_verified`、`container_verified`、`browser_verified`、`real_cloud_verified`、`real_recording_verified`）由 `AcceptanceRecord 1.0.0`（`schemas/acceptance-evidence.schema.json`）记录，并由确定性检查器 `aivoicebench/acceptance_evidence.py`（CLI `python -m aivoicebench acceptance init|check`）校验。该契约把本节门槛变成可执行检查，**不降低任何门槛**：
+
+- `real_recording_verified` 只在存在授权真实样本（5–20 分钟区间）、人工复核证据与机器原件分离、且曝光扫描干净时才成立；synthetic/fixture 样本、mock、CI、机器生成却被记为人工的标注会被判为未授权声明并使记录 `invalid`。
+- 每个 stage 的分母必须显式计入 complete/partial/failed/unknown/abstained/not_applicable 且与 `expected_total` 对账，**禁止只报成功的分母**。
+- 每条结论必须可回溯 Run → Turn/Event → 音频区间 → Evidence → processor/model/policy version；缺口作为显式 open item 报出。
+- 角色修改必须生成新 AnalysisRevision、保留旧结果字节并给出 recompute/diff 证据，且不得重跑识别/聚类。
+- 未达到的 gate 必须写明缺口；**没有真实验收记录时不得把任何 gate 写成已验证**。
+
+检查器本身只是工具，其通过不等于 M1 通过；M1 仍以真实证据记录为准。
 
 ## 正式里程碑
 

@@ -23,5 +23,6 @@
 - [Active Measurement](25-active-measurement.md)：持续 Measurement Audio、sample clock、Stimulus Reference、在线声学处理、Canonical Timeline 和统一指标边界，以及 Browser Station TypeScript 迁移的非行为变更约束。
 - [Recording Backbone](23-recording-backbone.md)：火山 File ASR、ASR-native speaker labels、Attribution/Fusion 主链与审计边界。
 - [真实录音诊断记录](27-real-recording-diagnostic.md)：2026-09-18 实测问题、已修复候选、空白指标根因、Issue 与验收边界。
+- [验收与状态](prd/acceptance-status.md)：M1 真实录音门槛、状态语言与 `AcceptanceRecord 1.0.0` 验收证据契约（`python -m aivoicebench acceptance init|check`）；该契约不降低门槛，也不表示 M1 已通过。
 
 根目录 [AGENTS.md](../AGENTS.md) 规定开发者如何读取与同步 PRD。技术专题文件不是额外 PRD，不以旧例子或工作日志替代用户需求。

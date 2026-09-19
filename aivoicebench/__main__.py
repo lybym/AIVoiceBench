@@ -270,6 +270,32 @@ def main(argv=None):
     validate.add_argument('--metrics', nargs='*', type=Path, default=[], help='MetricResult files referenced by a finding')
     validate.add_argument('--turns', type=Path, help='Turns document; resolves turn references of a Judge artifact')
     validate.add_argument('--regression-case', type=Path, help='Linked TestCase for a frozen regression candidate')
+    acceptance = subparsers.add_parser(
+        'acceptance',
+        help='Record and check M1 authorized real-recording acceptance evidence (#85)')
+    acceptance_commands = acceptance.add_subparsers(dest='acceptance_command', required=True)
+    acceptance_init = acceptance_commands.add_parser(
+        'init', help='Write a blank AcceptanceRecord 1.0.0 that claims no gate')
+    acceptance_init.add_argument('--record-id', required=True)
+    acceptance_init.add_argument('--issue-url', required=True)
+    acceptance_init.add_argument('--recorded-by', required=True)
+    acceptance_init.add_argument('--product-version', required=True)
+    acceptance_init.add_argument('--code-commit', required=True)
+    acceptance_init.add_argument('--deployment', default='not_recorded')
+    acceptance_init.add_argument('--prd-ref', action='append', default=None,
+                                 help='PRD requirement id; repeatable')
+    acceptance_init.add_argument('--output', type=Path, required=True)
+    acceptance_check = acceptance_commands.add_parser(
+        'check', help='Judge an AcceptanceRecord against the M1 claim rules')
+    acceptance_check.add_argument('record', type=Path)
+    acceptance_check.add_argument('--output', type=Path,
+                                  help='Write the judgement JSON (with --markdown for the record)')
+    acceptance_check.add_argument('--markdown', type=Path,
+                                  help='Write the human-readable acceptance judgement')
+    acceptance_check.add_argument('--verify-artifacts', action='store_true',
+                                  help='Re-hash every locally present declared artifact')
+    acceptance_check.add_argument('--repository-root', type=Path,
+                                  help='Repository root to scan for committed audio artifacts')
     args = parser.parse_args(argv)
     if args.command == 'import':
         import yaml
@@ -571,6 +597,49 @@ def main(argv=None):
         return 2 if any(manifest['status'] == 'blocked' for _, manifest in results) else 0
     if args.command == 'runs':
         return _runs_command(args)
+    if args.command == 'acceptance':
+        from .acceptance_evidence import (AcceptanceError, STATUS_COMPLETE, STATUS_INVALID,
+                                          blank_record, load_record_file, render_report, validate)
+        from .runner import write_json
+        if args.acceptance_command == 'init':
+            record = blank_record(
+                args.record_id,
+                issue_url=args.issue_url,
+                recorded_by=args.recorded_by,
+                product_version=args.product_version,
+                code_commit=args.code_commit,
+                prd_refs=args.prd_ref or ('PRD-F001', 'PRD-N001'),
+                deployment=args.deployment)
+            write_json(args.output, record)
+            print(f'BLANK {args.output} ({len(record["gates"])} gates recorded as not_reached; '
+                  'this template claims no verification)')
+            return 2
+        try:
+            result = validate(load_record_file(args.record),
+                              verify_artifacts=args.verify_artifacts,
+                              repository_root=args.repository_root)
+        except (OSError, ValueError, AcceptanceError) as error:
+            print(f'ACCEPTANCE ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
+            return 1
+        if args.output:
+            write_json(args.output, result)
+        if args.markdown:
+            args.markdown.parent.mkdir(parents=True, exist_ok=True)
+            args.markdown.write_text(render_report(result), encoding='utf-8')
+        print(f'ACCEPTANCE {result["status"].upper()} ({result["record_id"]}): '
+              f'real_recording_verified={result["real_recording_verified"]}, '
+              f'{len(result["pending_gates"])} pending gate(s), '
+              f'{len(result["unauthorized_claims"])} unauthorized claim(s), '
+              f'{len(result["errors"])} error(s)')
+        for item in result['unauthorized_claims']:
+            print(f'  UNAUTHORIZED CLAIM {item["gate"]}: {item["reason"]}')
+        for item in result['errors']:
+            print(f'  ERROR {item}')
+        for item in result['unresolved']:
+            print(f'  OPEN {item}')
+        if result['status'] == STATUS_INVALID:
+            return 1
+        return 0 if result['status'] == STATUS_COMPLETE else 2
     if args.kind in ('metric', 'finding') and args.timeline is None:
         parser.error('--kind metric/finding requires --timeline')
     failures = 0

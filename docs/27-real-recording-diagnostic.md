@@ -30,7 +30,7 @@
 - 本次 LLM 角色输出只保留为诊断历史，不作为产品证据；正式角色只能来自用户保存的人工 mapping。
 - ASR timestamp 只能作为 provider evidence/对齐输入，不能替代声学边界。
 - 单个私有样本证明“真实云调用曾成功并暴露这些缺口”，不证明识别准确率、speaker coverage、低音量设备区分质量或 M1 验收。
-- 正式验收仍需 #85 要求的 5–20 分钟授权样本、人工作业、分母、浏览器回放、修订重分析和完整指标证据。
+- 正式验收仍需 #85 要求的 5–20 分钟授权样本、人工作业、分母、浏览器回放、修订重分析和完整指标证据。承载这些证据的契约与检查器为 `AcceptanceRecord 1.0.0`（`schemas/acceptance-evidence.schema.json`）与 `python -m aivoicebench acceptance init|check`：它要求逐 gate 状态化（`software_verified` / `container_verified` / `browser_verified` / `real_cloud_verified` / `real_recording_verified`）、分母必须计入失败/未知/弃权、人工层必须与机器原件分离，并且**不允许**用 synthetic fixture、mock、CI 或机器标注声明 `real_recording_verified`。该工具本身不产生真实录音证据，M1 仍未通过。
 
 ## Issue 映射
 
