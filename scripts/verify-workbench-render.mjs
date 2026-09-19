@@ -438,6 +438,15 @@ const DOCUMENT = {
       start_ms: 2000000.0, end_ms: 2100000.0, text: '无对应区间',
       speaker_id: 'speaker_1', speaker_role: null, timestamp_source: 'asr',
     },
+    {
+      // The served region *contains* this utterance rather than equalling it (one
+      // acoustic segment can cover several utterances). The panel must say so rather
+      // than presenting the container as the utterance's own interval.
+      segment_id: 'ASR-0002', region_id: 'event:EVT-2', region_ids: ['event:EVT-2'],
+      region_basis: 'fused_acoustic_segment_container', region_span_matches: false,
+      start_ms: 30000.0, end_ms: 31000.0, text: '容器区间话语',
+      speaker_id: 'speaker_0', speaker_role: null, timestamp_source: 'asr',
+    },
   ],
   unavailable: [{ stage: 'judge', status: 'insufficient_evidence', reason: '合成缺失' }],
   abstentions: {
@@ -899,6 +908,18 @@ if (servedDocumentPath) {
     // The unlinked row must not appear: it has no served region to synchronize with.
     if (panel.evidence.includes('无对应区间')) {
       return 'a transcript row without a served region_id was synchronized anyway';
+    }
+    return true;
+  });
+
+  check('a container region is presented as containment, not as an exact match', () => {
+    const panel = confirmed.panels['event:EVT-2'];
+    if (!panel) return 'the container-region panel probe did not run';
+    if (!panel.evidence.includes('容器区间话语')) {
+      return 'the transcript row contained by the region is missing from the panel';
+    }
+    if (!panel.evidence.includes('容器区间（该话语为其子区间，非等值）')) {
+      return 'a containing region must be labelled instead of shown as an exact match';
     }
     return true;
   });

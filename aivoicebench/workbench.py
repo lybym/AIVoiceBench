@@ -67,19 +67,27 @@ ROLE_DEPENDENT_TRACKS = ('turn', 'metric', 'finding')
 #: source — which would also make re-writing a revision's report change its bytes.
 REPORT_ARTIFACT_KINDS = ('report_json', 'report_markdown')
 
+
 #: The persisted documents this projection consumes. They are what "this Run has a
 #: reviewable evidence chain" means, so the absence of *all* of them is an absent
 #: workbench rather than an empty one.
-EVIDENCE_DOCUMENTS = (
-    'acoustic-segments', 'speaker-assignments', 'timeline', 'turns', 'metrics',
-    'findings', 'transcript', 'fused-segments', 'alignment', 'role-review',
-)
-
+#:
 #: Manifest stage statuses that mean "the stage was never attempted", as opposed to
 #: a stage that ran and abstained or failed. The two are reported separately: a
 #: reviewer must be able to tell "not needed yet" from "expected but missing".
 STAGE_NOT_RUN = ('pending',)
 STAGE_FAILED = ('failed', 'error', 'failure')
+
+
+class NoWorkbench(ValueError):
+    """The Run or AnalysisRevision has no evidence chain at all.
+
+    Raised only for *absence* — a missing/unreadable manifest, a manifest without an
+    ``analysis_id``, a missing AnalysisRevision directory, or a Run with neither
+    readable evidence nor a registered artifact. The endpoint maps exactly this to
+    404. Anything else that goes wrong while projecting is a defect in the evidence
+    that must not be reported to a reviewer as "there is no evidence here".
+    """
 
 
 def _stage_kind(status):
@@ -124,10 +132,6 @@ def _read_checked(path):
     return payload, READ_OK
 
 
-def _read(path):
-    return _read_checked(path)[0]
-
-
 def analysis_root(directory):
     """Resolve the Run's current AnalysisRevision directory.
 
@@ -145,14 +149,14 @@ def analysis_root(directory):
     directory = Path(directory)
     manifest, status = _read_checked(directory / 'manifest.json')
     if status != READ_OK:
-        raise ValueError(f'Run manifest is {status}: no evidence to project')
+        raise NoWorkbench(f'Run manifest is {status}: no evidence to project')
     if manifest.get('workflow') == 'recording_import' and not (directory / 'web-analysis').exists():
         analysis_id = str(manifest.get('analysis_id') or '')
         if not analysis_id:
-            raise ValueError('Run manifest carries no analysis_id')
+            raise NoWorkbench('Run manifest carries no analysis_id')
         root = directory / 'analysis' / analysis_id
         if not root.is_dir():
-            raise ValueError('AnalysisRevision directory is missing')
+            raise NoWorkbench('AnalysisRevision directory is missing')
         return root, manifest, True
     if (directory / 'web-analysis').is_dir():
         return directory / 'web-analysis', manifest, False
@@ -180,12 +184,6 @@ def read_revision_document_checked(root, name, unified):
         data = document.get('data')
         return document, data if isinstance(data, dict) else {}, READ_OK
     return document, document, READ_OK
-
-
-def read_revision_document(root, name, unified):
-    """Return ``(envelope, data)`` for a registered document, ignoring its status."""
-    envelope, data, _ = read_revision_document_checked(root, name, unified)
-    return envelope, data
 
 
 def _number(value):
@@ -226,19 +224,34 @@ def _envelope_of(spans):
 
 
 class _RegionBuilder:
-    """Accumulates regions and the evidence index they are resolved against."""
+    """Accumulates regions and the evidence index they are resolved against.
+
+    A record whose id was already published is skipped and reported as a gap. Raising
+    instead would let a single duplicated id in one persisted document withdraw *every*
+    track from the reviewer — and, at the endpoint, would report "there is no evidence
+    here" for a Run whose evidence is entirely present but defective.
+    """
 
     def __init__(self, gate_complete):
         self.gate_complete = gate_complete
         self.regions = []
+        self.gaps = []
         self._by_id = {}
 
     def add(self, region):
-        if region['region_id'] in self._by_id:
-            raise ValueError('Duplicate workbench region id: ' + region['region_id'])
-        self._by_id[region['region_id']] = region
+        region_id = region['region_id']
+        if region_id in self._by_id:
+            self.gaps.append({
+                'document': (region.get('source') or {}).get('document'),
+                'region_id': region_id,
+                'skipped_span_ms': [region.get('start_ms'), region.get('end_ms')],
+                'reason': f'{region_id} duplicates an already published region; the later record is '
+                          'not drawn, so the interval it claims is not reviewable here',
+            })
+            return None
+        self._by_id[region_id] = region
         self.regions.append(region)
-        return region['region_id']
+        return region_id
 
     def resolved_region(self, region_id):
         return self._by_id.get(region_id)
@@ -332,11 +345,17 @@ def build_workbench(directory):
         # A Run whose directory holds neither evidence nor a single registered artifact
         # has nothing to review: answering 404 is what the endpoint contract promises,
         # and an empty document would instead read as "reviewed, found nothing".
-        raise ValueError('Run carries no readable evidence and no registered artifacts')
+        raise NoWorkbench('Run carries no readable evidence and no registered artifacts')
 
     builder = _RegionBuilder(gate_complete)
     evidence_spans = {}
     event_spans = {}
+    #: Ids the timeline declares, whether or not they resolve to a drawable interval.
+    #: The difference between "not declared" and "declared but has no interval" is what
+    #: lets a citation gap be described accurately instead of dropped.
+    declared_evidence = set()
+    declared_events = set()
+    declared_turns = set()
     turn_spans = {}
     turn_regions = {}
 
@@ -384,17 +403,22 @@ def build_workbench(directory):
                     'evidence_ids': [], 'event_ids': [], 'metric_ids': [], 'turn_ids': []}))
 
     for index, segment in enumerate(timeline.get('evidence') or []):
+        evidence_id = str(segment.get('evidence_id') or f'#{index}')
+        # Declared first, resolved second: a record with no usable interval still counts
+        # as *declared*, so anything citing it is reported as a gap instead of appearing
+        # to rest on evidence that cannot be drawn.
+        declared_evidence.add(evidence_id)
         span = _span(segment)
         if span is None:
             continue
-        evidence_id = str(segment.get('evidence_id') or f'#{index}')
         evidence_spans[evidence_id] = span
 
     for index, event in enumerate(timeline.get('events') or []):
         span = _span(event)
+        event_id = str(event.get('event_id') or f'#{index}')
+        declared_events.add(event_id)
         if span is None:
             continue
-        event_id = str(event.get('event_id') or f'#{index}')
         event_spans[event_id] = span
         builder.add(_region(
             'event', f'event:{event_id}', 'event', str(event.get('type') or event_id), span,
@@ -407,6 +431,7 @@ def build_workbench(directory):
 
     for index, turn in enumerate(turns_doc.get('turns') or []):
         turn_id = str(turn.get('turn_id') or f'#{index}')
+        declared_turns.add(turn_id)
         ends = [value for value in (
             _number(turn.get('tester_speech_start_ms')), _number(turn.get('tester_speech_end_ms')),
             _number(turn.get('device_speech_start_ms')), _number(turn.get('device_speech_end_ms')))
@@ -436,14 +461,29 @@ def build_workbench(directory):
     unresolved_refs = []
 
     def declared_gaps(record_kind, record_id, references):
-        for field, ids, index in references:
-            missing = [item for item in ids if item not in index]
-            if missing:
+        """Report cited ids that cannot be resolved, naming *why* each one cannot.
+
+        "Not in this revision" and "declared, but with no usable interval" are different
+        defects: the first is a broken citation, the second is a citation to a record
+        that was persisted without geometry. Both must reach the reviewer, because a
+        record that cites either still carries a value.
+        """
+        for field, ids, index, declared in references:
+            absent = [item for item in ids if item not in index and item not in declared]
+            no_interval = [item for item in ids if item not in index and item in declared]
+            if absent:
                 unresolved_refs.append({
                     'record': record_kind, 'record_id': record_id, 'field': field,
-                    'references': missing,
+                    'references': absent, 'cause': 'not_declared',
                     'reason': f'{record_kind} {record_id} cites {field} entries that are not in this '
                               'revision; they cannot be drawn or verified',
+                })
+            if no_interval:
+                unresolved_refs.append({
+                    'record': record_kind, 'record_id': record_id, 'field': field,
+                    'references': no_interval, 'cause': 'no_interval',
+                    'reason': f'{record_kind} {record_id} cites {field} entries that exist but carry no '
+                              'usable interval; nothing can be drawn for them',
                 })
 
     def resolved_span(span):
@@ -457,8 +497,8 @@ def build_workbench(directory):
     for index, metric in enumerate(metrics_doc.get('metrics') or []):
         metric_id = str(metric.get('metric_id') or f'#{index}')
         declared_gaps('metric', metric_id, (
-            ('evidence_ids', list(metric.get('evidence_ids') or []), evidence_spans),
-            ('event_ids', list(metric.get('event_ids') or []), event_spans)))
+            ('evidence_ids', list(metric.get('evidence_ids') or []), evidence_spans, declared_evidence),
+            ('event_ids', list(metric.get('event_ids') or []), event_spans, declared_events)))
         spans = resolve_ids(metric.get('evidence_ids') or [], evidence_spans)
         origin = 'evidence'
         if not spans:
@@ -503,9 +543,9 @@ def build_workbench(directory):
     for index, finding in enumerate(findings_doc.get('findings') or []):
         finding_id = str(finding.get('finding_id') or f'#{index}')
         declared_gaps('finding', finding_id, (
-            ('evidence_ids', list(finding.get('evidence_ids') or []), evidence_spans),
-            ('event_ids', list(finding.get('event_ids') or []), event_spans),
-            ('turn_ids', list(finding.get('turn_ids') or []), turn_spans)))
+            ('evidence_ids', list(finding.get('evidence_ids') or []), evidence_spans, declared_evidence),
+            ('event_ids', list(finding.get('event_ids') or []), event_spans, declared_events),
+            ('turn_ids', list(finding.get('turn_ids') or []), turn_spans, declared_turns)))
         spans = resolve_ids(finding.get('evidence_ids') or [], evidence_spans)
         origin = 'evidence'
         if not spans:
@@ -562,21 +602,9 @@ def build_workbench(directory):
                     'kind': _stage_kind(stage.get('status')), 'reason': stage.get('reason')}
                    for name, stage in sorted(stages.items())
                    if name != 'report' and stage.get('status') != 'complete']
-    # A document that exists but cannot be parsed is a *different* failure from a
-    # stage that produced nothing: the evidence is there but unreadable, so the
-    # chain for this revision is incomplete and the reviewer must be told.
-    for name in unreadable:
-        unavailable.append({
-            'stage': name, 'status': READ_UNREADABLE, 'kind': 'failed',
-            'document': f'{name}.json',
-            'reason': f'{name}.json exists but cannot be read as JSON; its evidence is missing from '
-                      'this projection, so the evidence chain for this revision is incomplete'})
-    if not gate_complete:
-        for track_id in ROLE_DEPENDENT_TRACKS:
-            unavailable.append({
-                'stage': track_id, 'status': 'insufficient_evidence', 'kind': 'incomplete',
-                'reason': f'人工角色确认未完成（{gate_status}）：{gate_reason}；'
-                          '该轨道不发布 region，解析出的区间仅以 resolved_span 供审计'})
+    # `unavailable` is completed *after* every consumed document has been read (see the
+    # availability section below), so an unreadable document is reported whether it was
+    # named up front or reached through an artifact path.
 
     # --- transcript ↔ region linkage ----------------------------------------
     # A transcript segment id and an acoustic segment id are *different evidence
@@ -593,29 +621,47 @@ def build_workbench(directory):
             continue
         acoustic_ids_by_asr.setdefault(str(asr_id), []).append(str(acoustic_id))
 
-    def transcript_link(segment_id):
+    def transcript_link(segment):
+        """``(region_id, candidates, basis, span_matches)`` for one transcript segment.
+
+        The fused cross-reference states that the utterance and the acoustic segment
+        describe the same audio, but not that their intervals are *equal*: an acoustic
+        segment may cover several utterances, and splitting one at speaker boundaries
+        leaves every piece carrying the parent's ``acoustic_segment_id``. So an
+        utterance navigates to its containing region and the relation is published
+        explicitly, rather than presented as an exact match.
+        """
+        segment_id = segment.get('segment_id')
         candidates = []
         for acoustic_id in acoustic_ids_by_asr.get(str(segment_id), []):
             region_id = acoustic_region_by_segment.get(acoustic_id)
             if region_id and region_id not in candidates:
                 candidates.append(region_id)
-        if len(candidates) == 1:
-            return candidates[0], candidates, 'fused_acoustic_segment'
         if len(candidates) > 1:
             # One ASR utterance fused into several acoustic segments: the browser must
             # not silently pick one, so the candidates are published and the row stays
             # unlinked until a reviewer resolves it.
-            return None, candidates, 'ambiguous'
-        return None, [], 'unresolved'
+            return None, candidates, 'ambiguous', False
+        if not candidates:
+            return None, [], 'unresolved', False
+        region = builder.resolved_region(candidates[0])
+        own = _span(segment)
+        matches = bool(region is not None and own is not None
+                       and (region['start_ms'], region['end_ms']) == own)
+        basis = 'fused_acoustic_segment' if matches else 'fused_acoustic_segment_container'
+        return candidates[0], candidates, basis, matches
 
     transcript_rows = []
     for segment in (transcript.get('segments') or []):
-        region_id, candidates, basis = transcript_link(segment.get('segment_id'))
+        region_id, candidates, basis, span_matches = transcript_link(segment)
         transcript_rows.append({
             'segment_id': segment.get('segment_id'),
             'region_id': region_id,
             'region_ids': candidates,
             'region_basis': basis,
+            # False means the served region is the *containing* interval, not the
+            # utterance's own span; the panel must not claim they are the same.
+            'region_span_matches': span_matches,
             'start_ms': _number(segment.get('start_ms')),
             'end_ms': _number(segment.get('end_ms')),
             'text': segment.get('text'),
@@ -626,11 +672,28 @@ def build_workbench(directory):
 
     artifacts = [item for item in (manifest.get('artifacts') or [])
                  if item.get('kind') not in REPORT_ARTIFACT_KINDS]
+
+    def read_artifact(document_path):
+        """Read a document this projection consumes, recording its integrity.
+
+        Every consumed document goes through one checked read, so a document that
+        cannot be parsed is always reported as a gap — whether or not it happens to be
+        named in the evidence set above. Two entrances with different failure semantics
+        is exactly how a silent downgrade gets reintroduced.
+        """
+        payload, status = _read_checked(directory / document_path)
+        # Recorded without its extension: `unreadable` is keyed by document *name* so it
+        # renders as `<name>.json` in one place, whichever path found the gap.
+        name = Path(str(document_path)).stem
+        if status == READ_UNREADABLE and name not in unreadable:
+            unreadable.append(name)
+        return payload
+
     invocations = []
     for artifact in artifacts:
         if artifact.get('kind') != 'provider_invocation':
             continue
-        document = read_revision_document(directory, artifact['path'], False)[0]
+        document = read_artifact(artifact['path'])
         payload = document.get('data') if 'kind' in document else document
         payload = payload if isinstance(payload, dict) else {}
         invocations.append({key: payload.get(key) for key in _INVOCATION_FIELDS
@@ -641,14 +704,14 @@ def build_workbench(directory):
                               (Path('analysis') / str(analysis_id)).as_posix())), None)
     routes = {}
     if configuration is not None:
-        snapshot = _read(directory / configuration['path'])
+        snapshot = read_artifact(configuration['path'])
         for route, value in (snapshot.get('routes') or {}).items():
             if isinstance(value, dict):
                 routes[route] = {key: value.get(key) for key in _ROUTE_FIELDS if key in value}
 
     audio_artifact = next((item for item in artifacts if item.get('kind') == 'normalized_audio'), None)
     metadata = next((item for item in artifacts if item.get('kind') == 'audio_metadata'), None)
-    normalized = _read(directory / metadata['path']).get('normalized') if metadata else {}
+    normalized = read_artifact(metadata['path']).get('normalized') if metadata else {}
     normalized = normalized if isinstance(normalized, dict) else {}
     source = fused.get('source') if isinstance(fused.get('source'), dict) else {}
     duration_ms = _number(normalized.get('duration_ms'))
@@ -661,6 +724,32 @@ def build_workbench(directory):
     metrics_gap = explain_metric_gap(
         {'segments': fused.get('segments') or []}, timeline, {'metrics': metrics_doc.get('metrics') or []},
         alignment)
+
+    # --- availability gaps, now that every consumed document has been read ----
+    # A document that exists but cannot be parsed is a *different* failure from a stage
+    # that produced nothing: the evidence is there but unreadable, so the chain for this
+    # revision is incomplete and the reviewer must be told.
+    for name in unreadable:
+        unavailable.append({
+            'stage': name, 'status': READ_UNREADABLE, 'kind': 'failed',
+            'document': f'{name}.json',
+            'reason': f'{name}.json exists but cannot be read as JSON; its evidence is missing from '
+                      'this projection, so the evidence chain for this revision is incomplete'})
+    # A record the builder had to skip is reported, not thrown: the rest of the revision
+    # stays reviewable and the reviewer is told exactly which record is not.
+    for gap in builder.gaps:
+        document = str(gap.get('document') or 'unknown')
+        unavailable.append({
+            'stage': document.replace('.json', '') or 'unknown',
+            'status': 'invalid', 'kind': 'failed', 'document': document,
+            'reference': gap.get('region_id'),
+            'reason': gap.get('reason')})
+    if not gate_complete:
+        for track_id in ROLE_DEPENDENT_TRACKS:
+            unavailable.append({
+                'stage': track_id, 'status': 'insufficient_evidence', 'kind': 'incomplete',
+                'reason': f'人工角色确认未完成（{gate_status}）：{gate_reason}；'
+                          '该轨道不发布 region，解析出的区间仅以 resolved_span 供审计'})
 
     revision = role_review.get('revision') or None
     # The identity covers everything the browser navigates on: the published regions and
@@ -728,14 +817,18 @@ def build_workbench(directory):
         'transcript': transcript_rows,
         'unavailable': unavailable,
         'evidence_integrity': {
-            'status': 'incomplete' if unreadable else 'ok',
+            'status': 'incomplete' if (unreadable or builder.gaps) else 'ok',
             'readable_documents': [f'{name}.json' for name in present],
             'unreadable_documents': [f'{name}.json' for name in unreadable],
+            'skipped_records': [{'document': gap.get('document'), 'region_id': gap.get('region_id')}
+                                for gap in builder.gaps],
         },
         'abstentions': {
             'metrics_gap': metrics_gap,
             'findings': list(findings_doc.get('abstentions') or []),
             'rejected_findings': list(findings_doc.get('rejected') or []),
+            # Records that could not be published because their id was already taken.
+            'skipped_records': list(builder.gaps),
             # The increment over `unavailable`: stages that were attempted and
             # abstained or failed, i.e. that were expected to conclude and did not.
             # Stages that simply have not run yet (`kind: not_run`) are reported in

@@ -254,6 +254,9 @@ function wbTranscriptRows(document) {
             ? segment.region_ids.map(value => wbString(value)).filter(value => value !== '')
             : null,
         region_basis: wbStringOrNull(segment.region_basis),
+        region_span_matches: typeof segment.region_span_matches === 'boolean'
+            ? segment.region_span_matches
+            : null,
         start_ms: wbOrNull(segment.start_ms),
         end_ms: wbOrNull(segment.end_ms),
         text: wbStringOrNull(segment.text),
@@ -629,7 +632,13 @@ function wbLinkedRows(regionId) {
     });
     wbTranscriptRows(document).forEach(row => {
         if (wbTranscriptRegionId(document, row) === regionId) {
-            rows.push(['转写', wbButton(wbValueText(row.segment_id), regionId), wbValueText(row.text)]);
+            // The backend decides whether the served region *is* the utterance's interval or
+            // merely contains it; the panel repeats that rather than implying equality.
+            const relation = row.region_span_matches === false
+                ? ' · 容器区间（该话语为其子区间，非等值）'
+                : '';
+            rows.push(['转写', wbButton(wbValueText(row.segment_id), regionId),
+                wbValueText(row.text) + relation]);
         }
     });
     return rows;
@@ -718,12 +727,14 @@ function wbRenderTables(document) {
         wbFlag(row.has_interruption),
         wbFlag(row.has_overlap),
     ]));
-    wbSetPanel('wb-transcript', '转写（时间戳为 ASR 估计）', ['片段', 'start_ms', 'end_ms', '说话人', '角色（后端）', '文本'], wbTranscriptRows(document).map(row => [
+    wbSetPanel('wb-transcript', '转写（时间戳为 ASR 估计）', ['片段', 'start_ms', 'end_ms', '说话人', '角色（后端）', '区间关联', '文本'], wbTranscriptRows(document).map(row => [
         wbButton(wbValueText(row.segment_id), document ? wbTranscriptRegionId(document, row) : null),
         wbValueText(row.start_ms),
         wbValueText(row.end_ms),
         wbValueText(row.speaker_id),
         wbValueText(row.speaker_role),
+        // Served verbatim: a container region is never shown as an exact match.
+        wbValueText(row.region_basis),
         wbValueText(row.text),
     ]));
 }

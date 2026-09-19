@@ -593,6 +593,155 @@ class BrowserFacingSafetyTests(WorkbenchFixture):
         self.assertNotIn('example.invalid', serialized)
 
 
+class DuplicateRecordTests(unittest.TestCase):
+    """A duplicated id in one document must not withdraw the whole workbench."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.directory, self.manifest = build_document_run(Path(self._tmp.name) / 'runs')
+
+    def analysis(self):
+        return self.directory / 'analysis' / self.manifest['analysis_id']
+
+    def test_two_events_with_one_id_are_reported_not_fatal(self):
+        path = self.analysis() / 'timeline.json'
+        timeline = json.loads(path.read_text(encoding='utf-8'))
+        duplicate = dict(timeline['data']['events'][0], start_ms=500.0, end_ms=600.0)
+        timeline['data']['events'] = [timeline['data']['events'][0], duplicate]
+        write_json(path, timeline)
+        document = build_workbench(self.directory)
+        # The rest of the revision is still reviewable...
+        self.assertEqual([region['region_id'] for region in document['regions']
+                          if region['track_id'] == 'acoustic'],
+                         ['acoustic:SEG-1', 'acoustic:SEG-2'])
+        self.assertEqual([region['region_id'] for region in document['regions']
+                          if region['track_id'] == 'event'], ['event:EVT-1'])
+        # ...and the record that could not be drawn is named.
+        self.assertEqual(document['evidence_integrity']['status'], 'incomplete')
+        self.assertEqual(document['evidence_integrity']['skipped_records'],
+                         [{'document': 'timeline.json', 'region_id': 'event:EVT-1'}])
+        gaps = [item for item in document['unavailable'] if item.get('reference') == 'event:EVT-1']
+        self.assertTrue(gaps, document['unavailable'])
+        self.assertEqual(gaps[0]['status'], 'invalid')
+        self.assertIn('duplicates an already published region', gaps[0]['reason'])
+
+    def test_two_acoustic_segments_with_one_id_are_reported_not_fatal(self):
+        path = self.analysis() / 'acoustic-segments.json'
+        acoustic = json.loads(path.read_text(encoding='utf-8'))
+        duplicate = dict(acoustic['data']['segments'][0], start_ms=1000.0, end_ms=2000.0)
+        acoustic['data']['segments'] = [acoustic['data']['segments'][0], duplicate]
+        write_json(path, acoustic)
+        document = build_workbench(self.directory)
+        self.assertEqual([region['region_id'] for region in document['regions']
+                          if region['track_id'] == 'acoustic'], ['acoustic:SEG-1'])
+        self.assertEqual(document['abstentions']['skipped_records'][0]['region_id'], 'acoustic:SEG-1')
+
+    def test_a_duplicate_id_leaves_the_rest_of_the_evidence_navigable(self):
+        path = self.analysis() / 'timeline.json'
+        timeline = json.loads(path.read_text(encoding='utf-8'))
+        timeline['data']['events'] = [timeline['data']['events'][0], dict(timeline['data']['events'][0])]
+        write_json(path, timeline)
+        document = build_workbench(self.directory)
+        self.assertEqual([row['region_id'] for row in document['metrics']], ['metric:MET-1'])
+        self.assertEqual([row['region_id'] for row in document['findings']], ['finding:FND-1'])
+        self.assertEqual([row['region_id'] for row in document['transcript']],
+                         ['acoustic:SEG-1', 'acoustic:SEG-2'])
+
+
+class TranscriptContainmentTests(unittest.TestCase):
+    """A containing acoustic region is published as containment, never as equality."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.directory, self.manifest = build_document_run(Path(self._tmp.name) / 'runs')
+
+    def analysis(self):
+        return self.directory / 'analysis' / self.manifest['analysis_id']
+
+    def widen(self, start_ms, end_ms):
+        path = self.analysis() / 'acoustic-segments.json'
+        acoustic = json.loads(path.read_text(encoding='utf-8'))
+        acoustic['data']['segments'][0]['start_ms'] = start_ms
+        acoustic['data']['segments'][0]['end_ms'] = end_ms
+        write_json(path, acoustic)
+
+    def test_a_coarse_acoustic_segment_is_reported_as_a_container(self):
+        # One acoustic segment covering two utterances: the link is real, but the region
+        # is not the utterance's own interval.
+        self.widen(0.0, 3000.0)
+        rows = build_workbench(self.directory)['transcript']
+        first = rows[0]
+        self.assertEqual(first['region_id'], 'acoustic:SEG-1')
+        self.assertEqual(first['region_basis'], 'fused_acoustic_segment_container')
+        self.assertFalse(first['region_span_matches'])
+        self.assertEqual((first['start_ms'], first['end_ms']), (0.0, 1000.5))
+
+    def test_a_parent_split_at_speaker_boundaries_links_both_rows_to_the_parent(self):
+        # `_split_by_speaker` keeps the parent's `acoustic_segment_id` on every piece, so
+        # two utterances can share one published region whose span is neither of them.
+        self.widen(0.0, 3000.0)
+        path = self.analysis() / 'fused-segments.json'
+        fused = json.loads(path.read_text(encoding='utf-8'))
+        fused['data']['segments'][1]['acoustic_segment_id'] = 'SEG-1'
+        write_json(path, fused)
+        rows = {row['segment_id']: row for row in build_workbench(self.directory)['transcript']}
+        self.assertEqual(rows['ASR-0001']['region_id'], 'acoustic:SEG-1')
+        self.assertEqual(rows['ASR-0002']['region_id'], 'acoustic:SEG-1')
+        self.assertEqual(rows['ASR-0002']['region_basis'], 'fused_acoustic_segment_container')
+        self.assertFalse(rows['ASR-0002']['region_span_matches'])
+
+    def test_an_exact_match_is_still_reported_as_an_exact_match(self):
+        row = build_workbench(self.directory)['transcript'][0]
+        self.assertEqual(row['region_basis'], 'fused_acoustic_segment')
+        self.assertTrue(row['region_span_matches'])
+
+
+class ConsumedDocumentIntegrityTests(unittest.TestCase):
+    """Documents the projection consumes are all integrity-checked, not just the named ones."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.directory, self.manifest = build_document_run(Path(self._tmp.name) / 'runs')
+
+    def analysis(self):
+        return self.directory / 'analysis' / self.manifest['analysis_id']
+
+    def test_a_corrupt_audio_metadata_document_is_reported(self):
+        before = build_workbench(self.directory)
+        self.assertEqual(before['audio']['duration_ms'], 3000.0)
+        (self.analysis() / 'audio-metadata.json').write_text('{"normalized":', encoding='utf-8')
+        document = build_workbench(self.directory)
+        self.assertEqual(document['evidence_integrity']['status'], 'incomplete')
+        self.assertIn('audio-metadata.json', document['evidence_integrity']['unreadable_documents'])
+        gaps = {item['stage']: item for item in document['unavailable']}
+        self.assertEqual(gaps['audio-metadata']['status'], 'unreadable')
+        # The duration still resolves, but from the *fused* document's own recorded
+        # value rather than the unreadable metadata: a persisted fallback, not an
+        # invention, and the broken document is still named as a gap.
+        self.assertEqual(document['audio']['duration_ms'], 3000.0)
+        self.assertEqual(document['audio']['sample_rate'], 16000)
+
+    def test_an_evidence_record_without_an_interval_is_a_named_gap(self):
+        path = self.analysis() / 'timeline.json'
+        timeline = json.loads(path.read_text(encoding='utf-8'))
+        timeline['data']['evidence'].append({'evidence_id': 'EVD-nointerval'})
+        write_json(path, timeline)
+        metrics_path = self.analysis() / 'metrics.json'
+        metrics = json.loads(metrics_path.read_text(encoding='utf-8'))
+        metrics['data']['metrics'][0]['evidence_ids'] = ['EVD-nointerval']
+        write_json(metrics_path, metrics)
+        document = build_workbench(self.directory)
+        gaps = {(gap['record'], gap['record_id'], gap['field']): gap
+                for gap in document['abstentions']['unresolved_references']}
+        gap = gaps[('metric', 'MET-1', 'evidence_ids')]
+        # "Declared but has no interval" is a different defect from "not in this revision".
+        self.assertEqual(gap['cause'], 'no_interval')
+        self.assertEqual(gap['references'], ['EVD-nointerval'])
+
+
 class WorkbenchApiTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -647,6 +796,34 @@ class WorkbenchApiTests(unittest.TestCase):
             'stages': {}, 'artifacts': []})
         response = self.client.get('/api/runs/RUN-legacy-empty/evidence-workbench')
         self.assertEqual(response.status_code, 404, response.text)
+
+    def test_a_projection_failure_is_not_reported_as_absent_evidence(self):
+        # "This Run has no workbench" and "this Run's workbench could not be built" are
+        # different answers: folding the second into the first tells a reviewer the
+        # evidence does not exist when it does.
+        from aivoicebench import workbench as workbench_module
+        with patch.object(workbench_module, 'build_workbench',
+                          side_effect=ValueError('Duplicate workbench region id: event:EVT-1')):
+            response = self.client.get(f'/api/runs/{self.directory.name}/evidence-workbench')
+        self.assertEqual(response.status_code, 500, response.text)
+        self.assertIn('投影失败', response.json()['detail'])
+        self.assertIn('Duplicate workbench region id', response.json()['detail'])
+
+    def test_absence_is_still_a_404(self):
+        from aivoicebench import workbench as workbench_module
+        with patch.object(workbench_module, 'build_workbench',
+                          side_effect=workbench_module.NoWorkbench('Run manifest is missing')):
+            response = self.client.get(f'/api/runs/{self.directory.name}/evidence-workbench')
+        self.assertEqual(response.status_code, 404, response.text)
+
+    def test_the_run_listing_survives_a_projection_failure(self):
+        # The listing must stay robust: one broken Run may not take down `/api/runs`.
+        from aivoicebench import workbench as workbench_module
+        with patch.object(workbench_module, 'build_workbench',
+                          side_effect=ValueError('broken projection')):
+            listing = self.client.get('/api/runs')
+        self.assertEqual(listing.status_code, 200, listing.text)
+        self.assertEqual([item['run_id'] for item in listing.json()['runs']], [self.directory.name])
 
     def test_a_run_with_artifacts_but_no_evidence_yet_still_answers(self):
         # The 404 boundary is "nothing to review at all": a Run that registered an

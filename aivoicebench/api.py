@@ -177,18 +177,26 @@ def _run_dir(run_id):
     return path
 
 
-def _workbench(directory):
+def _workbench(directory, *, tolerant=True):
     """Persisted-evidence projection for the Evidence Workbench.
 
-    A Run whose evidence cannot be read at all must not fabricate a workbench, so
-    a projection failure is reported as an absent document instead of a partial
-    one. The projection itself never computes a metric, event or role.
+    Only *absence* becomes an absent document: a Run whose directory carries no
+    manifest, no ``analysis_id`` or no AnalysisRevision has no workbench, and the
+    endpoint says so with 404. A projection that fails for any other reason is a defect
+    in the evidence, not an absence of it, and must never be reported as "this record
+    has no reviewable evidence" — with ``tolerant=False`` the caller sees the real error
+    so it can be surfaced as a failure instead. The projection itself never computes a
+    metric, event or role.
     """
-    from .workbench import build_workbench
+    from .workbench import NoWorkbench, build_workbench
     try:
         return build_workbench(directory)
-    except (OSError, ValueError):
+    except NoWorkbench:
         return {}
+    except (OSError, ValueError):
+        if tolerant:
+            return {}
+        raise
 
 
 def _load_run(directory, *, include_workbench=True):
@@ -454,8 +462,18 @@ def get_evidence_workbench(run_id: str):
 
     Returned as its own document so CLI/automation can verify the exact evidence
     geometry the browser is allowed to draw, independently of the page.
+
+    Three states are kept distinct on purpose: an absent Run/Revision is 404; a
+    projection that fails is 500, because the evidence exists and the reviewer must not
+    be told it does not; a projection that succeeds carries its own gaps in
+    ``unavailable``/``evidence_integrity``.
     """
-    document = _workbench(_run_dir(run_id))
+    directory = _run_dir(run_id)
+    try:
+        document = _workbench(directory, tolerant=False)
+    except (OSError, ValueError) as error:
+        raise HTTPException(
+            500, f'证据工作台投影失败（该 Run 的证据存在但无法投影）：{error}') from None
     if not document:
         raise HTTPException(404, '该记录没有可复核的证据工作台')
     return document
