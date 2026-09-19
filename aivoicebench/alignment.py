@@ -27,7 +27,7 @@ import uuid
 
 SCHEMA_VERSION = '1.0.0'
 PROCESSOR_NAME = 'acoustic_speaker_alignment'
-PROCESSOR_VERSION = '1.1.0'
+PROCESSOR_VERSION = '1.2.0'
 
 # The canonical policy. `min_overlap_ms` is 0.0 so that any positive overlap is a
 # candidate, which is exactly the rule fusion already applies; the remaining
