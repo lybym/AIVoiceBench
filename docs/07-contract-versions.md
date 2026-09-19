@@ -108,6 +108,86 @@ Two contract decisions, both additive:
    - It is registered as artifact kind `speaker-alignment` inside the recording chain (`alignment.json`) and validated before registration; the `fusion` stage records its document id, status, policy version and processor version.
    - Migration: none; no prior artifact had this shape.
 
+## AcousticSegments 1.0.0 additive model-provider members + VadAnnotation 1.0.0 (Issue #23)
+Two contract decisions, both additive. No previously stored Run, example or
+downstream reader is invalidated by either.
+
+1. **`AcousticSegments 1.0.0` keeps its version.** Adding an optional
+   model-based provider (Silero VAD) required the document to be able to describe
+   a boundary produced by *model speech probabilities* instead of frame energies.
+   Three members carry that, all optional:
+   - **`processor.parameters` becomes a `oneOf` of two closed variants.** The
+     energy/RMS variant is unchanged (same fields, same `required`, and it now
+     explicitly forbids `threshold`); the model variant requires
+     `frame_samples`/`hop_samples`/`threshold`/`min_speech_ms`/`min_silence_ms`
+     and may add `negative_threshold`, threshold-crossing counts and a 10-bin
+     `speech_probability_histogram`. A model VAD therefore never has to report a
+     fabricated energy-relative `threshold_factor`, and an energy document can
+     never be mistaken for one that used an absolute probability threshold.
+   - **`processor.model` is new and optional**: weight identity
+     (`name`/`version`/`sha256`/`source`), runtime + version,
+     `execution_provider`, and the fixed analysis window
+     (`sample_rate_hz`/`window_samples`/`context_samples`). It exists because a
+     model boundary without the weights digest and runtime is not replayable or
+     auditable.
+   - **`segments[].frame_stats` becomes a `oneOf`**: the energy variant is
+     unchanged; the model variant reports `peak/mean/min_speech_probability`,
+     the applied `threshold`, `frames_above_threshold` and `frame_count`.
+   - Migration: **none required.** The `required` lists, the `schema_version`
+     constant and every existing member's meaning are untouched. A reader that
+     knows only the common acoustic contract keeps working; a reader that ignores
+     `processor.model` keeps working, because no common member moved into it.
+     `docs/17-acoustic-segmentation.md` §6.1 states exactly which fields a
+     downstream consumer (#24) may depend on.
+   - Runtime invariants that the JSON Schema cannot express are enforced by
+     `aivoicebench.validation.acoustic_errors`: a model document without the
+     `processor.model` block is rejected; an energy-method document that claims a
+     model block is rejected; and a `method` naming a non-signal producer
+     (`asr`, `diarization`, `speaker`, `llm`, `provider_timestamp`, …) is
+     rejected, so an ASR timestamp can never be relabelled as an acoustic
+     boundary.
+   - Positive/negative coverage: [test_silero_vad.py](../tests/test_silero_vad.py)
+     covers the model document shape, the missing-threshold rejection, the
+     energy-claims-model rejection, the ASR-method rejection, replay equality and
+     the legacy energy document still validating unchanged.
+2. **`VadAnnotation 1.0.0`** (`schemas/vad-annotation.schema.json`) is a new
+   document contract: one human annotation of speech boundaries in one real
+   recording, bound to the recording by sha256, with optional
+   `annotated_regions` (the ranges a human actually listened to). It exists so
+   Issue #23's real-recording evaluation has an explicit input rather than
+   hand-computed numbers, and so "no annotated sample set" is a representable
+   state. It carries no accuracy result and no product threshold.
+   - It is **not** a measurement policy and is not registered in the recording
+     chain; it is consumed by `aivoicebench vad-eval`
+     ([vad_evaluation.py](../aivoicebench/vad_evaluation.py)).
+   - Migration: none; no prior artifact had this shape.
+   - Positive/negative coverage: [test_vad_evaluation.py](../tests/test_vad_evaluation.py)
+     covers schema rejection (missing digest, reversed/overlapping/out-of-bounds
+     intervals, empty annotator), the `no_annotated_sample_set` /
+     `annotated_sample_set_has_no_intervals` states, one-to-one matching,
+     signed/absolute start-end error, miss and false-alarm accounting, the
+     denominator/coverage figures and cross-document scoring.
+3. **`SpeakerAlignment 1.0.0` keeps its version and gains one optional member.**
+   `diagnostics.low_energy.energy_evidence` is a new **optional** array: one
+   `{acoustic_segment_id, mean_rms}` entry per acoustic segment, with `mean_rms:
+   null` when that segment carried no energy measurement. It exists because
+   `alignment.py` previously read a missing `frame_stats.mean_rms` as `0.0`,
+   which marked every boundary from a model-based provider (Silero reports
+   per-frame speech probabilities, not RMS) as `low_energy` — a silent
+   "quiet device" diagnosis manufactured from absent evidence. `low_energy` on a
+   segment is now `true` only for a *measured* reading at or below the computed
+   threshold, and both the threshold and the distribution are computed from the
+   measured segments only.
+   - Migration: none required. The member is optional and absent-means-unrecorded
+     for readers; the `low_energy` rule only became stricter (never `true`
+     without a measurement), which cannot turn a previously reported finding into
+     a false one.
+   - Positive/negative coverage: [test_alignment.py](../tests/test_alignment.py)
+     covers a model segment excluded from the distribution while its `null` is
+     recorded, an all-model document reporting `threshold_mean_rms: null` with
+     zero low-energy segments, a genuinely measured `0.0` still being a finding,
+     and the older document shape (field absent) still validating.
+
 ## SpeakerRoleReview 1.0.0 (Issue #95)
 
 A third new document contract, `schemas/role-review.schema.json`, carries the manual speaker-role gate: the anonymous clusters, the evidence needed to decide each one, the saved human revision, the revision history and the diff.

@@ -546,5 +546,125 @@ class ActualCodecImport(unittest.TestCase):
         self.assertIn(b'PARTIAL', result.stdout)
 
 
+class AcousticProviderSelection(unittest.TestCase):
+    """Issue #23: Recording Analysis can switch Energy/Silero and records which ran."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not (shutil.which('ffmpeg') and shutil.which('ffprobe')):
+            raise unittest.SkipTest('FFmpeg/FFprobe not installed; provider selection not performed')
+        # A model provider needs speech-like audio to find a boundary. Silero
+        # classifies a pure tone as non-speech, so a tone-only fixture would make a
+        # working integration look like a silent recording.
+        from tests.silero_gate import UNAVAILABLE
+        cls.models_unavailable = UNAVAILABLE
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='vad provider ')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = self.root / 'provider.wav'
+        tone(self.source)
+
+    def _import(self, name):
+        return import_recording(self.source, self.root / name, synthetic=True)
+
+    def test_default_provider_is_the_energy_vad(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('AIVOICEBENCH_ACOUSTIC_PROVIDER', None)
+            directory, manifest = self._import('default-runs')
+        processor = manifest['stages']['acoustic']['processor']
+        self.assertEqual(processor['method'], 'energy_vad')
+        self.assertIsNone(processor['model'])
+        self.assertEqual(recording_run_errors(manifest, directory), [])
+
+    def test_explicit_model_provider_runs_and_records_its_provenance(self):
+        """The real path: silero selected, model loaded, provenance in the Run."""
+        if self.models_unavailable:
+            raise unittest.SkipTest(f'Silero VAD runtime unavailable: {self.models_unavailable}')
+        from tests.fixtures import synthetic_audio as sa
+        sa.write_wav(self.source, sa.concatenate(sa.silence(300), sa.speech_like(900),
+                                                sa.silence(300)))
+        with patch.dict(os.environ, {'AIVOICEBENCH_ACOUSTIC_PROVIDER': 'silero'}):
+            directory, manifest = self._import('silero-runs')
+        processor = manifest['stages']['acoustic']['processor']
+        self.assertEqual(processor['method'], 'silero_vad')
+        self.assertEqual(processor['version'], '1.0.0')
+        self.assertEqual(processor['policy'], 'silero_boundary_policy/1.0.0')
+        # Weight identity and runtime belong to the Run, not just to the document.
+        self.assertEqual(processor['model']['sha256'],
+                         '1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3')
+        self.assertEqual(processor['model']['runtime'], 'onnxruntime')
+        self.assertEqual(processor['parameters']['threshold'], 0.5)
+        # The registered acoustic document validates against the shared contract.
+        envelope = directory / 'analysis' / manifest['analysis_id'] / 'acoustic-segments.json'
+        document = json.loads(envelope.read_text(encoding='utf-8'))['data']
+        from aivoicebench.validation import acoustic_errors
+        self.assertEqual(acoustic_errors(document), [])
+        self.assertEqual(document['segments'][0]['method'], 'silero_vad')
+        self.assertEqual(recording_run_errors(manifest, directory), [])
+
+    def test_model_provider_honours_the_policy_environment(self):
+        if self.models_unavailable:
+            raise unittest.SkipTest(f'Silero VAD runtime unavailable: {self.models_unavailable}')
+        with patch.dict(os.environ, {'AIVOICEBENCH_ACOUSTIC_PROVIDER': 'silero',
+                                     'AIVOICEBENCH_SILERO_POLICY': '9.9.9'}):
+            directory, manifest = self._import('policy-runs')
+        self.assertEqual(manifest['stages']['acoustic']['status'], 'failed')
+        stored = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertIn('SileroPolicyError', stored['stages']['acoustic']['reason'])
+
+    def test_cli_acoustic_silero_writes_a_model_document(self):
+        """The CLI reaches the same provider through the same resolution."""
+        if self.models_unavailable:
+            raise unittest.SkipTest(f'Silero VAD runtime unavailable: {self.models_unavailable}')
+        from tests.fixtures import synthetic_audio as sa
+        sa.write_wav(self.source, sa.concatenate(sa.silence(300), sa.speech_like(900),
+                                                sa.silence(300)))
+        output = self.root / 'cli-silero.json'
+        result = subprocess.run(
+            [sys.executable, '-m', 'aivoicebench', 'acoustic', str(self.source),
+             '--vad', 'silero', '--policy', '1.0.0', '--output', str(output)],
+            cwd=ROOT, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
+        document = json.loads(output.read_text(encoding='utf-8'))
+        self.assertEqual(document['processor']['method'], 'silero_vad')
+        self.assertEqual(document['processor']['sensitivity']['profile'],
+                         'silero_boundary_policy/1.0.0')
+        self.assertEqual(document['processor']['model']['runtime'], 'onnxruntime')
+
+    def test_unknown_provider_fails_the_stage_instead_of_degrading(self):
+        with patch.dict(os.environ, {'AIVOICEBENCH_ACOUSTIC_PROVIDER': 'webrtc'}):
+            directory, manifest = self._import('unknown-runs')
+        self.assertEqual(manifest['stages']['acoustic']['status'], 'failed')
+        stored = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+        # The Run records a typed failure; the raw native message stays in logs.
+        self.assertIn('AcousticError', stored['stages']['acoustic']['reason'])
+        # The failed stage names no acoustic method, so nothing claims a provider ran.
+        self.assertNotIn('method', stored['stages']['acoustic']['processor'])
+
+    def test_model_provider_without_its_runtime_fails_the_stage(self):
+        """No silent fallback to energy when the model cannot load."""
+        environment = {'AIVOICEBENCH_ACOUSTIC_PROVIDER': 'silero',
+                       'AIVOICEBENCH_SILERO_MODEL': str(self.root / 'absent.onnx')}
+        with patch.dict(os.environ, environment):
+            directory, manifest = self._import('silero-runs')
+        self.assertEqual(manifest['stages']['acoustic']['status'], 'failed')
+        stored = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertIn('SileroUnavailableError', stored['stages']['acoustic']['reason'])
+        # The failed stage never claims the model it could not run, and never claims
+        # the energy VAD either: a failed model selection is not a fallback.
+        self.assertNotIn('method', stored['stages']['acoustic']['processor'])
+
+    def test_energy_sensitivity_profile_cannot_apply_to_a_model_provider(self):
+        environment = {'AIVOICEBENCH_ACOUSTIC_PROVIDER': 'silero',
+                       'AIVOICEBENCH_ACOUSTIC_PROFILE': 'quiet_device'}
+        with patch.dict(os.environ, environment):
+            directory, manifest = self._import('conflict-runs')
+        self.assertEqual(manifest['stages']['acoustic']['status'], 'failed')
+        stored = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertIn('ValueError', stored['stages']['acoustic']['reason'])
+
+
 if __name__ == '__main__':
     unittest.main()

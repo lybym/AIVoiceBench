@@ -15,7 +15,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 - Browser Station 实现语言：手写源码为 **TypeScript**（`web/src/`），编译产物为 `aivoicebench/static/*.js`；只做等价迁移和静态类型工程化，不要求 React/Vue 等框架重写；由 [Issue #84](https://github.com/lybym/AIVoiceBench/issues/84) 跟踪，代码与 build/typecheck 门禁已完成；
 - Browser Control VAD：TEN VAD（WASM）为目标实现；现有 RMS 保留 fallback/debug；
-- Server Acoustic Boundary：Silero VAD 为首个正式候选 baseline；
+- Server Acoustic Boundary：Silero VAD 为已实现的正式 baseline（server-side ONNX Adapter，#23）；energy/RMS 保留 fixture/fallback；
 - Speaker separation：优先使用火山 ASR 原生 speaker labels，当前不接 3D-Speaker；
 - Evidence UI：wavesurfer.js；
 - Windows Native：不作为正式交付方向。
@@ -61,13 +61,13 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 ### R2 — Acoustic Boundary Provider
 
-1. 保留 `EnergyVadSegmenter` 作为 fixture/fallback；
-2. 接入 Silero VAD server-side Adapter；
-3. Recording Analysis 默认可配置切换 Energy/Silero，不改变下游 AcousticSegments contract；
-4. 建立人工标注样本，报告 speech start/end error、miss/false alarm 与 coverage；
-5. 不把 Silero 默认阈值当产品门槛，阈值进入版本化 Measurement Policy。
+1. ✅ 保留 `EnergyVadSegmenter` 作为 fixture/fallback；其行为、参数与文档均未改变；
+2. ✅ 接入 Silero VAD server-side Adapter（[Issue #23](https://github.com/lybym/AIVoiceBench/issues/23)）：`aivoicebench/silero_vad.py` 经 `AcousticSegmenter` Protocol 实现，onnxruntime 直接执行官方 ONNX 导出图，权重来自 `silero-vad` wheel 6.2.2（sha256 校验并写入文档），不导入 torch；
+3. ✅ Recording Analysis 可配置切换 Energy/Silero（`AIVOICEBENCH_ACOUSTIC_PROVIDER`、`--vad`），不改变下游 AcousticSegments contract；模型 provider 不可用时 acoustic stage 显式失败，不静默回退；
+4. ⬜ 建立人工标注样本，报告 speech start/end error、miss/false alarm 与 coverage —— **未完成**。已实现可复用评测脚手架 `aivoicebench/vad_evaluation.py` + `schemas/vad-annotation.schema.json` + `aivoicebench vad-eval`；无标注数据时显式输出 `no_annotated_sample_set`。AC3 仍待人工标注真实录音验收；
+5. ✅ 不把 Silero 默认阈值当产品门槛：阈值进入版本化 `silero_boundary_policy/1.0.0`，文档明确标记未在目标录音上校准且非 canonical measurement policy。
 
-阶段出口：Silero 能对同一 Artifact deterministic replay，输出带 processor/policy/confidence/uncertainty 的 Acoustic Evidence。
+阶段出口：Silero 能对同一 Artifact deterministic replay，输出带 processor/policy/confidence/uncertainty 的 Acoustic Evidence —— ✅ 已由 `tests/test_silero_vad.py` 的 replay 用例证明（比较时仅排除 `document_id` 与 `source.path` 两个 identity/environment 字段）。真实录音质量与 AC3 人工标注评测仍未完成。
 
 ### R3 — Browser Station TypeScript Foundation 与 TEN VAD
 
@@ -110,7 +110,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 | --- | --- | --- | --- | --- |
 | A — Remote Browser Measurement Foundation | ⬜ 下一实现阶段 | Browser Station TypeScript foundation（#84）、continuous browser PCM、local sample counter、durable `ART-live-measurement-audio`、capture integrity、Browser Station metadata、Execution Run 引用 | F023/F025、N002/N003/N007 | TypeScript typecheck/build + 既有 browser/container 回归通过；WAV/hash/sample count 一致；网络 RTT/receive time 不进入 acoustic metric；连续/重复/缺口/stale/stop/cancel/断连有测试 |
 | B — Browser Control VAD | ⬜ planned | TEN VAD WASM Adapter、RMS fallback、sample-indexed provisional boundaries | F020/F021/F023 | Control VAD source 可追溯；断网不改变已生成的本地音频时间 |
-| C — Server Finalized Acoustic Measurement | ⬜ planned | Silero VAD Adapter、Measurement Policy、durable audio replay、boundary uncertainty | F025、N007 | 同一 Measurement Audio 可 deterministic replay；Silero/TEN/RMS 不静默覆盖彼此 |
+| C — Server Finalized Acoustic Measurement | 🟡 partial | Silero VAD Adapter ✅（#23）、Measurement Policy ✅（`silero_boundary_policy/1.0.0`）、boundary uncertainty ✅；durable Measurement Audio replay 与 Active Run 接线未实现 | F025、N007 | 同一 Measurement Audio 可 deterministic replay；Silero/TEN/RMS 不静默覆盖彼此 |
 | D — Stimulus Measurement | ⬜ planned | 保存 stimulus reference/identity/sample info；Measurement Audio alignment；tester speech start/end | F019/F020/F025、M002/M004 | tester boundary 来自声学 alignment 而非 playback callback；弱/多重匹配弃权 |
 | E — Canonical Live Timeline | ⬜ planned | Active Measurement → EventTimeline；Evidence refs；Turn/Response identity；unknown/abstain | F008/F025 | Canonical event taxonomy 与 Recording 一致；`execution-record.json` 仍独立保留 |
 | F — Unified Metrics | ⬜ planned | Active Timeline → `compute_timeline_metrics(...)`；provisional display；finalized MetricResult | F009/F025、M001–M010 | 相同 canonical fixture 不论 pipeline 均得相同数值；无 `live_*`/`offline_*` 指标 |

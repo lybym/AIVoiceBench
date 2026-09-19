@@ -221,18 +221,20 @@ VAD 是 Acoustic Boundary Evidence Producer，不是所有 ASR 的必经前置�
 
 ```text
 AcousticSegmenter
-├─ EnergyVadSegmenter      # current legacy/fallback
-├─ SileroVadSegmenter      # planned Linux Server baseline
-└─ TenVadSegmenter         # planned Browser control/replay adapter
+├─ EnergyVadSegmenter      # implemented: stdlib legacy / fixture / explicit fallback
+├─ SileroVadSegmenter      # implemented: Linux Server baseline (#23, ONNX)
+└─ TenVadSegmenter         # planned: Browser control/replay adapter
 ```
 
 近期职责：
 
 - **TEN VAD**：Browser Station Control Plane；低延迟 provisional `speech_suspected_start/end`；记录现场 sample index；
-- **Silero VAD**：Linux Server 上对 External Recording 与 durable Live Measurement Audio 做可重放 acoustic boundary analysis；
-- **Energy/RMS**：synthetic test、debug、fallback、兼容；不再作为长期正式默认。
+- **Silero VAD**：Linux Server 上对 External Recording 与 durable Live Measurement Audio 做可重放 acoustic boundary analysis；server-side ONNX Adapter 已由 [#23](https://github.com/lybym/AIVoiceBench/issues/23) 实现（durable Live Measurement Audio 接线仍未实现）；
+- **Energy/RMS**：synthetic test、debug、fallback、兼容；不再作为长期正式默认，且**只能被显式选择**。
 
-TEN/Silero 的 threshold、hysteresis、min speech/silence、merge/padding 等由 AIVoiceBench 的版本化 Measurement Policy 管理。不同 Provider 冲突时保留冲突，不静默覆盖。
+Provider 通过 `AIVOICEBENCH_ACOUSTIC_PROVIDER` / `--vad` 显式选择。模型 provider 不可用时对应 stage 显式失败，不回退到 energy VAD，也不把 method 写成未真实运行的算法。
+
+TEN/Silero 的 threshold、hysteresis、min speech/silence、merge/padding 等由 AIVoiceBench 的版本化 Measurement Policy 管理（Silero 首个版本 `silero_boundary_policy/1.0.0`，见 [声学分段](17-acoustic-segmentation.md) §3.2）。不同 Provider 冲突时保留冲突，不静默覆盖。
 
 TEN VAD 当前许可证包含 Apache 2.0 之外的附加部署限制，正式商业/分发接入前必须完成许可证审查。
 

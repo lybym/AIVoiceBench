@@ -159,6 +159,19 @@
             "speech_ms": { "type": "number", "minimum": 0 },
             "unmatched_ms": { "type": "number", "minimum": 0 },
             "unmatched_ratio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+            "energy_evidence": {
+              "description": "Optional and additive provenance for the low-energy distribution: one entry per acoustic segment, with the mean RMS it contributed (null when the provider produced no energy measurement). It exists so a model-based boundary provider is never misread as a quiet device.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "acoustic_segment_id": { "type": ["string", "null"] },
+                  "mean_rms": { "type": ["number", "null"], "minimum": 0 }
+                },
+                "required": ["acoustic_segment_id", "mean_rms"],
+                "additionalProperties": false
+              }
+            },
             "note": { "type": "string", "minLength": 1 }
           },
           "required": ["percentile", "threshold_mean_rms", "segment_count", "speech_ms",

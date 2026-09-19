@@ -202,6 +202,98 @@ class LowEnergyTests(unittest.TestCase):
         # The quiet miss is measurable, and it is not reported as speech absence.
         self.assertEqual(doc['diagnostics']['unmatched_acoustic_ms'], 400.0)
 
+    def test_missing_energy_evidence_is_not_a_low_energy_finding(self):
+        """A model-provider boundary reports probabilities, not RMS.
+
+        Treating the absent RMS as zero would mark the model boundary itself as a
+        quiet device. The distribution must instead exclude it and say so.
+        """
+        model_segment = {'segment_id': 'SEG-0009', 'start_ms': 3000, 'end_ms': 3600,
+                         'confidence': 0.9, 'uncertainty_ms': 32.0,
+                         'frame_stats': {'peak_speech_probability': 0.9,
+                                         'mean_speech_probability': 0.7,
+                                         'threshold': 0.5, 'frame_count': 18,
+                                         'frames_above_threshold': 12}}
+        doc = align_speaker_spans(
+            acoustic([aseg('SEG-0001', 1000, 2000, mean_rms=0.19),
+                      aseg('SEG-0002', 4000, 4500, mean_rms=0.21),
+                      model_segment]),
+            diarization([('speaker_0', 900, 2100, 0.8), ('speaker_0', 2900, 3700, 0.8),
+                         ('speaker_0', 3900, 4600, 0.8)]))
+        low = doc['diagnostics']['low_energy']
+        by_id = {e['acoustic_segment_id']: e for e in doc['alignments']}
+        # The model segment carries no RMS at all; it is neither low nor high.
+        self.assertIsNone(by_id['SEG-0009']['acoustic_mean_rms'])
+        self.assertFalse(by_id['SEG-0009']['low_energy'])
+        # The distribution is computed from the two measured segments only, so its
+        # p25 threshold (0.195) can only ever mark SEG-0001, never the model segment.
+        self.assertEqual(low['segment_count'], 1)
+        self.assertTrue(by_id['SEG-0001']['low_energy'])
+        self.assertAlmostEqual(low['threshold_mean_rms'], 0.195, places=6)
+        self.assertEqual({e['acoustic_segment_id']: e['mean_rms']
+                          for e in low['energy_evidence']},
+                         {'SEG-0001': 0.19, 'SEG-0002': 0.21, 'SEG-0009': None})
+        self.assertIn('null', low['note'])
+
+    def test_low_energy_is_never_derived_from_a_missing_reading(self):
+        """Without the fix, every model segment would land in the distribution as 0.0."""
+        model_segment = {'segment_id': 'SEG-0001', 'start_ms': 1000, 'end_ms': 1600,
+                         'confidence': 0.9, 'uncertainty_ms': 32.0,
+                         'frame_stats': {'peak_speech_probability': 0.9,
+                                         'mean_speech_probability': 0.7,
+                                         'threshold': 0.5, 'frame_count': 18,
+                                         'frames_above_threshold': 12}}
+        doc = align_speaker_spans(acoustic([model_segment]),
+                                  diarization([('speaker_0', 900, 1700, 0.8)]))
+        low = doc['diagnostics']['low_energy']
+        self.assertEqual(low['segment_count'], 0)
+        self.assertEqual(low['speech_ms'], 0.0)
+        self.assertIsNone(low['threshold_mean_rms'])
+        self.assertEqual(low['energy_evidence'],
+                         [{'acoustic_segment_id': 'SEG-0001', 'mean_rms': None}])
+
+    def test_all_segments_without_energy_evidence_reports_no_threshold(self):
+        model_segment = {'segment_id': 'SEG-0001', 'start_ms': 1000, 'end_ms': 1600,
+                         'confidence': 0.9, 'uncertainty_ms': 32.0,
+                         'frame_stats': {'peak_speech_probability': 0.9,
+                                         'mean_speech_probability': 0.7,
+                                         'threshold': 0.5, 'frame_count': 18,
+                                         'frames_above_threshold': 12}}
+        doc = align_speaker_spans(acoustic([model_segment]),
+                                  diarization([('speaker_0', 900, 1700, 0.8)]))
+        low = doc['diagnostics']['low_energy']
+        self.assertIsNone(low['threshold_mean_rms'])
+        self.assertEqual(low['segment_count'], 0)
+        self.assertEqual(low['speech_ms'], 0)
+        self.assertEqual(schema_errors(doc, 'speaker-alignment'), [])
+
+    def test_measured_zero_energy_is_still_a_low_energy_finding(self):
+        """A real (energy-provider) zero reading stays a finding, unlike absence."""
+        doc = align_speaker_spans(
+            acoustic([aseg('SEG-0001', 1000, 2000, mean_rms=0.0)]),
+            diarization([('speaker_0', 900, 2100, 0.8)]))
+        low = doc['diagnostics']['low_energy']
+        self.assertTrue(only(doc)['low_energy'])
+        self.assertEqual(low['segment_count'], 1)
+        self.assertEqual(low['speech_ms'], 1000.0)
+
+    def test_low_energy_evidence_is_recorded_in_the_document(self):
+        doc = align_speaker_spans(
+            acoustic([aseg('SEG-0001', 1000, 2000, mean_rms=0.09)]),
+            diarization([('speaker_0', 900, 2100, 0.8)]))
+        low = doc['diagnostics']['low_energy']
+        self.assertEqual(low['energy_evidence'],
+                         [{'acoustic_segment_id': 'SEG-0001', 'mean_rms': 0.09}])
+        self.assertEqual(schema_errors(doc, 'speaker-alignment'), [])
+
+    def test_document_without_energy_evidence_still_validates(self):
+        """The new member is optional, so an older document shape stays legal."""
+        doc = align_speaker_spans(
+            acoustic([aseg('SEG-0001', 1000, 2000, mean_rms=0.09)]),
+            diarization([('speaker_0', 900, 2100, 0.8)]))
+        del doc['diagnostics']['low_energy']['energy_evidence']
+        self.assertEqual(schema_errors(doc, 'speaker-alignment'), [])
+
     def test_low_energy_profile_never_changes_the_canonical_policy(self):
         """A diagnostic sensitivity run is marked; it is not the measurement policy."""
         from aivoicebench.acoustic import EnergyVadSegmenter, resolve_sensitivity

@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from .acoustic import EnergyVadSegmenter
+from .acoustic import resolve_segmenter
 from .fusion import fuse, build_turns, detect_events, generate_timeline
 from .metrics import compute_timeline_metrics
 from .llm import LLMJudge, MockLLMProvider, UnavailableLLMProvider
@@ -21,7 +21,7 @@ from .runner import write_json
 def run_full_pipeline(source, output, profile=None, *, provider=None,
                       frame_ms=30.0, hop_ms=10.0, min_speech_ms=100.0,
                       min_silence_ms=200.0, timeout_ms=5000.0,
-                      false_endpoint_ms=300.0):
+                      false_endpoint_ms=300.0, vad=None, policy=None):
     """Run the complete analysis pipeline on a canonical WAV file.
 
     Args:
@@ -29,6 +29,10 @@ def run_full_pipeline(source, output, profile=None, *, provider=None,
         output: output directory for all artifacts
         profile: dict with device/hardware/firmware/model/prompt/supplier/environment/notes
         provider: LLM provider (defaults to UnavailableLLMProvider)
+        vad: acoustic-boundary provider family ('energy' or 'silero'); defaults to
+            AIVOICEBENCH_ACOUSTIC_PROVIDER and then to the energy VAD. A model
+            provider is never silently replaced by the energy VAD.
+        policy: named Silero boundary policy version; rejected by the energy VAD.
 
     Returns dict with run_id, status, and artifact paths.
     """
@@ -38,10 +42,9 @@ def run_full_pipeline(source, output, profile=None, *, provider=None,
     profile = profile or {}
 
     # 1. Acoustic segmentation
-    segmenter = EnergyVadSegmenter(
-        frame_ms=frame_ms, hop_ms=hop_ms,
-        min_speech_ms=min_speech_ms, min_silence_ms=min_silence_ms,
-    )
+    segmenter = resolve_segmenter(
+        vad, policy, frame_ms=frame_ms, hop_ms=hop_ms,
+        min_speech_ms=min_speech_ms, min_silence_ms=min_silence_ms)
     acoustic_result = segmenter.segment(source)
     acoustic_doc = acoustic_result.to_dict()
     write_json(out / 'acoustic-segments.json', acoustic_doc)

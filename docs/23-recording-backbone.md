@@ -96,7 +96,7 @@ TOS 是第一对象存储 adapter，原因是与当前火山服务栈部署一�
 
 ## Acoustic boundary 路线
 
-现有 `EnergyVadSegmenter` 继续保留用于 fixture、debug 和兼容；Recording Analysis 的下一模型型 Provider 是 Silero VAD。
+现有 `EnergyVadSegmenter` 继续保留用于 fixture、debug 和兼容；Recording Analysis 的模型型 Provider 是 Silero VAD，其 server-side ONNX Adapter 已实现（[Issue #23](https://github.com/lybym/AIVoiceBench/issues/23)，`aivoicebench/silero_vad.py`）。
 
 ```text
 External Recording
@@ -107,6 +107,8 @@ External Recording
 ```
 
 VAD 不作为 ASR 的强制前置。两者并行产生 evidence；Silero threshold/post-processing 由版本化 Measurement Policy 管理，不能把第三方默认值直接当正式产品门槛。
+
+Recording Analysis 的 acoustic stage 通过 `AIVOICEBENCH_ACOUSTIC_PROVIDER`（`energy` 默认 / `silero`）选择 provider，并把 method/version/parameters、`processor.model`（权重 sha256、runtime、窗口）与 policy id 一起写入 stage manifest 与 acoustic 文档。选择 `silero` 而运行时或权重不可用时该 stage 显式 `failed`，不会回退到 energy VAD 冒充 Silero。真实验收（人工标注真实录音的 speech start/end error、miss/false alarm、denominator/coverage）仍待办，见 [声学分段](17-acoustic-segmentation.md) §8.2。
 
 ## Current Volcengine File ASR contract boundary
 

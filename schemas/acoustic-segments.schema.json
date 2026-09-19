@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aivoicebench.local/schemas/acoustic-segments.schema.json",
   "title": "AcousticSegments 1.0.0",
-  "description": "Speech segment candidates from signal processing. Acoustic timing is distinct from ASR, diarization, or LLM-inferred timing. Segments have no speaker role.",
+  "description": "Speech segment candidates from signal processing. Acoustic timing is distinct from ASR, diarization, or LLM-inferred timing. Segments have no speaker role. Method-specific members (`processor.parameters` variant, `processor.model`) are optional and additive: an energy-VAD document written before a model VAD existed stays valid, and a reader that only knows the common acoustic contract keeps working.",
   "type": "object",
   "properties": {
     "schema_version": {
@@ -62,59 +62,138 @@
           "minLength": 1
         },
         "parameters": {
-          "type": "object",
-          "properties": {
-            "frame_ms": {
-              "type": "number",
-              "exclusiveMinimum": 0
+          "description": "Effective, as-run segmentation parameters. Two closed variants exist so that a model VAD is never forced to report a fabricated energy-relative threshold: the energy/RMS VAD variant (no `threshold` member) and the model VAD variant (requires the absolute `threshold` and the `frame_samples`/`hop_samples` the model consumed).",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "frame_ms": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "hop_ms": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "energy_metric": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "threshold_factor": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "threshold_mode": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "min_speech_ms": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "min_silence_ms": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "merge_gap_ms": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "pre_roll_ms": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "post_roll_ms": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "frame_ms",
+                "hop_ms",
+                "energy_metric",
+                "threshold_factor",
+                "threshold_mode",
+                "min_speech_ms",
+                "min_silence_ms"
+              ],
+              "not": {
+                "required": [
+                  "threshold"
+                ]
+              },
+              "additionalProperties": false
             },
-            "hop_ms": {
-              "type": "number",
-              "exclusiveMinimum": 0
-            },
-            "energy_metric": {
-              "type": "string",
-              "minLength": 1
-            },
-            "threshold_factor": {
-              "type": "number",
-              "exclusiveMinimum": 0
-            },
-            "threshold_mode": {
-              "type": "string",
-              "minLength": 1
-            },
-            "min_speech_ms": {
-              "type": "number",
-              "exclusiveMinimum": 0
-            },
-            "min_silence_ms": {
-              "type": "number",
-              "exclusiveMinimum": 0
-            },
-            "merge_gap_ms": {
-              "type": "number",
-              "minimum": 0
-            },
-            "pre_roll_ms": {
-              "type": "number",
-              "minimum": 0
-            },
-            "post_roll_ms": {
-              "type": "number",
-              "minimum": 0
+            {
+              "type": "object",
+              "properties": {
+                "frame_samples": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "hop_samples": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "threshold": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1
+                },
+                "negative_threshold": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1
+                },
+                "min_speech_ms": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "min_silence_ms": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "merge_gap_ms": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "pre_roll_ms": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "post_roll_ms": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "frames_above_threshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "frames_below_negative_threshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "speech_probability_histogram": {
+                  "description": "Deterministic 10-bin histogram over [0, 1] of the per-frame speech probabilities the model produced. Retained so a finished document carries enough intermediate evidence to audit the threshold decision without re-running the model.",
+                  "type": "array",
+                  "minItems": 10,
+                  "maxItems": 10,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "required": [
+                "frame_samples",
+                "hop_samples",
+                "threshold",
+                "min_speech_ms",
+                "min_silence_ms"
+              ],
+              "additionalProperties": false
             }
-          },
-          "required": [
-            "frame_ms",
-            "hop_ms",
-            "energy_metric",
-            "threshold_factor",
-            "threshold_mode",
-            "min_speech_ms",
-            "min_silence_ms"
-          ],
-          "additionalProperties": false
+          ]
         },
         "sensitivity": {
           "description": "Which acoustic sensitivity produced these boundaries, and whether it is the canonical measurement policy. Optional and additive: documents written before this field existed remain valid, and a non-canonical profile is explicitly marked so a quiet-device comparison run is never mistaken for the canonical measurement.",
@@ -140,6 +219,85 @@
             "overrides",
             "is_canonical_measurement_policy",
             "note"
+          ],
+          "additionalProperties": false
+        },
+        "model": {
+          "description": "Optional model/runtime provenance for a model-based acoustic boundary provider. Records which weights, runtime, execution provider and analysis frame the boundaries came from, so a boundary is replayable and auditable. It names no downstream consumer field: readers that only know the common acoustic contract ignore it.",
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "runtime": {
+              "type": "string",
+              "minLength": 1
+            },
+            "runtime_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "execution_provider": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sample_rate_hz": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "window_samples": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "context_samples": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tail_padded": {
+              "type": "boolean"
+            },
+            "frames": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "speech_probability_mean": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "speech_probability_max": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "speech_probability_min": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "name",
+            "version",
+            "sha256",
+            "source",
+            "runtime",
+            "runtime_version",
+            "sample_rate_hz",
+            "window_samples"
           ],
           "additionalProperties": false
         }
@@ -198,32 +356,91 @@
             "minimum": 0
           },
           "frame_stats": {
-            "type": "object",
-            "properties": {
-              "peak_rms": {
-                "type": "number",
-                "minimum": 0
+            "description": "Method-specific evidence that motivated this boundary. The energy/RMS variant reports frame energies; the model variant reports the per-frame speech probabilities the boundary was derived from. A reader consuming only the common acoustic contract (segment_id/start_ms/end_ms/confidence/method/uncertainty_ms) does not need either variant.",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "peak_rms": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "mean_rms": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "threshold_rms": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "frame_count": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "peak_rms",
+                  "mean_rms",
+                  "threshold_rms",
+                  "frame_count"
+                ],
+                "not": {
+                  "required": [
+                    "peak_speech_probability"
+                  ]
+                },
+                "additionalProperties": false
               },
-              "mean_rms": {
-                "type": "number",
-                "minimum": 0
-              },
-              "threshold_rms": {
-                "type": "number",
-                "minimum": 0
-              },
-              "frame_count": {
-                "type": "integer",
-                "minimum": 1
+              {
+                "type": "object",
+                "properties": {
+                  "peak_speech_probability": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "mean_speech_probability": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "min_speech_probability": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "threshold": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 1
+                  },
+                  "frames_above_threshold": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "frame_count": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "peak_rms": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "mean_rms": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "peak_speech_probability",
+                  "mean_speech_probability",
+                  "threshold",
+                  "frames_above_threshold",
+                  "frame_count"
+                ],
+                "additionalProperties": false
               }
-            },
-            "required": [
-              "peak_rms",
-              "mean_rms",
-              "threshold_rms",
-              "frame_count"
-            ],
-            "additionalProperties": false
+            ]
           }
         },
         "required": [

@@ -1,11 +1,20 @@
 """Contract CLI; hardware execution is introduced in later issues."""
 
 import argparse
+import json
 from pathlib import Path
 import sys
 import wave
 
 from .validation import case_errors, load_document, timeline_errors, metric_errors, finding_errors, transcript_errors, acoustic_errors, fused_errors, turns_errors, judge_result_errors
+
+
+def _load_json_document(path):
+    """Read one JSON document for the CLI; native diagnostics stay in caller logs."""
+    try:
+        return json.loads(Path(path).read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError) as error:
+        raise ValueError(f'Cannot read JSON document {path}: {error}') from None
 
 
 def _print_speaker_summary(directory, manifest):
@@ -72,9 +81,15 @@ def main(argv=None):
     asr.add_argument('--run-id')
     asr.add_argument('--case-id')
     asr.add_argument('--output', type=Path, default=Path('artifacts/asr'))
-    acoustic = subparsers.add_parser('acoustic', help='Detect speech segments from a canonical WAV using energy VAD')
+    acoustic = subparsers.add_parser('acoustic', help='Detect speech segments from a canonical WAV (energy or Silero VAD)')
     acoustic.add_argument('source', type=Path)
     acoustic.add_argument('--output', type=Path, default=Path('artifacts/acoustic'))
+    acoustic.add_argument('--vad', choices=['energy', 'silero'],
+                          help='Boundary provider family (default: AIVOICEBENCH_ACOUSTIC_PROVIDER, '
+                               'else energy). silero requires the optional VAD runtime and never '
+                               'falls back to energy silently.')
+    acoustic.add_argument('--policy', help='Named policy version for the selected provider '
+                                           '(for example 1.0.0 for silero)')
     acoustic.add_argument('--frame-ms', type=float, default=30.0)
     acoustic.add_argument('--hop-ms', type=float, default=10.0)
     acoustic.add_argument('--threshold-factor', type=float, default=0.15)
@@ -83,6 +98,14 @@ def main(argv=None):
     acoustic.add_argument('--merge-gap-ms', type=float, default=80.0)
     acoustic.add_argument('--pre-roll-ms', type=float, default=0.0)
     acoustic.add_argument('--post-roll-ms', type=float, default=0.0)
+    vad_eval = subparsers.add_parser(
+        'vad-eval',
+        help='Score produced acoustic boundaries against a manually annotated real recording (#23 AC3)')
+    vad_eval.add_argument('--annotation', type=Path,
+                          help='VadAnnotation 1.0.0 JSON; omit to report that no annotated sample set exists')
+    vad_eval.add_argument('--acoustic', nargs='*', type=Path, default=[],
+                          help='Produced AcousticSegments 1.0.0 documents to score')
+    vad_eval.add_argument('--output', type=Path)
     fusion = subparsers.add_parser('fusion', help='Fuse acoustic segments, build turns, detect events, generate timeline')
     fusion.add_argument('acoustic', type=Path, help='Path to acoustic-segments JSON')
     fusion.add_argument('--transcript', type=Path, help='Optional ASR transcript JSON')
@@ -143,6 +166,10 @@ def main(argv=None):
     pipeline_cmd.add_argument('--min-silence-ms', type=float, default=200.0)
     pipeline_cmd.add_argument('--timeout-ms', type=float, default=5000.0)
     pipeline_cmd.add_argument('--false-endpoint-ms', type=float, default=300.0)
+    pipeline_cmd.add_argument('--vad', choices=['energy', 'silero'],
+                              help='Acoustic-boundary provider family (default: '
+                                   'AIVOICEBENCH_ACOUSTIC_PROVIDER, else energy)')
+    pipeline_cmd.add_argument('--policy', help='Named boundary policy version for the silero provider')
     revise_cmd = subparsers.add_parser('revise', help='Add a human revision to machine output')
     revise_cmd.add_argument('--output', type=Path, default=Path('artifacts/revisions'))
     revise_cmd.add_argument('--target-type', choices=['segment', 'event', 'turn', 'finding', 'transcript'], required=True)
@@ -224,25 +251,76 @@ def main(argv=None):
             print(f'ASR ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
             return 1
     if args.command == 'acoustic':
-        from .acoustic import EnergyVadSegmenter, segment_audio
+        from .acoustic import AcousticError, EnergyVadSegmenter, segment_audio
         try:
-            segmenter = EnergyVadSegmenter(
-                frame_ms=args.frame_ms, hop_ms=args.hop_ms,
-                threshold_factor=args.threshold_factor,
-                min_speech_ms=args.min_speech_ms,
-                min_silence_ms=args.min_silence_ms,
-                merge_gap_ms=args.merge_gap_ms,
-                pre_roll_ms=args.pre_roll_ms,
-                post_roll_ms=args.post_roll_ms)
+            if args.vad == 'silero':
+                # A model provider is selected explicitly; it never substitutes the
+                # energy VAD, and any unavailable runtime/model raises below.
+                segmenter = None
+                provider_kwargs = {'vad': 'silero', 'policy': args.policy}
+            elif args.vad == 'energy':
+                segmenter = EnergyVadSegmenter(
+                    frame_ms=args.frame_ms, hop_ms=args.hop_ms,
+                    threshold_factor=args.threshold_factor,
+                    min_speech_ms=args.min_speech_ms,
+                    min_silence_ms=args.min_silence_ms,
+                    merge_gap_ms=args.merge_gap_ms,
+                    pre_roll_ms=args.pre_roll_ms,
+                    post_roll_ms=args.post_roll_ms)
+                provider_kwargs = {}
+            else:
+                # No --vad flag: AIVOICEBENCH_ACOUSTIC_PROVIDER decides, with the
+                # energy VAD still the default so an unconfigured deployment keeps
+                # its existing behaviour.
+                from .acoustic import resolve_segmenter
+                segmenter = resolve_segmenter(
+                    None, args.policy,
+                    frame_ms=args.frame_ms, hop_ms=args.hop_ms,
+                    threshold_factor=args.threshold_factor,
+                    min_speech_ms=args.min_speech_ms,
+                    min_silence_ms=args.min_silence_ms,
+                    merge_gap_ms=args.merge_gap_ms,
+                    pre_roll_ms=args.pre_roll_ms,
+                    post_roll_ms=args.post_roll_ms)
+                provider_kwargs = {}
             destination = args.output
             if destination.suffix.lower() != '.json':
                 destination = destination / ('ACOUSTIC-' + __import__('uuid').uuid4().hex + '.json')
-            document, out_path = segment_audio(args.source, destination, segmenter)
-            print(f'{document["status"].upper()} {out_path} ({len(document["segments"])} acoustic segment(s); signal timing, no speaker role)')
+            document, out_path = segment_audio(args.source, destination, segmenter,
+                                               **provider_kwargs)
+            method = document['processor']['method']
+            print(f'{document["status"].upper()} {out_path} '
+                  f'({len(document["segments"])} acoustic segment(s) from {method}; '
+                  'signal timing, no speaker role)')
             return 0 if document['status'] == 'complete' else 2
         except (OSError, ValueError, wave.Error) as error:
             print(f'ACOUSTIC ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
             return 1
+    if args.command == 'vad-eval':
+        from .runner import write_json
+        from .vad_evaluation import evaluate, load_annotation_file
+        try:
+            if args.annotation is None:
+                # No annotated sample set: report that the evaluation was not
+                # performed instead of implying a zero-error result.
+                result = evaluate(None, [])
+            else:
+                result = evaluate(load_annotation_file(args.annotation), [
+                    _load_json_document(path) for path in args.acoustic])
+        except (OSError, ValueError) as error:
+            print(f'VAD EVAL ERROR: {str(error) or type(error).__name__}', file=sys.stderr)
+            return 1
+        if result['status'] != 'evaluated':
+            print(f'{result["status"].upper()}: {result["reason"]}')
+        else:
+            print(f'EVALUATED {result["denominator"]["annotated_intervals"]} annotated interval(s) '
+                  f'over {result["denominator"]["documents_evaluated"]} document(s); '
+                  f'matched {result["denominator"]["intervals_with_a_match"]}/'
+                  f'{result["denominator"]["expected_matches"]}, '
+                  f'false alarms {result["false_alarm"]["false_alarm_segments"]}')
+        if args.output:
+            write_json(args.output, result)
+        return 0 if result['status'] == 'evaluated' else 2
     if args.command == 'fusion':
         from .fusion import analyze_segments
         try:
@@ -330,7 +408,8 @@ def main(argv=None):
                 args.source, args.output, profile,
                 frame_ms=args.frame_ms, hop_ms=args.hop_ms,
                 min_speech_ms=args.min_speech_ms, min_silence_ms=args.min_silence_ms,
-                timeout_ms=args.timeout_ms, false_endpoint_ms=args.false_endpoint_ms)
+                timeout_ms=args.timeout_ms, false_endpoint_ms=args.false_endpoint_ms,
+                vad=args.vad, policy=args.policy)
             print(f'{result["status"].upper()} {result["output"]}')
             print(f'  Segments: {result["segment_count"]}, Turns: {result["turn_count"]}, '
                   f'Events: {result["event_count"]}, Metrics: {result["metric_count"]}')

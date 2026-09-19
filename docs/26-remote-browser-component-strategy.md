@@ -108,11 +108,11 @@ VAD 在 AIVoiceBench 中是 **Acoustic Boundary Evidence Producer**，不是所�
 | 场景 | 首选 | 角色 |
 | --- | --- | --- |
 | Browser Station / Active Control | **TEN VAD** | 低延迟 `speech_suspected_start/end`、轮次推进、timeout 辅助；事件使用本地 sample index |
-| Recording Analysis / server-side finalized boundary | **Silero VAD** | 对持久音频生成可重放、可版本化的 speech boundary evidence |
-| Active Measurement finalized replay | **Silero VAD** 为首个基线；TEN replay 可作为后续对照 | 在 Linux Server 对 durable Measurement Audio 重算正式候选边界 |
-| Synthetic fixture / emergency fallback | 现有 RMS / `EnergyVadSegmenter` | 测试、debug、兼容，不再作为长期正式默认算法 |
+| Recording Analysis / server-side finalized boundary | **Silero VAD** | 对持久音频生成可重放、可版本化的 speech boundary evidence；server-side ONNX Adapter 已实现（#23，`aivoicebench/silero_vad.py`） |
+| Active Measurement finalized replay | **Silero VAD** 为首个基线；TEN replay 可作为后续对照 | 在 Linux Server 对 durable Measurement Audio 重算正式候选边界；Adapter/Policy 已具备，durable Measurement Audio 接线仍待实现 |
+| Synthetic fixture / emergency fallback | 现有 RMS / `EnergyVadSegmenter` | 测试、debug、兼容，不再作为长期正式默认算法；**只能被显式选择**，不会被模型 provider 静默回退 |
 
-TEN VAD 当前公开 Web/WASM 路径，适合 Browser Station；Silero VAD 支持 ONNX，适合 Linux Server 的可重复离线/准实时处理。阈值和 post-processing 必须由 AIVoiceBench 的版本化 Measurement Policy 管理，不能照搬项目默认值后直接宣称测量准确。
+TEN VAD 当前公开 Web/WASM 路径，适合 Browser Station；Silero VAD 支持 ONNX，适合 Linux Server 的可重复离线/准实时处理。阈值和 post-processing 必须由 AIVoiceBench 的版本化 Measurement Policy 管理，不能照搬项目默认值后直接宣称测量准确。Silero 的首个策略 `silero_boundary_policy/1.0.0` 与权重 sha256 记录见 [声学分段](17-acoustic-segmentation.md) §2.2/§3.2。
 
 依赖许可证需单独审查：Silero VAD 为 MIT；TEN VAD 虽基于 Apache 2.0，但仓库 LICENSE 还包含额外部署限制。引入 TEN VAD 到正式商业/分发路径前必须完成许可证适配确认；未确认前可以保留 Adapter/Spike，不得把依赖选择视为完成验收。
 
