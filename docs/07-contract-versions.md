@@ -196,3 +196,79 @@ A third new document contract, `schemas/role-review.schema.json`, carries the ma
 - Decisions are stored one file per save (`role-review/role-mapping-REV-NNNN.json`) with an increasing index and a `previous_revision_ref`; an earlier decision is never overwritten. `unknown` is a stored decision and is distinguishable from "not yet reviewed", because the review document reports `awaiting_decision_for` separately from `unknown_clusters`.
 - Migration: none; the contract is new and no existing Run needs rewriting. A Run analysed before this contract exists has no `role-review.json`, and the API builds an equivalent surface from its own preserved clusters instead of reporting the gate as satisfied.
 - Positive/negative coverage: [test_role_review.py](../tests/test_role_review.py) covers the review surface and schema, incomplete/invented/wrong-role rejection, append-only indexing, diffing, the `awaiting_role_review` → `complete_review` transition, `unknown`-only mappings staying insufficient, and persistence across restart; [test_role_review_browser.py](../tests/test_role_review_browser.py) drives the real page through the same gate.
+
+## FusedSegments 1.0.0 / Turns 1.0.0 already-required members and Turn semantics (Issue #24)
+
+Issue #24 does **not** add a member to `FusedSegments`, `Turns` or
+`Event`/`EventTimeline`. It records the members that #94/#95 introduced under the
+unchanged `1.0.0` label, and fixes three behaviours those members made observable.
+No stored document changes shape, so **no migration is required**.
+
+1. **`FusedSegments 1.0.0` required list (unchanged version, members introduced by
+   #94/#95).** `segments[]` now lists
+   `speaker_evidence`, `speaker_candidates`, `segment_origin`, `text_attribution`,
+   `start_boundary_source`, `end_boundary_source` and `role_attribution` as
+   **required**. They are required rather than optional because each one is the
+   *reason* a consumer must not read a fused segment as a decided fact: without
+   `speaker_evidence` an abstention is indistinguishable from an assignment, and
+   without `start/end_boundary_source` a provider-estimated edge is
+   indistinguishable from a measured acoustic one.
+   - Migration: a FusedSegments 1.0.0 document written before those members existed
+     is no longer schema-valid. It was never a published contract: fused segments
+     are an internal analysis artifact of one Run's `analysis/<id>/` directory, they
+     are not hand-authored, and every stored Run is re-derivable from the preserved
+     acoustic, transcript and diarization evidence. A reader that encounters such a
+     document should re-run the fusion stage rather than treat it as authoritative.
+   - Positive/negative coverage: [test_fusion_speakers.py](../tests/test_fusion_speakers.py)
+     asserts each evidence state and the split/abstain distinction;
+     [test_turns_events_attribution.py](../tests/test_turns_events_attribution.py)
+     asserts the downstream consequences.
+2. **A split segment must not reuse its parent's `segment_id`.** `apply_speakers`
+   cuts one acoustic segment at speaker boundaries, and the pieces previously kept
+   the parent's `segment_id`. Turn association and the timeline's `ev_map` key on
+   that id, so the duplicate made one piece's evidence stand in for another's and a
+   canonical event could cite an interval that did not cover it (`evidence must
+   cover the event interval`). Every emitted segment now receives a unique
+   `FSEG-NNNN`, and the shared `acoustic_segment_id` still identifies the acoustic
+   segment every piece came from. `fused_errors` already rejected duplicate ids;
+   the bug was that a split document was never validated before this Issue.
+   - Migration: none. Only the *value* of `segment_id` for split pieces changed,
+     and those ids were ambiguous before, so no correct consumer depended on them.
+3. **Turn/Response numbering is positional.** `turn_id` and `response_id` are
+   derived from the turns already built rather than from a counter bumped inside
+   each branch. Previously a recording that began with device speech produced
+   `TURN-0002` as its first turn (a gap, and a numbering that disagreed with array
+   order); two turns could also collide on one id. `turn_id` is now always
+   `TURN-0001..N` in array order, and `response_id` is `RESP-0001..N` over the turns
+   that own device speech.
+   - Migration: none. The previous numbering was not contiguous and therefore not a
+     contract any consumer could rely on. Metrics bind to `turn_id`/`response_id`
+     as *identifiers*, not as ordinals, and are computed from one timeline at a time.
+4. **Incomplete evidence is never reported as `complete`.** Three status
+   corrections, all making a previously over-claimed `complete` honest:
+   - `build_turns` inherits the fused document's incompleteness. If roles are
+     unresolved, conflicting or unmatched, the turn document is `partial` (or
+     `insufficient_evidence` when no turn can be claimed) and its `reason` names the
+     cause. A turn set built from only the attributed subset is not a complete turn
+     set.
+   - `detect_events` returns `partial` rather than `complete` when some segments
+     carry no confirmed role. `generate_timeline` records a `gaps` entry for every
+     non-`complete` timeline, so a `partial` timeline always explains itself.
+   - An acoustic-timing evidence snippet publishes only the acoustic boundary
+     confidence. It previously used the segment's role-attribution or
+     speaker-cluster confidence when no acoustic number existed, which presented a
+     human role decision (or a provider's clustering number) as the quality of an
+     acoustic measurement. Absent stays `null` / `confidence_source: "none"`, and a
+     split edge whose boundary came from a provider estimate publishes no acoustic
+     confidence at all.
+   - Migration: none. Every change moves a status from optimistic to explicit, so a
+     consumer that already refused to act on `partial`/`insufficient_evidence` is
+     unaffected, and a consumer that trusted `complete` was previously being told
+     something untrue.
+   - Positive/negative coverage: [test_turns_events_attribution.py](../tests/test_turns_events_attribution.py)
+     covers consecutive same-role segments, a device-first recording, contiguous
+     unique turn/response ids, a mixed mapping (one cluster deliberately `unknown`),
+     an all-`unknown` mapping, an unmatched segment, a missing utterance label,
+     conflicting clusters, split-edge confidence, evidence coverage, run identity and
+     reproducibility of the association and the timeline.
+

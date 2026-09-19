@@ -91,10 +91,18 @@ class FuseTests(unittest.TestCase):
 
 
 def attributed_fixture(doc):
-    """Explicit synthetic roles for testing the downstream turn/event consumer."""
+    """Explicit synthetic roles for testing the downstream turn/event consumer.
+
+    Every segment gets a role, so the document is role-complete and is marked as
+    such. A fused document that still advertised `unknown` roles while every
+    segment carried one would be a state the real pipeline never produces, and
+    `build_turns` would rightly report its turns as only partial.
+    """
     fused = fuse(doc)
     for segment, role in zip(fused['segments'], ['tester', 'device'] * len(fused['segments'])):
         segment.update(speaker_role=role, speaker_source='manual', speaker_confidence=1.0)
+    fused['status'] = 'complete'
+    fused['reason'] = None
     return fused
 
 
