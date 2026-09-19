@@ -43,6 +43,9 @@ python -m aivoicebench acceptance check <record.json> \
 ```
 
 - `real_recording_verified` 只在存在授权真实样本（5–20 分钟区间）、人工复核证据与机器原件分离、**声明的 artifact 与 evidence 摘要经 `--verify-artifacts` 实际重算匹配**、且 **`--repository-root` 指向的仓库目录被真实遍历且未发现 Git 内音频**时才成立；synthetic/fixture 样本、mock、CI、机器生成却被记为人工的标注会被判为未授权声明并使记录 `invalid`。
+- **区间本身是声明值核对，不是测量值。** 5–20 分钟区间由样本自报的 `duration_ms` 判定；检查器不解码音频，因此该条件只与记录自身对账，结果中由 `declared_only_controls` 明确列出（Markdown 报告为 “Conditions checked against declared values”）。同一列表中还包括 `source`/`device`/`authorization` 等只能被拒绝、无法被证实的声明。
+- **声明的 artifact 尺寸必须与保留文件对账。** 样本 artifact 声明的 `byte_length` 与实际文件字节数不一致时判为 error；授权真实样本的 audio artifact 未声明 `byte_length` 时为 blocking gap。artifact 摘要不能同时让尺寸自由声明。
+- **每个授权样本必须绑定各自的 artifact。** 两个样本声明同一 `sha256`（同一物理文件被计为两条录音）判为 error；同一样本内重复声明同一摘要同样判为 error。授权样本数是被报告的结果，不得被重复引用放大。
 - 未请求 artifact/evidence 校验、未提供仓库根、仓库根**不存在或不是目录**、或记录声明的 `exposure_scan.scan_roots` 条目无法遍历时，该 gate 不予授权，CLI 也不会以 0 退出。**未被执行的对照不得被报告为已执行**。
 - 授权真实 gate 的 evidence 与每个 stage 分母的 evidence 都必须解析到本地真实存在的 Artifact 且摘要匹配（声明了摘要却不匹配为 error，无法解析为 blocking gap）；只有 `--verify-artifacts` 会执行该解析。
 - 每个 stage 的分母必须显式计入 complete/partial/failed/unknown/abstained/not_applicable 且与 `expected_total` 对账，**禁止只报成功的分母**；**任何**已声明的 evaluation（含 `failed`/`abstained`/`not_attempted`）都必须有其 stage 的分母。
@@ -51,8 +54,10 @@ python -m aivoicebench acceptance check <record.json> \
 - 真实云 gate 的 evidence 必须以显式 `sample_id` 绑定到**授权真实样本**（路径子串不算绑定），synthetic/fixture 样本不得授权真实云 gate。
 - 角色修改必须生成新 AnalysisRevision、保留旧结果字节并给出 recompute/diff 证据，且不得重跑识别/聚类。
 - 未达到的 gate 必须写明缺口；**没有真实验收记录时不得把任何 gate 写成已验证**。blocking gap 未清零时记录不得判为 `complete`。
+- 判为 `verified` 的 gate 必须带 `verified_at` 时间戳；不能定位在时间轴上的验证不可审计。
+- 暴露扫描读取被遍历根下**每个可解码为文本的文件**（仅排除二进制后缀、超大文件与定义/验证检测模式本身的策略源码），无法解码的文件作为未覆盖项报出而不是当作干净；同一个根被重复声明时只遍历一次。
 
-检查器本身只是工具，其通过不等于 M1 通过；它只能证明声明摘要与本地文件一致、声明之间互相授权，**不能证明某个声明样本确实是授权真实录音**。M1 仍以真实证据记录为准。
+检查器本身只是工具，其通过不等于 M1 通过；它只能证明声明摘要与本地文件一致、声明之间互相授权，**不能证明某个声明样本确实是授权真实录音**。区间、来源与授权等只能与记录自身对账的条件已在结果 `declared_only_controls` 中逐项列出，不得据此声称检查器测量过录音。M1 仍以真实证据记录为准。
 
 ## 正式里程碑
 

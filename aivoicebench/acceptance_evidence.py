@@ -174,6 +174,85 @@ def _scan_record(node, path, findings):
         _scan_text(node, path, findings)
 
 
+#: Files that are never credentials: they are generated, vendored or non-textual,
+#: and text-scanning them costs time without adding coverage. Kept deliberately
+#: small so the scan is *broader* than an extension allowlist rather than narrower
+#: than it: anything not named here is decoded and scanned as text.
+_TEXT_SCAN_SKIP_SUFFIXES = (
+    '.pyc', '.pyo', '.so', '.dll', '.dylib', '.exe', '.bin', '.zip', '.gz', '.tar', '.whl',
+    '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.mp4', '.mov', '.woff', '.woff2',
+    '.ttf', '.eot', '.map',
+)
+
+#: Directories whose contents are environment state, dependencies or build output
+#: rather than repository material. They are not descended into, so their files are
+#: never counted in ``repository_files_inspected`` — the walk reports what it actually
+#: examined rather than a total that includes material it never looked at. This is a
+#: bounded, named policy, not the previous situation where an unread extension was
+#: counted as inspected and then silently skipped.
+_TEXT_SCAN_SKIP_DIRECTORIES = frozenset({
+    '.git', '.hg', '.svn', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.tox', '.venv',
+    '__pycache__', 'node_modules', 'venv', 'dist', 'build', '.next', '.test-tmp',
+})
+
+#: A single file larger than this is not evidence material and is not read.
+_MAX_SCANNED_FILE_BYTES = 8 * 1024 * 1024
+
+#: Files that legitimately contain credential-*shaped* text because they *define* or
+#: *exercise* this control: the detection patterns themselves, and the tests that
+#: assert a signed URL, a PEM block or a `sk-…` value is detected. Reporting them as
+#: leaked credentials would be a false positive, and silently dropping their lines
+#: would hide a real one, so they are named here and disclosed in the result. This is
+#: the only exclusion in the scan: every other file the walk reaches is read.
+DETECTION_POLICY_SOURCES = frozenset({
+    'acceptance_evidence.py',
+    'test_acceptance_evidence.py',
+    'test_file_asr_transport.py',
+    'test_judge_contract.py',
+    'test_workbench.py',
+})
+
+
+def _is_detection_policy_source(path):
+    return path.name in DETECTION_POLICY_SOURCES
+
+
+def _scan_target(path, findings):
+    """Classify and scan one candidate file; report why it was not scanned.
+
+    Returns ``None`` when the file was scanned (or found), otherwise a short reason
+    string. A file that is skipped must be *accounted for*: a control that reports
+    "clean" has to be able to say which material it actually looked at, otherwise an
+    unread extension is indistinguishable from a clean one.
+    """
+    suffix = path.suffix.lower()
+    if suffix in REAL_AUDIO_SUFFIXES:
+        findings.append({
+            'location': str(path),
+            'category': 'real_recording_in_git',
+            'detail': 'audio artifacts must stay outside the repository and outside release '
+                      'artifacts',
+        })
+        return None
+    if suffix in _TEXT_SCAN_SKIP_SUFFIXES:
+        return 'binary/unscannable'
+    if _is_detection_policy_source(path):
+        return 'detection policy source'
+    try:
+        if path.stat().st_size > _MAX_SCANNED_FILE_BYTES:
+            return 'oversized'
+    except OSError as error:
+        return f'unreadable: {error}'
+    try:
+        text = path.read_text(encoding='utf-8-sig', errors='strict')
+    except UnicodeDecodeError:
+        return 'binary/unscannable'
+    except OSError as error:
+        return f'unreadable: {error}'
+    _scan_text(text, str(path), findings)
+    return None
+
+
 def scan_secrets(document, *, repository_root=None):
     """PRD-N004 evidence: no credential, signed URL or private recording leaks.
 
@@ -181,44 +260,56 @@ def scan_secrets(document, *, repository_root=None):
     the location and category are reported: echoing the offending text would move
     the secret into the report.
 
-    Returns ``(findings, unchecked_roots, inspected)``. ``unchecked_roots`` names
-    every declared or requested root that could not be walked: a control that was
-    never exercised must be reported as unexercised rather than as clean, because a
+    Returns ``(findings, unchecked_roots, inspected, unscanned)``. ``unchecked_roots``
+    names every declared or requested root that could not be walked: a control that
+    was never exercised must be reported as unexercised rather than as clean, because a
     typo'd or stale path would otherwise read as "scanned, nothing found".
-    ``inspected`` counts the files actually examined.
+    ``inspected`` counts the files examined for material, and ``unscanned`` names the
+    files that were walked but could not be decoded as text. Every file the walk
+    reached therefore lands in exactly one bucket — scanned, found, or unscanned — so
+    "no findings" can never be an artefact of what the scan chose not to read.
+
+    A root named more than once (declared in ``exposure_scan.scan_roots`` *and*
+    passed as ``--repository-root``) is walked once. The inspected count is documented
+    evidence that the control ran, so it must be the number of distinct files
+    examined, not the number of times a file was named.
     """
     findings = []
     unchecked = []
+    unscanned = []
     inspected = 0
     _scan_record(document, '', findings)
     scan_roots = document.get('exposure_scan', {}).get('scan_roots') or []
     roots = list(scan_roots)
     if repository_root is not None:
         roots.append(str(repository_root))
+    seen_roots = set()
     for entry in roots:
         root = Path(entry)
         if not root.is_dir():
             unchecked.append(str(entry))
             continue
-        targets = sorted(p for p in root.rglob('*') if p.is_file())
+        identity = str(root.resolve())
+        if identity in seen_roots:
+            continue
+        seen_roots.add(identity)
+        targets = sorted(p for p in root.rglob('*')
+                         if p.is_file() and not _is_under_skipped_directory(p, root))
         inspected += len(targets)
         for target in targets:
-            if target.suffix.lower() in REAL_AUDIO_SUFFIXES:
-                findings.append({
-                    'location': str(target),
-                    'category': 'real_recording_in_git',
-                    'detail': 'audio artifacts must stay outside the repository and outside release '
-                              'artifacts',
-                })
-                continue
-            if target.suffix.lower() not in ('.json', '.yaml', '.yml', '.txt', '.md', '.log', '.env'):
-                continue
-            try:
-                text = target.read_text(encoding='utf-8-sig', errors='replace')
-            except OSError:
-                continue
-            _scan_text(text, str(target), findings)
-    return findings, unchecked, inspected
+            reason = _scan_target(target, findings)
+            if reason is not None:
+                unscanned.append({'location': str(target), 'reason': reason})
+    return findings, unchecked, inspected, unscanned
+
+
+def _is_under_skipped_directory(path, root):
+    """Whether ``path`` sits below a directory the text scan does not enter."""
+    try:
+        relative = path.relative_to(root)
+    except ValueError:  # pragma: no cover - rglob never yields an outside path
+        return False
+    return any(part in _TEXT_SCAN_SKIP_DIRECTORIES for part in relative.parts[:-1])
 
 
 def _evidence_ids(entries):
@@ -286,6 +377,14 @@ def _check_evidence_identity(document, errors):
     return seen
 
 
+def _artifact_size(path):
+    """The actual size of a preserved artifact, or ``None`` when unreadable."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
 def _verify_artifact_hashes(document, errors, gaps):
     """Re-hash every declared artifact that is locally reachable.
 
@@ -295,15 +394,23 @@ def _verify_artifact_hashes(document, errors, gaps):
     locally cannot be re-hashed; that is a **blocking** gap, not an informational
     note, because the digest is the only control binding a declared sample to actual
     audio.
+
+    A declared ``byte_length`` is reconciled with the preserved file in the same
+    pass. The digest alone would let a record declare any size while still pointing
+    at the right bytes, and because ``duration_ms`` is also author-declared, an
+    unreconciled size would leave every quantity describing "a 5–20 minute
+    recording" unchecked except the digest.
     """
     checked = 0
     targets = []
     for sample in document.get('samples') or []:
         for artifact in sample.get('artifacts') or []:
-            targets.append((f'sample {sample["sample_id"]} artifact', artifact))
+            targets.append((f'sample {sample["sample_id"]} artifact', artifact, True))
     for index, review in enumerate(document.get('human_reviews') or []):
-        targets.append((f'human review {review["review_id"]} artifact', review['artifact']))
-    for label, artifact in targets:
+        # The human-review artifact shape carries no byte_length, so only the digest is
+        # reconciled for it; the sample artifacts are where the declared size lives.
+        targets.append((f'human review {review["review_id"]} artifact', review['artifact'], False))
+    for label, artifact, has_declared_size in targets:
         location = artifact['location']
         path = Path(location)
         if not path.is_file():
@@ -323,6 +430,14 @@ def _verify_artifact_hashes(document, errors, gaps):
             # here; a mismatch means the declared artifact is not the preserved one.
             errors.append(
                 f'{label} {location}: declared sha256 does not match the preserved artifact')
+        declared_size = artifact.get('byte_length') if has_declared_size else None
+        if declared_size is not None:
+            actual_size = _artifact_size(path)
+            if actual_size is not None and actual_size != declared_size:
+                errors.append(
+                    f'{label} {location}: declared byte_length {declared_size} does not match the '
+                    f'preserved artifact ({actual_size} bytes), so the declared size is not the '
+                    'size of the artifact it is bound to')
     return checked
 
 
@@ -444,6 +559,15 @@ def _check_gates(document, errors, verify_artifacts):
                 errors.append(f'/gates/{index}: a {gate["state"]} gate must record what is missing '
                               '(unresolved or reason); "not reached" without a gap is not auditable')
             continue
+        if not (gate.get('verified_at') or '').strip():
+            # A verified claim that carries no time cannot be ordered against the
+            # recording it judges, so the acceptance would not be reconstructible.
+            errors.append(f'/gates/{index}: {name} is claimed verified without a verified_at '
+                          'timestamp; a verification that cannot be placed in time is not '
+                          'auditable')
+            claim_checks.append({'gate': name, 'authorized': False,
+                                 'reason': 'verified without a timestamp'})
+            continue
         evidence = gate.get('evidence') or []
         if not evidence:
             errors.append(f'/gates/{index}: {name} is claimed verified without any evidence '
@@ -535,6 +659,52 @@ def _check_human_reviews(document, errors):
                 'sample artifact, so it is not a separate human layer')
         if not artifact['location'].strip():
             errors.append(f'{location}/artifact/location: must name the preserved review material')
+
+
+def _check_artifact_identity(document, errors, gaps):
+    """An authorized sample must be backed by its own artifact, once.
+
+    Two declared authorized recordings that resolve to the same bytes are one
+    recording counted twice, and Issue #85's scope is "one or more authorized
+    recordings" — so the sample count is a reported result and cannot be inflated by
+    pointing two sample ids at one file. This is the same rule already enforced one
+    level up for the human-review layer, and the checker already holds the digests
+    needed to enforce it here.
+
+    The audio artifact of an authorized real sample must also declare a
+    ``byte_length``: of everything such a sample claims, the artifact size is the one
+    quantity this checker can actually measure, so leaving it out would exempt the
+    recording from the single size control available.
+    """
+    digest_owners = {}
+    for index, sample in enumerate(document.get('samples') or []):
+        location = f'/samples/{index}'
+        sample_id = sample['sample_id']
+        seen_here = {}
+        for artifact in sample.get('artifacts') or []:
+            digest = artifact['sha256']
+            if digest in seen_here:
+                errors.append(
+                    f'{location}/artifacts/{artifact["kind"]}: declares the same sha256 as the '
+                    f'{seen_here[digest]} artifact, so the sample repeats one preserved file '
+                    'instead of declaring distinct material')
+            else:
+                seen_here[digest] = artifact['kind']
+            digest_owners.setdefault(digest, []).append((sample_id, artifact['kind'], location))
+            if artifact['kind'] == 'audio' and _is_authorized_real(sample) \
+                    and artifact.get('byte_length') is None:
+                gaps.append(
+                    f'sample {sample_id} audio artifact {artifact["location"]} declares no '
+                    'byte_length, so its declared size cannot be reconciled with the preserved '
+                    'file')
+    for digest, owners in digest_owners.items():
+        sample_ids = {sample_id for sample_id, _, _ in owners}
+        if len(sample_ids) > 1:
+            detail = ', '.join(f'{sample_id} ({kind})' for sample_id, kind, _ in owners)
+            errors.append(
+                f'/samples: artifact sha256 {digest[:12]}… is declared by more than one sample '
+                f'({detail}), so the distinct authorized recordings are one file counted more than '
+                'once; each authorized sample must be bound to its own preserved artifact')
 
 
 def _check_evaluations(document, errors, gaps, observations):
@@ -718,7 +888,14 @@ def _check_denominator_coverage(document, errors, stages):
                 'where nothing failed or that did not apply; these stages are absent, so their '
                 'failures, unknowns and abstentions are unreported: ' + ', '.join(missing))
     for evaluation in evaluations:
-        stage = EVALUATION_STAGE[evaluation['kind']]
+        stage = EVALUATION_STAGE.get(evaluation['kind'])
+        if stage is None:
+            # A kind the schema allows but no stage maps: report it rather than
+            # crashing, so a future evaluation kind cannot turn a check into a traceback.
+            errors.append(f'/evaluations: evaluation {evaluation["evaluation_id"]} has kind '
+                          f'{evaluation["kind"]!r}, which maps to no denominator stage; add the '
+                          'mapping so its failures and abstentions are counted')
+            continue
         if stage not in stages:
             errors.append(
                 f'/denominators: the {stage} stage has no reported denominator, but evaluation '
@@ -809,6 +986,7 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
     claim_checks = _check_gates(document, errors, verify_artifacts)
     _check_samples(document, errors, observations)
     _check_human_reviews(document, errors)
+    _check_artifact_identity(document, errors, gaps)
     _check_evaluations(document, errors, gaps, observations)
     declared_evidence = _check_evidence_identity(document, errors)
     stages = _check_denominators(document, errors, gaps)
@@ -817,7 +995,7 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
     _check_manual_role_corrections(document, errors, gaps)
     _check_human_review_coverage(document, errors, gaps)
 
-    secret_findings, unchecked_roots, files_inspected = scan_secrets(
+    secret_findings, unchecked_roots, files_inspected, unscanned_files = scan_secrets(
         document, repository_root=repository_root)
     declared_scan = document.get('exposure_scan') or {}
     for finding in secret_findings:
@@ -829,6 +1007,21 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
         gaps.append('the exposure scan is not recorded as clean; run the scan before the record '
                     'is used as acceptance evidence')
     _check_exposure_roots(document, errors, gaps, unchecked_roots, repository_root)
+    # A file the walk reached but could not read is not a clean file: it is an
+    # unexercised part of the control. Files that are *provably* not text (their bytes
+    # are not valid UTF-8, or they are a declared binary format) cannot hold a plaintext
+    # credential, so they are reported as coverage but do not block; a file that could
+    # not be opened or is too large to read is a control failure and does block.
+    files_not_text = []
+    policy_sources = []
+    for entry in unscanned_files:
+        if entry['reason'] == 'binary/unscannable':
+            files_not_text.append(entry['location'])
+        elif entry['reason'] == 'detection policy source':
+            policy_sources.append(entry['location'])
+        else:
+            errors.append(f'/exposure_scan: {entry["location"]} was reached by the scan but not '
+                          f'read ({entry["reason"]}), so it is unverified rather than clean')
 
     artifacts_checked = None
     if verify_artifacts:
@@ -900,6 +1093,8 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
                                    and Path(str(repository_root)).is_dir()),
         'repository_root': str(repository_root) if repository_root is not None else None,
         'repository_files_inspected': files_inspected,
+        'repository_files_unread': sorted(files_not_text),
+        'detection_policy_sources_skipped': sorted(policy_sources),
         'unchecked_scan_roots': unchecked_roots,
         'secret_findings': secret_findings,
         # Blocking gaps and non-blocking observations are reported separately so a
@@ -908,6 +1103,20 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
         'gaps': gaps,
         'observations': observations,
         'real_recording_open_items': gates_open,
+        # Which parts of a verified real-recording claim were checked against measured
+        # material, and which only against a value the record declares about itself. A
+        # declared-only condition is still a real gate condition, but a reader is
+        # entitled to see that the checker reconciled it with the record rather than
+        # with the recording.
+        'declared_only_controls': [
+            'sample duration_ms (the authorized 5–20 minute band): evaluated against the '
+            'declared value only; the checker does not decode the audio, so a declared '
+            'duration is not a measured one',
+            'sample source/device/authorization: the record states these; the checker can '
+            'refuse a synthetic label but cannot confirm a recording is authorized',
+            'exposure_scan.clean: re-derived when --repository-root is given, otherwise '
+            'taken from the record and reported as a blocking gap',
+        ],
         'errors': errors,
         'note': ('An acceptance record may only state a gate it can authorize. `real_recording_'
                  'verified` requires authorized 5–20 minute recordings, human review preserved '
@@ -991,6 +1200,24 @@ def render_report(result):
     if result['unchecked_scan_roots']:
         lines.append(f'- Scan roots that could not be walked: '
                      f'{", ".join(f"`{entry}`" for entry in result["unchecked_scan_roots"])}')
+    if result.get('repository_files_unread'):
+        lines.append(f'- Files the scan reached but could not decode as text: '
+                     f'{len(result["repository_files_unread"])} (reported as unverified coverage, '
+                     'not as clean)')
+    if result.get('detection_policy_sources_skipped'):
+        lines.append(f'- Detection-policy sources excluded from the scan: '
+                     f'{len(result["detection_policy_sources_skipped"])} file(s) that define or '
+                     'exercise the detection patterns themselves, so a match in them is the '
+                     'control, not a leak')
+    lines.append('')
+    lines.append('## Conditions checked against declared values')
+    lines.append('')
+    lines.append('These gate conditions are reconciled with what the record states rather than with '
+                 'a measurement of the recording. They are real conditions, but a pass here does not '
+                 'mean the checker observed them:')
+    lines.append('')
+    for item in result.get('declared_only_controls') or []:
+        lines.append(f'- {item}')
     lines.append('')
     lines.append('## Gates')
     lines.append('')
