@@ -48,18 +48,27 @@ def make_event(eid, etype, start, turn_id='TURN-0001', evidence_ids=None):
 
 class FindingGenerationTests(unittest.TestCase):
     def test_generates_finding_from_high_latency_candidate(self):
+        # A judge result now always cites the references it relied on: the engine
+        # refuses an observed candidate that cannot name its evidence, so there is
+        # no "nearest evidence" fallback to fall back on.
         judge_results = [{
             'dimension': 'finding_candidate', 'decision': 'high_latency',
             'status': 'observed', 'confidence': 0.6,
             'reason': 'Latency 3000ms exceeds 2000ms',
             'finding_severity': 'medium', 'suspected_layer': 'llm',
             'attribution_confidence': 0.4, 'requires_log_verification': True,
+            'turn_id': 'TURN-0001', 'evidence_refs': ['EV-T', 'EV-D'],
+            'event_refs': ['E1', 'E2'],
         }]
-        evidence = [make_evidence('EV-001', 1000, 3000)]
+        evidence = [make_evidence('EV-T', 700, 1000), make_evidence('EV-D', 4000, 4500)]
+        # Interval events must be paired and each event's evidence must cover its
+        # own interval: a Finding is only generated from a Timeline that is itself
+        # valid, and this fixture is a canonical synthetic Timeline.
         events = [
-            make_event('E1', 'tester_speech_end', 1000),
-            make_event('E2', 'device_speech_start', 4000),
-            make_event('E3', 'response_start', 4000),
+            make_event('E0', 'tester_speech_start', 700, evidence_ids=['EV-T']),
+            make_event('E1', 'tester_speech_end', 1000, evidence_ids=['EV-T']),
+            make_event('E2', 'device_speech_start', 4000, evidence_ids=['EV-D']),
+            make_event('E3', 'device_speech_end', 4500, evidence_ids=['EV-D']),
         ]
         timeline = make_timeline(events, evidence)
         metrics = {'metrics': [{'name': 'first_speech_latency_ms', 'value': 3000, 'status': 'observed'}]}
@@ -96,6 +105,7 @@ class FindingGenerationTests(unittest.TestCase):
             'reason': '1 false endpoint detected',
             'finding_severity': 'medium', 'suspected_layer': 'endpoint',
             'attribution_confidence': 0.5, 'requires_log_verification': True,
+            'turn_id': 'TURN-0001', 'evidence_refs': ['EV-001'], 'event_refs': ['E1'],
         }]
         evidence = [make_evidence('EV-001', 700, 750)]
         events = [make_event('E1', 'possible_false_endpoint', 700)]
@@ -124,6 +134,38 @@ class FindingGenerationTests(unittest.TestCase):
 
 
 class ReportRenderingTests(unittest.TestCase):
+    def test_markdown_renders_unknown_confidence_without_fabricating_a_number(self):
+        """Derived events and gap evidence legitimately carry no confidence.
+
+        The producer emits `confidence: null` for every derived interval, so the
+        report must render an explicit unknown rather than crash or print 0.00.
+        """
+        fused_doc = {'segments': [{'segment_id': 'FSEG-0000', 'start_ms': 0, 'end_ms': 500,
+                                   'speaker_role': 'unknown', 'speaker_confidence': None,
+                                   'timing_source': 'acoustic', 'text': None}],
+                     'source': {'audio_sha256': 'a' * 64, 'duration_ms': 500,
+                                'acoustic_document_id': 'ACOUSTIC-t'},
+                     'attribution': {'strategy': 'none', 'confidence': None}}
+        turns_doc = {'turns': []}
+        evidence = [dict(make_evidence('EV-001', 0, 500, source='derived'), confidence=None)]
+        events = [dict(make_event('E1', 'silence', 0, turn_id=None, evidence_ids=['EV-001']),
+                       end_ms=500, source='derived', confidence=None,
+                       confidence_source=None)]
+        timeline = make_timeline(events, evidence)
+        metrics = {'status': 'insufficient_evidence', 'metrics': []}
+
+        md = render_markdown({}, fused_doc, turns_doc, timeline, metrics,
+                             {'results': [], 'invocations': []}, [])
+        self.assertIn('## 事件时间线', md)
+        self.assertIn('## 证据', md)
+        # Unknown is rendered as an explicit marker in the row itself, never as a
+        # measured number and never as a Python repr.
+        event_row = next(line for line in md.splitlines() if line.startswith('| E1 '))
+        self.assertTrue(event_row.endswith('| — |'), event_row)
+        evidence_row = next(line for line in md.splitlines() if line.startswith('| EV-001 '))
+        self.assertTrue(evidence_row.endswith('| — |'), evidence_row)
+        self.assertNotIn('None', md)
+
     def test_render_markdown_has_all_sections(self):
         profile = {'device': 'TestDevice', 'supplier': 'TestSupplier'}
         fused_doc = {

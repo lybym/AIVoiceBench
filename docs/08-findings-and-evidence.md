@@ -4,6 +4,35 @@
 
 Finding schema 2.0.0 links the first-class Evidence 1.0.0 catalog in a valid Timeline. A finding is either a defect or an observation. A normal observation has null severity and cannot become a regression defect candidate. The seed passing VAD finding was migrated to an explicitly synthetic observation, rather than counting a pass as a P3 defect.
 
+Finding **2.1.0** (Issue #10) adds explicit Turn linkage:
+
+- `turn_ids` records the Turns the finding is bound to. Each declared turn must be
+  reachable from the finding's own linked **events**, and every reachable turn must
+  be declared — a Turn link is never asserted independently of evidence. Timeline
+  evidence carries no turn binding of its own, so an event is the only object
+  through which a Finding can establish which Turn it is about; a linked metric
+  cannot supply it, otherwise one turn's numbers could declare another turn's
+  Finding. The generator and this validator apply the same rule.
+- `analysis_id` (nullable) records the AnalysisRevision the finding was produced
+  in. `case_id` stays required and non-null in both versions: a Finding resolves
+  against the persisted Timeline, which always carries a Case identity, so a
+  nullable `case_id` would be unreachable. `migrate_finding_document()` re-emits a
+  2.0.0 document under 2.1.0 from a **required** Timeline: `turn_ids` are resolved
+  from that Timeline and the Finding's own cited events, and migration refuses
+  rather than emitting an empty list that would not validate against it.
+- Generated findings link MetricResults by canonical `metric_id`, and only decided
+  metrics (`observed`/`pass`/`fail`) belonging to the finding's own turns. A metric
+  that abstained cannot support a defect claim.
+- A candidate that cannot cite resolvable evidence produces an explicit
+  abstention, never a finding. There is no "nearest evidence" fallback: an
+  unsubstantiated candidate must not become a reviewable defect.
+
+Objective, semantic and human evidence stay distinguishable: a deterministic
+MetricResult (`method=deterministic`) and acoustic or human-annotated Evidence are
+linked separately from a semantic one (`method=llm_judge`,
+`confidence_source=semantic_event`, `judge_profile`), and human review state is
+recorded on `human_review`.
+
 ## Severity guidance
 
 | Level | Impact guidance |

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/judge-results.schema.json",
+  "title": "JudgeResults 1.0.0",
+  "description": "One Judge invocation artifact. Validated JudgeResult documents, their raw provider responses and the invocation provenance are preserved side by side, so a reader can always tell an accepted judgment from a rejected or abstained one. Credentials are never recorded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "analysis_id", "criteria_version", "judge_profile", "results", "invocations", "abstentions"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "run_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+    "analysis_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+    "criteria_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "judge_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "criteria_version", "prompt_versions"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "criteria_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "endpoint": { "type": ["string", "null"] },
+        "config_version": { "type": ["string", "null"] },
+        "prompt_versions": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "results": {
+      "type": "array",
+      "items": { "$ref": "https://aivoicebench.local/schemas/judge-result.schema.json" }
+    },
+    "invocations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["invocation_id", "provider", "model", "prompt_version", "started_at", "finished_at", "latency_ms", "status", "input_chars", "output_chars", "raw_response", "raw_response_sha256"],
+        "properties": {
+          "invocation_id": { "type": "string", "pattern": "^CALL-[A-Za-z0-9]+$" },
+          "provider": { "type": "string", "minLength": 1 },
+          "model": { "type": "string", "minLength": 1 },
+          "prompt_version": { "type": "string", "minLength": 1 },
+          "endpoint": { "type": ["string", "null"] },
+          "started_at": { "type": "string", "format": "date-time" },
+          "finished_at": { "type": ["string", "null"], "format": "date-time" },
+          "latency_ms": { "type": ["number", "null"], "minimum": 0 },
+          "status": { "enum": ["success", "failed", "not_configured"] },
+          "failure_code": { "enum": [null, "provider_error", "invalid_output", "unavailable"] },
+          "input_chars": { "type": "integer", "minimum": 0 },
+          "output_chars": { "type": "integer", "minimum": 0 },
+          "raw_response": {
+            "type": ["string", "null"],
+            "description": "Raw provider text, preserved separately from the validated result. Null when no provider output exists."
+          },
+          "raw_response_sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    },
+    "abstentions": {
+      "type": "array",
+      "description": "Explicit failed/invalid/abstained judgments. An abstention is never a silent absence.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dimension", "turn_id", "response_id", "state", "reason"],
+        "properties": {
+          "dimension": { "type": "string", "minLength": 1 },
+          "turn_id": { "type": ["string", "null"] },
+          "response_id": { "type": ["string", "null"] },
+          "state": { "enum": ["insufficient_evidence", "invalid", "failed", "not_eligible"] },
+          "reason": { "type": "string", "minLength": 1 },
+          "invocation_id": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

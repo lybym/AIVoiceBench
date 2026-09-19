@@ -2,6 +2,101 @@
 
 > Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
 
+## JudgeResult 1.0.0 extension, JudgeResults 1.0.0 and Finding 2.1.0 (Issue #10)
+
+### JudgeResult 1.0.0 — additive only, version unchanged
+
+`schemas/judge-result.schema.json` keeps `schema_version: "1.0.0"`. No member was
+removed and no previously valid document changed meaning; the additions are
+optional members plus two new dimension enum values:
+
+- members `criterion_id`, `criterion_version`, `judge_profile`, `semantic_decision`,
+  `anchor_refs`, `abstention_reason`;
+- dimensions `semantic_response` (PRD-M003) and `barge_in_compliance` (PRD-M006),
+  which conditionally require `semantic_decision`, `criterion_id`,
+  `criterion_version` and `judge_profile`;
+- `evidence_refs`/`event_refs` items gained the shared identifier pattern, so a
+  malformed reference is a schema error rather than a silent lookup miss.
+
+`judge_result_errors` additionally enforces what a schema cannot state: an
+observed semantic verdict must cite evidence and must not come from an
+`unavailable` provider; an abstaining semantic result must state why and must not
+carry a decision; an anchor role may be selected at most once and the reported
+millisecond must equal the selected anchor.
+
+Why no version bump: the contract only *gains* optional members and a stricter
+validator for dimensions that did not previously exist, so a 1.0.0 document that
+was valid under the old rules stays valid and keeps its meaning. The eligibility
+rules that decide whether a judgment may become a measurement live in the
+separately versioned semantic-evidence contract (`semantic_evidence.CRITERIA_VERSION`
+= `1.0.0`), not in the document version.
+
+### JudgeResults 1.0.0 — new artifact contract
+
+`schemas/judge-results.schema.json` governs one Judge invocation artifact:
+`criteria_version`, `judge_profile`, the validated `results`, the `invocations`
+(with preserved `raw_response` + `raw_response_sha256` + provider/model/prompt/
+latency/status/failure_code) and the explicit `abstentions`
+(`state` ∈ `insufficient_evidence`/`invalid`/`failed`/`not_eligible` + `reason`).
+`validation.judge_document_errors` resolves every result's `run_id`,
+`invocation_id`, `evidence_refs`, `event_refs` and `turn_id` against the supplied
+Timeline/Turns, rejects unresolvable references, requires a successful invocation
+to preserve its raw output, requires the preserved hash to match, and scans for
+credential-shaped fields or values (PRD-N004).
+
+Migration: none needed — this is a new artifact, and no historical document is
+reinterpreted. A Judge artifact that fails this contract is not published: the
+Run records the rejected document and its errors as a `retained_diagnostic`.
+
+### Finding 2.1.0 — Turn linkage
+
+`schemas/finding.schema.json` accepts `2.0.0` and `2.1.0` structurally, and
+`finding_errors` applies version-specific rules:
+
+- 2.1.0 requires `turn_ids` (possibly empty) and adds an optional, nullable
+  `analysis_id`. Every declared turn must be reachable from the finding's own
+  **events**, and every reachable turn must be declared. Timeline evidence has no
+  turn binding of its own, so an event is the only object that can establish which
+  Turn a Finding is about: a linked metric cannot supply the turn, or one turn's
+  numbers could declare another turn's Finding. The generator and
+  `finding_errors` enforce the same rule.
+- 2.0.0 must not carry `turn_ids`/`analysis_id`; a 2.0.0 document is re-emitted
+  under 2.1.0 with `migrate_finding_document()`, which **requires the Timeline**
+  and resolves `turn_ids` from it together with the Finding's own cited events. It
+  never guesses a Turn: without a Timeline it refuses, because an empty `turn_ids`
+  is exactly what this validator rejects against the real Timeline.
+- **`case_id` stays required and non-null in both versions.** A Finding resolves
+  against the persisted Timeline, and `event-timeline.schema.json` requires a Case
+  identity there, so a nullable `case_id` would be unreachable. An unscripted
+  Recording Analysis Run carries the placeholder `CASE-auto` that `_timeline`
+  established in #24; `generate_findings_document` refuses to build a Finding from
+  a Timeline without a case identity instead of inventing one.
+- Note the deliberate, pre-existing difference from the measurement layer:
+  `import_pipeline._metrics` keeps its own nullable `case_id` for an unscripted
+  import (MetricResult 3.0.0 allows it) and `metric_errors` only compares the two
+  when both are present. A finding linking such a metric therefore carries
+  `CASE-auto` while the metric carries `null`. That is each layer's documented
+  convention, not a silent unification, and `finding_errors` still validates the
+  metric itself against the same Timeline.
+
+Behavioural summary: `metric_ids` on generated findings now hold canonical
+`metric_id` values resolved against the supplied metrics document (previous output
+wrote metric *names* there), and only decided metrics of the finding's own turns
+are linked. This tightens generated output; historical 2.0.0 documents are
+unaffected, and no data migration is required because no stored document changes
+meaning under its own version tag.
+
+Migration coverage, stated precisely: `migrate_finding_document` covers
+`2.0.0 -> 2.1.0` only, and it **requires the Timeline** — a 2.1.0 Finding resolves
+its Turns against one, so migrating without it could only emit an empty
+`turn_ids` that `finding_errors` rejects against the real Timeline. It refuses
+instead. `2.1.0` is introduced by this change and no released artifact carries it,
+so there is no `2.1.0 -> 2.1.0` migration. In particular, a 2.1.0 document
+produced by an earlier commit of this same (unmerged) branch could declare a Turn
+reachable only through a linked metric; under the tightened rule that document is
+rejected rather than migrated, and it must be regenerated. No published artifact is
+affected.
+
 ## MetricResult 3.0.0 / definition_version 4.0.0 (Issue #25)
 
 MetricResult **schema_version stays `3.0.0`**; the independent

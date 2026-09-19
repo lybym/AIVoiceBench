@@ -329,8 +329,13 @@ def _timeline(run, fused_doc, turns_doc, parent_ids):
     return [output], timeline_doc, reason if not events else None
 
 
-def _metrics(run, timeline_doc, parent_ids):
-    """Compute canonical MetricResult 3.0.0 from the timeline."""
+def _metrics(run, timeline_doc, parent_ids, semantic_evidence=None):
+    """Compute canonical MetricResult 3.0.0 from the timeline.
+
+    `semantic_evidence` are the constrained records a performed Judge produced.
+    The deterministic engine decides what they may become; a missing or
+    ineligible record abstains instead of yielding a semantic value.
+    """
     from .metrics import compute_timeline_metrics
     # Bind the timeline to the Run identity so canonical metrics carry
     # run_id / analysis_id / execution_kind for provenance.
@@ -339,7 +344,7 @@ def _metrics(run, timeline_doc, parent_ids):
     scoped['analysis_id'] = run.manifest['analysis_id']
     scoped['execution_kind'] = run.manifest['execution_kind']
     scoped['case_id'] = run.manifest.get('case_ref') or None
-    metrics_result = compute_timeline_metrics(scoped)
+    metrics_result = compute_timeline_metrics(scoped, semantic_evidence=semantic_evidence)
     raw_status = metrics_result.get('status', 'insufficient_evidence')
     has_metrics = bool(metrics_result.get('metrics'))
     if raw_status == 'observed':
@@ -355,6 +360,178 @@ def _metrics(run, timeline_doc, parent_ids):
     counts = metrics_result.get('counts', {})
     reason = None if counts.get('observed') else 'No observed metrics (insufficient_evidence or not_applicable)'
     return [output], metrics_result, reason
+
+
+def _retain_contract_violation(run, name, errors, document):
+    """Keep the exact reason a self-produced document failed its own contract.
+
+    `run.execute` deliberately reduces an unknown exception to its type name, so
+    the failing detail would otherwise be lost. Writing the rejected document and
+    its validation errors as a retained diagnostic keeps the failure diagnosable
+    without publishing the invalid document as evidence.
+    """
+    path = run.analysis / f'{name}-contract-violation.json'
+    write_json(path, {'schema_version': '1.0.0', 'run_id': run.manifest['run_id'],
+                      'analysis_id': run.manifest['analysis_id'],
+                      'status': 'failed', 'errors': list(errors),
+                      'rejected_document': document})
+    artifact_id = run.register(path, 'retained_diagnostic', (),
+                               f'{name}_contract_guard:1.0.0')
+    return artifact_id
+
+
+def _judge(run, fused_doc, turns_doc, timeline_doc, parent_ids, provider):
+    """Run the configured semantic Judge over eligible Turns/Events/Metrics (#10).
+
+    The stage is honest about three states: a Run with no semantic provider
+    configured is `insufficient_evidence` with that exact reason; a configured
+    provider is invoked; and every judgment it returns is validated before it is
+    published. A degraded judgment becomes an explicit abstention on the
+    artifact instead of a silent absence.
+
+    The Judge is never consulted about tester/device roles: this stage consumes
+    Turns that user-confirmed role attribution already produced. The deterministic
+    metrics are supplied as context, so a deterministic question keeps its
+    deterministic answer.
+    """
+    from .llm import LLMJudge
+    from .metrics import compute_timeline_metrics
+    from .semantic_evidence import semantic_evidence_records
+    from .validation import judge_document_errors, semantic_evidence_errors, timeline_errors
+
+    if provider is None:
+        reason = ('No semantic Judge provider is configured; no semantic judgment was '
+                  'performed')
+        output = run.envelope('judge-results', 'insufficient_evidence', reason, None,
+                              parent_ids)
+        run.manifest['stages']['judge']['processor'] = {'name': 'none', 'version': '1.0.0'}
+        return [output], None, reason
+
+    # An invalid *input* Timeline is not a Judge-contract violation. The Judge can
+    # only scope citations against an evidence graph that resolves, so it abstains
+    # with the timeline's own reason and no provider call is made — blaming the
+    # Judge artifact here would both misdiagnose the cause and turn any upstream
+    # Timeline defect into a blackout of the semantic stage.
+    input_problems = timeline_errors(timeline_doc)
+    if input_problems:
+        judge = LLMJudge(provider)
+        document = judge.judge_document([], run_id=run.manifest['run_id'],
+                                        analysis_id=run.manifest['analysis_id'])
+        reason = 'The Timeline is not valid: ' + input_problems[0]
+        document['abstentions'].append({
+            'dimension': 'timeline', 'turn_id': None, 'response_id': None,
+            'state': 'not_eligible', 'reason': reason, 'invocation_id': None})
+        errors = judge_document_errors(document)
+        if errors:
+            _retain_contract_violation(run, 'judge-results', errors, document)
+            raise ValueError('Judge artifact violates its own contract: ' + '; '.join(errors))
+        return _publish_judge_artifacts(run, document, [], parent_ids, reason)
+
+    scoped_timeline = dict(timeline_doc)
+    scoped_timeline['run_id'] = run.manifest['run_id']
+    scoped_timeline['analysis_id'] = run.manifest['analysis_id']
+    scoped_timeline['execution_kind'] = run.manifest['execution_kind']
+    scoped_timeline['case_id'] = run.manifest.get('case_ref') or None
+    base_metrics = compute_timeline_metrics(scoped_timeline)
+
+    # The Judge and its validators use the persisted Timeline as-is: identity
+    # overrides that make a document schema-invalid must never be the reference a
+    # citation is resolved against.
+    judge = LLMJudge(provider)
+    document = judge.evaluate(fused_doc, turns_doc, base_metrics, timeline_doc,
+                              run_id=run.manifest['run_id'],
+                              analysis_id=run.manifest['analysis_id'])
+    errors = judge_document_errors(document, timeline_doc, turns_doc)
+    if errors:
+        _retain_contract_violation(run, 'judge-results', errors, document)
+        raise ValueError('Judge artifact violates its own contract: ' + '; '.join(errors))
+
+    semantic_records, semantic_abstentions = semantic_evidence_records(
+        document, timeline_doc, turns_doc)
+    errors = semantic_evidence_errors(semantic_records, timeline_doc, turns_doc)
+    if errors:
+        _retain_contract_violation(run, 'semantic-evidence', errors, semantic_records)
+        raise ValueError('Semantic evidence violates the engine contract: ' + '; '.join(errors))
+    document['abstentions'] = (document.get('abstentions') or []) + semantic_abstentions
+    errors = judge_document_errors(document, timeline_doc, turns_doc)
+    if errors:
+        _retain_contract_violation(run, 'judge-results', errors, document)
+        raise ValueError('Judge artifact violates its own contract after projection: '
+                         + '; '.join(errors))
+
+    # The envelope owns analysis/judge-results.json; the full payload and the raw
+    # provider output are registered separately and referenced from it, so a reader
+    # can always recover both the accepted and the rejected judgments.
+    return _publish_judge_artifacts(run, document, semantic_records, parent_ids)
+
+
+def _publish_judge_artifacts(run, document, semantic_records, parent_ids, abstention_reason=None):
+    """Register the Judge payload, its raw output and the stage envelope.
+
+    Shared by the judged path and the "nothing to judge" path so an abstaining Run
+    still publishes a document a consumer can validate.
+    """
+    document_path = run.analysis / 'judge-document.json'
+    write_json(document_path, document)
+    document_id = run.register(document_path, 'judge-results', list(parent_ids), 'judge:1.0.0')
+    raw_path = run.analysis / 'judge-raw.json'
+    write_json(raw_path, {'schema_version': '1.0.0', 'run_id': run.manifest['run_id'],
+                          'analysis_id': run.manifest['analysis_id'],
+                          'invocations': document['invocations']})
+    raw_id = run.register(raw_path, 'judge-raw', [document_id], 'judge:1.0.0')
+    observed = [result for result in document['results'] if result['status'] == 'observed']
+    status = 'complete' if observed else 'insufficient_evidence'
+    reason = None if observed else (abstention_reason or
+                                    'No judge result was accepted; every judgment abstained '
+                                    'or was rejected')
+    output = run.envelope('judge-results', status,
+                          reason or 'Schema-constrained Judge results with preserved raw output',
+                          _envelope_data(document, status), list(parent_ids) + [document_id, raw_id],
+                          data_artifact_ref=document_id)
+    run.manifest['stages']['judge']['processor'] = {
+        'name': document['judge_profile']['provider'],
+        'version': document['criteria_version'],
+        'model': document['judge_profile']['model'],
+    }
+    # `run.execute` unpacks (outputs, result, reason); the Judge's result is the
+    # pair the caller needs — the artifact and the constrained records it yielded.
+    return [output, document_id, raw_id], (document, semantic_records), reason
+
+
+def _findings(run, judge_document, timeline_doc, metrics_result, parent_ids):
+    """Turn judged finding candidates into validated Finding documents (#10, PRD-F011).
+
+    Candidates that cite no resolvable evidence never become Findings; they are
+    recorded as abstentions. Each emitted Finding is validated against the same
+    Timeline and metrics before publication.
+    """
+    from .findings import generate_findings_document
+
+    if judge_document is None:
+        reason = ('No semantic Judge result exists, so no Finding could be derived from a '
+                  'judgment')
+        output = run.envelope('findings', 'insufficient_evidence', reason, None, parent_ids)
+        run.manifest['stages']['findings']['processor'] = {'name': 'none', 'version': '1.0.0'}
+        return [output], [], reason
+
+    document = generate_findings_document(judge_document, timeline_doc, metrics_result,
+                                          run_id=run.manifest['run_id'],
+                                          analysis_id=run.manifest['analysis_id'])
+    if document['rejected']:
+        raise ValueError('Generated findings violate the Finding contract: '
+                         + '; '.join(item['reason'] for item in document['rejected']))
+    path = run.analysis / 'findings-document.json'
+    write_json(path, document)
+    findings_id = run.register(path, 'findings', list(parent_ids), 'findings:2.1.0')
+    status = 'complete' if document['findings'] else 'insufficient_evidence'
+    reason = (None if document['findings'] else
+              'No finding candidate cited resolvable evidence; see the recorded abstentions')
+    output = run.envelope('findings', status,
+                          reason or 'Evidence-linked Finding 2.1.0 documents',
+                          _envelope_data(document, status), list(parent_ids) + [findings_id],
+                          data_artifact_ref=findings_id)
+    run.manifest['stages']['findings']['processor'] = {'name': 'findings', 'version': '2.1.0'}
+    return [output, findings_id], document['findings'], reason
 
 
 # Every analysis stage owns exactly one envelope kind. A stage that did not run
@@ -381,14 +558,21 @@ UNRUN_REASONS = {
     'turns': 'Turn building did not run because fused speaker segments are unavailable',
     'timeline': 'Event detection did not run because fused segments or turns are unavailable',
     'metrics': 'Metric computation did not run because the event timeline is unavailable',
-    'judge': 'Provider or processor is not configured/implemented for this import milestone',
-    'findings': 'Provider or processor is not configured/implemented for this import milestone',
+    'judge': ('No semantic Judge provider is configured, or no eligible Turn exists; '
+              'no semantic judgment was performed'),
+    'findings': ('No accepted semantic judgment exists to derive a Finding from; '
+                 'no Finding was created'),
 }
 # Stages gated on upstream speaker/acoustic evidence. By the end of an import they
 # can no longer become available, so they report insufficient_evidence instead of
 # pending. 'pending' is reserved for processors this milestone simply does not run
-# (asr without a configured provider, judge, findings).
-EVIDENCE_GATED_STAGES = ('acoustic', 'diarization', 'attribution', 'fusion', 'turns', 'timeline', 'metrics')
+# (asr without a configured provider).
+#
+# `judge`/`findings` are implemented processors (#10): leaving them 'pending'
+# would read as "not implemented" when the real state is "an evidence or
+# configuration precondition was not met".
+EVIDENCE_GATED_STAGES = ('acoustic', 'diarization', 'attribution', 'fusion', 'turns', 'timeline',
+                         'metrics', 'judge', 'findings')
 
 
 def _resolve_unrun_stages(run, normalized_ok):
@@ -567,18 +751,22 @@ def _run_evidence_chain(run, normalized, asr_available, providers=None):
     _run_role_dependent_chain(run, acoustic_result, transcript_doc, diarization_result,
                               acoustic_art_id=acoustic_art_id, diar_art_id=diar_art_id,
                               asr_art_id=asr_art_id, norm_art_id=norm_art_id,
-                              explicit_mapping=explicit_mapping)
+                              explicit_mapping=explicit_mapping, providers=providers)
 
 
 def _run_role_dependent_chain(run, acoustic_result, transcript_doc, diarization_result, *,
                               acoustic_art_id=None, diar_art_id=None, asr_art_id=None,
-                              norm_art_id=None, explicit_mapping=None):
-    """Run attribution → fusion → turns → timeline → metrics.
+                              norm_art_id=None, explicit_mapping=None, providers=None):
+    """Run attribution → fusion → turns → timeline → Judge → metrics → findings.
 
     Split out of `_run_evidence_chain` so a saved human role mapping can rerun
     exactly this suffix in a new AnalysisRevision without recomputing recognition or
     clustering. Role assignment is user-owned: an unknown cluster stays unknown and
     the role-dependent stages abstain rather than guessing.
+
+    `providers.judge` is the configured semantic Judge. It is passed through so a
+    role revision re-runs the same semantic stage, and so a revision cannot
+    silently inherit a different semantic configuration.
     """
     attr_parents = [diar_art_id] if diar_art_id else [acoustic_art_id or norm_art_id]
     attribution_result = run.execute('attribution', attr_parents,
@@ -628,8 +816,33 @@ def _run_role_dependent_chain(run, acoustic_result, transcript_doc, diarization_
 
                     if timeline_result and timeline_result.get('events') is not None and timeline_art_id:
                         timeline_doc = timeline_result
-                        run.execute('metrics', [timeline_art_id],
-                            lambda: _metrics(run, timeline_doc, [timeline_art_id]))
+                        # Judge → constrained semantic evidence → metrics → findings.
+                        # The Judge stage runs first because a published metric
+                        # document is immutable: PRD-M003/M006 must be computed once,
+                        # with the semantic records the Judge produced. The Judge
+                        # receives the deterministic metrics in memory as context, so
+                        # deterministic values still take precedence.
+                        judge_provider = None
+                        if providers is not None and getattr(providers, 'judge', None) is not None:
+                            judge_provider = providers.judge
+                        judge_stage = run.execute('judge', [timeline_art_id],
+                            lambda: _judge(run, fused_doc, turns_doc, timeline_doc,
+                                           [timeline_art_id], judge_provider))
+                        judge_document, semantic_records = None, None
+                        if judge_stage is not None:
+                            judge_document, semantic_records = judge_stage
+                        metrics_result = run.execute('metrics', [timeline_art_id],
+                            lambda: _metrics(run, timeline_doc, [timeline_art_id],
+                                             semantic_records))
+                        if judge_document is not None:
+                            findings_parents = [p for p in
+                                                [run.manifest['stages']['judge']['output_artifact_ids'][0]
+                                                 if run.manifest['stages']['judge']['output_artifact_ids']
+                                                 else None,
+                                                 timeline_art_id] if p]
+                            run.execute('findings', findings_parents,
+                                lambda: _findings(run, judge_document, timeline_doc,
+                                                  metrics_result, findings_parents))
             else:
                 _abstain_role_dependent_stages(run, fusion_art_id or norm_art_id,
                                                _role_gate_reason(run, diarization_result))
@@ -676,15 +889,21 @@ def _role_gate_reason(run, diarization_doc):
 
 
 def _abstain_role_dependent_stages(run, parent, reason):
-    """Publish an explicit insufficient_evidence envelope for each blocked stage."""
-    for stage_name in ('turns', 'timeline', 'metrics'):
+    """Publish an explicit insufficient_evidence envelope for each blocked stage.
+
+    Semantic stages are included: with anonymous clusters there is no eligible
+    Turn for the Judge to judge, which is an evidence state and must be visible
+    as one instead of leaving the stage looking merely unimplemented.
+    """
+    kinds = {'turns': 'turns', 'timeline': 'timeline', 'metrics': 'metrics',
+             'judge': 'judge-results', 'findings': 'findings'}
+    for stage_name in ('turns', 'timeline', 'metrics', 'judge', 'findings'):
         stage = run.manifest['stages'][stage_name]
         stage['status'] = 'insufficient_evidence'
         stage['reason'] = reason
         stage['input_artifact_ids'] = [parent]
-        output = run.envelope(
-            {'turns': 'turns', 'timeline': 'timeline', 'metrics': 'metrics'}[stage_name],
-            'insufficient_evidence', stage['reason'], refs=[parent])
+        output = run.envelope(kinds[stage_name], 'insufficient_evidence', stage['reason'],
+                              refs=[parent])
         stage['output_artifact_ids'].append(output)
 
 
@@ -775,7 +994,7 @@ def resume_recording(directory, *, providers=None, model_snapshot=None):
 
 
 def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snapshot=None,
-                       evidence_refs=()):
+                       evidence_refs=(), providers=None):
     """Create a new AnalysisRevision from one saved human role decision set.
 
     Caller must hold the Run lock. Recognition and speaker clustering are original
@@ -783,6 +1002,10 @@ def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snaps
     being recomputed: no second recognition request, no changed clustering, and no
     provider configuration is required to reanalyze. Only attribution and the stages
     downstream of it are recomputed, from the human mapping.
+
+    `providers.judge` is the configured semantic Judge. A revision re-runs the
+    semantic stage with the same configuration, so confirming roles cannot
+    silently drop the Judge or change which model judged the Run.
 
     The previous revision's artifacts are never modified. Returns
     ``(directory, manifest, review_document)``.
@@ -872,7 +1095,7 @@ def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snaps
     _run_role_dependent_chain(run, acoustic_doc, transcript_envelope.get('data'), diarization_doc,
                               acoustic_art_id=acoustic_art_id, diar_art_id=diar_art_id,
                               asr_art_id=asr_art_id, norm_art_id=revision_ref,
-                              explicit_mapping=resolved)
+                              explicit_mapping=resolved, providers=providers)
     _resolve_unrun_stages(run, True)
     _retain_failures(run)
     run.execute('report', [a['artifact_id'] for a in run.manifest['artifacts']],

@@ -1,11 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aivoicebench.local/schemas/finding.schema.json",
-  "title": "Finding 2.0.0",
+  "title": "Finding 2.0.0 / 2.1.0",
   "type": "object",
   "properties": {
     "schema_version": {
-      "const": "2.0.0"
+      "enum": [
+        "2.0.0",
+        "2.1.0"
+      ]
     },
     "finding_id": {
       "type": "string",
@@ -14,6 +17,13 @@
     "run_id": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "analysis_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
     },
     "case_id": {
       "type": "string",
@@ -133,6 +143,16 @@
     },
     "metric_ids": {
       "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "turn_ids": {
+      "type": "array",
+      "description": "Turns this Finding is bound to. Finding 2.1.0 records them explicitly; each must resolve to the Turn of the linked events. Only an event carries a Turn binding, so a linked metric cannot establish a turn (see docs/07-contract-versions.md).",
       "items": {
         "type": "string",
         "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"

@@ -1,5 +1,6 @@
 """Offline contract checks. Schema validity does not certify assets or hardware."""
 
+import hashlib
 import json
 import math
 import re
@@ -345,6 +346,7 @@ def finding_errors(finding, timeline, metrics=(), regression_case=None):
     timeline_issues = timeline_errors(timeline)
     if timeline_issues:
         return ['Referenced timeline is invalid: ' + message for message in timeline_issues]
+    errors.extend(_finding_version_errors(finding))
     if any(finding[key] != timeline[key] for key in ('run_id', 'case_id', 'execution_kind')):
         errors.append('/: finding and timeline run/case/execution_kind disagree')
     evidence = {item['evidence_id']: item for item in timeline['evidence']}
@@ -373,6 +375,7 @@ def finding_errors(finding, timeline, metrics=(), regression_case=None):
             errors.append('/metric_ids: unknown supplied metric')
         else:
             errors.extend('Referenced metric is invalid: ' + message for message in metric_errors(metric_map[key], timeline))
+    errors.extend(_finding_turn_errors(finding, events, metric_map))
     if finding.get('regression', {}).get('state') == 'frozen':
         if regression_case is None:
             errors.append('/regression: frozen candidate requires the linked TestCase')
@@ -386,6 +389,62 @@ def finding_errors(finding, timeline, metrics=(), regression_case=None):
                 errors.append('/regression: Golden Set identity/version mismatch')
             if regression_case.get('mode') == 'exploratory_agent':
                 errors.append('/regression: frozen case must use deterministic assets')
+    return errors
+
+
+def _finding_version_errors(finding):
+    """Version-specific Finding contract.
+
+    The shared schema accepts both 2.0.0 and 2.1.0 structurally; each version then
+    enforces its own identity rules here. 2.1.0 adds explicit Turn linkage.
+
+    Both versions require a Case identity: a Finding resolves against the persisted
+    Timeline, and an EventTimeline always carries one (an unscripted Recording
+    Analysis Run carries the placeholder `CASE-auto` established by #24). A
+    nullable `case_id` would therefore be unreachable, so it is not offered. The
+    measurement layer's nullable case identity is its own convention and is
+    documented in `docs/07-contract-versions.md` rather than silently unified.
+    """
+    version = finding.get('schema_version')
+    errors = []
+    if version == '2.1.0':
+        if 'turn_ids' not in finding:
+            errors.append('/turn_ids: Finding 2.1.0 requires the Turns it is bound to '
+                          '(an empty list when the evidence establishes none)')
+    elif version == '2.0.0':
+        if finding.get('case_id') is None:
+            errors.append('/case_id: Finding 2.0.0 requires a case identity')
+        for field in ('turn_ids', 'analysis_id'):
+            if field in finding:
+                errors.append(f'/{field}: 2.0.0 documents must not carry 2.1.0 fields; '
+                              're-emit under 2.1.0 instead of rewriting history')
+    return errors
+
+
+def _finding_turn_errors(finding, events, metric_map):
+    """A Finding's declared Turns must be reachable from its own cited events.
+
+    Timeline evidence carries no turn binding of its own, so an event is the only
+    object through which a Finding can establish *which* Turn it is about. A
+    linked metric therefore cannot supply the turn: linking one turn's numbers must
+    not let a Finding declare another turn. This is the same rule the generator
+    enforces, so producer and contract agree rather than the generator being
+    silently stricter.
+    """
+    turn_ids = finding.get('turn_ids')
+    if turn_ids is None:
+        return []
+    errors = []
+    reachable = {events[event_id].get('turn_id') for event_id in finding.get('event_ids') or []
+                 if event_id in events and events[event_id].get('turn_id')}
+    for turn_id in turn_ids:
+        if turn_id not in reachable:
+            errors.append(f'/turn_ids: {turn_id!r} is not reachable from this finding\'s events; '
+                          'a turn link must be traceable to evidence')
+    for turn_id in sorted(reachable):
+        if turn_id not in turn_ids:
+            errors.append(f'/turn_ids: {turn_id!r} is reachable from this finding\'s citations but '
+                          'is not declared')
     return errors
 
 
@@ -539,4 +598,245 @@ def judge_result_errors(document):
             errors.append('/requires_log_verification: suspected_layer requires log verification')
         if document.get('attribution_confidence') is None:
             errors.append('/attribution_confidence: suspected_layer requires attribution_confidence')
+    errors.extend(_semantic_result_errors(document))
+    errors.extend(_anchor_errors(document))
+    return errors
+
+
+def _semantic_result_errors(document):
+    """A semantic verdict needs its criterion, provenance and cited evidence.
+
+    `schema_errors` already requires the members for the two canonical semantic
+    dimensions. The rules here are the ones a schema cannot state: an abstention
+    must say why, and an observed verdict must not be a fabricated default.
+    """
+    from .semantic_evidence import SEMANTIC_CRITERIA
+    dimension = document.get('dimension')
+    if dimension not in SEMANTIC_CRITERIA:
+        return []
+    criterion = SEMANTIC_CRITERIA[dimension]
+    errors = []
+    if document['status'] == 'observed':
+        if not document.get('evidence_refs'):
+            errors.append('/evidence_refs: an observed semantic verdict must cite evidence')
+        if document.get('semantic_decision') is None:
+            errors.append('/semantic_decision: an observed semantic verdict must be a boolean')
+        if document.get('criterion_id') != criterion['criterion_id']:
+            errors.append('/criterion_id: must name the declared criterion for this dimension')
+        if document.get('criterion_version') != criterion['criterion_version']:
+            errors.append('/criterion_version: must be the declared criterion version')
+        profile = document.get('judge_profile')
+        if isinstance(profile, dict) and profile.get('provider') == 'unavailable':
+            errors.append('/judge_profile: an unavailable provider cannot produce an observed verdict')
+    else:
+        if document.get('semantic_decision') is not None:
+            errors.append('/semantic_decision: an abstaining semantic result must not carry a decision')
+        if not document.get('abstention_reason'):
+            errors.append('/abstention_reason: an abstaining semantic result must state why')
+    return errors
+
+
+def _anchor_errors(document):
+    """Reject model-authored timing and duplicated anchor roles.
+
+    A boundary role may be selected once. Two different anchors for the same role
+    would make the resolved interval depend on list order instead of evidence.
+    """
+    anchors = document.get('anchor_refs')
+    if not anchors:
+        return []
+    errors = []
+    roles = [anchor.get('role') for anchor in anchors]
+    if len(roles) != len(set(roles)):
+        errors.append('/anchor_refs: each boundary role may be selected at most once')
+    for anchor in anchors:
+        if anchor.get('end_ms', 0) < anchor.get('start_ms', 0):
+            errors.append('/anchor_refs: an anchor end_ms precedes its start_ms')
+    meaningful = [a for a in anchors if a.get('role') == 'meaningful_start']
+    if meaningful and document.get('meaningful_response_start_ms') is not None:
+        if abs(document['meaningful_response_start_ms'] - meaningful[0]['start_ms']) > 1e-6:
+            errors.append('/meaningful_response_start_ms: must equal the selected anchor, not a '
+                          'separately authored estimate')
+    feedback_start = [a for a in anchors if a.get('role') == 'feedback_start']
+    feedback_end = [a for a in anchors if a.get('role') == 'feedback_end']
+    if feedback_start and document.get('feedback_start_ms') is not None:
+        if abs(document['feedback_start_ms'] - feedback_start[0]['start_ms']) > 1e-6:
+            errors.append('/feedback_start_ms: must equal the selected anchor')
+    if feedback_end and document.get('feedback_end_ms') is not None:
+        if abs(document['feedback_end_ms'] - feedback_end[0]['end_ms']) > 1e-6:
+            errors.append('/feedback_end_ms: must equal the selected anchor')
+    return errors
+
+
+#: Credential-shaped material that must never reach a Judge artifact, a report or
+#: a browser payload (PRD-N004). Keys are matched case-insensitively; values are
+#: matched against provider key shapes.
+_CREDENTIAL_KEYS = re.compile(r'(?:api[_-]?key|apikey|secret|password|passwd|token|bearer|authorization|credential)',
+                              re.IGNORECASE)
+_CREDENTIAL_VALUES = re.compile(r'(?:^|[^A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{8,}|gh[a-z]_[A-Za-z0-9]{16,}|'
+                                r'Bearer\s+[A-Za-z0-9._-]{8,})')
+
+
+def credential_errors(document, location='/'):
+    """Find long-lived credential material in a document tree.
+
+    Only the *location* is reported. Echoing the offending text would move the
+    secret into the validation message, which is itself persisted.
+    """
+    errors = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if _CREDENTIAL_KEYS.search(str(key)) and value not in (None, '', False):
+                    errors.append(f'{path}{key}: credential-shaped field must not be persisted')
+                walk(value, f'{path}{key}/')
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f'{path}{index}/')
+        elif isinstance(node, str) and _CREDENTIAL_VALUES.search(node):
+            errors.append(f'{path[:-1]}: credential-shaped value must not be persisted')
+
+    walk(document, location)
+    return errors
+
+
+def judge_document_errors(document, timeline=None, turns_document=None):
+    """Validate a JudgeResults 1.0.0 artifact and its references.
+
+    Beyond shape this rejects the failure modes that would otherwise look like a
+    successful semantic evaluation: an unrecorded invocation, a result citing
+    evidence that does not exist, a semantic verdict without its criterion, and
+    any credential material in the preserved raw provider output.
+    """
+    errors = schema_errors(document, 'judge-results')
+    if errors:
+        return errors
+    from .semantic_evidence import CRITERIA_VERSION, SEMANTIC_CRITERIA
+    if document.get('criteria_version') != CRITERIA_VERSION:
+        errors.append(f'/criteria_version: the adapter contract is {CRITERIA_VERSION}')
+    profile = document.get('judge_profile') or {}
+    if profile.get('criteria_version') != document.get('criteria_version'):
+        errors.append('/judge_profile/criteria_version: must agree with the artifact criteria_version')
+    invocations = document.get('invocations') or []
+    invocation_ids = [item.get('invocation_id') for item in invocations]
+    if len(invocation_ids) != len(set(invocation_ids)):
+        errors.append('/invocations: invocation_id must be unique')
+    known = set(invocation_ids)
+    results = document.get('results') or []
+    judge_ids = [item.get('judge_id') for item in results]
+    if len(judge_ids) != len(set(judge_ids)):
+        errors.append('/results: judge_id must be unique')
+    for index, result in enumerate(results):
+        prefix = f'/results/{index}'
+        for message in judge_result_errors(result):
+            errors.append(f'{prefix}{message}')
+        invocation_id = result.get('invocation_id')
+        if invocation_id not in known:
+            errors.append(f'{prefix}/invocation_id: must resolve to a recorded invocation')
+        if result.get('run_id') != document.get('run_id'):
+            errors.append(f'{prefix}/run_id: must agree with the artifact run_id')
+    for index, item in enumerate(invocations):
+        prefix = f'/invocations/{index}'
+        if item.get('status') == 'success' and item.get('raw_response') is None:
+            errors.append(f'{prefix}/raw_response: a successful call must preserve its raw output')
+        digest_value = item.get('raw_response_sha256')
+        response = item.get('raw_response')
+        if (response is None) != (digest_value is None):
+            errors.append(f'{prefix}/raw_response_sha256: must accompany exactly the raw output it hashes')
+        elif response is not None and hashlib.sha256(response.encode('utf-8')).hexdigest() != digest_value:
+            errors.append(f'{prefix}/raw_response_sha256: does not match the preserved raw output')
+        for message in credential_errors(item, prefix + '/'):
+            errors.append(message)
+    for message in credential_errors(profile, '/judge_profile/'):
+        errors.append(message)
+    if timeline is not None:
+        timeline_issues = timeline_errors(timeline)
+        if timeline_issues:
+            errors.append('Referenced timeline is invalid: ' + timeline_issues[0])
+        else:
+            errors.extend(_result_reference_errors(results, timeline, turns_document))
+    return errors
+
+
+def _result_reference_errors(results, timeline, turns_document):
+    """Every cited evidence/event/turn reference must resolve."""
+    errors = []
+    evidence = {item.get('evidence_id') for item in timeline.get('evidence') or ()}
+    events = {item.get('event_id') for item in timeline.get('events') or ()}
+    turns = {item.get('turn_id') for item in (turns_document or {}).get('turns') or ()}
+    # "No Turns document supplied" and "a Turns document declaring no turns" are
+    # different states: when a document is supplied, a non-null turn reference must
+    # resolve in it — otherwise the check would silently disappear exactly when a
+    # Turn-bearing result is validated against an empty turn set.
+    turns_supplied = turns_document is not None
+    for index, result in enumerate(results):
+        prefix = f'/results/{index}'
+        for reference in result.get('evidence_refs') or ():
+            if reference not in evidence:
+                errors.append(f'{prefix}/evidence_refs: unknown timeline evidence {reference!r}')
+        for reference in result.get('event_refs') or ():
+            if reference not in events:
+                errors.append(f'{prefix}/event_refs: unknown timeline event {reference!r}')
+        turn_id = result.get('turn_id')
+        if turn_id is not None and turns_supplied and turn_id not in turns:
+            errors.append(f'{prefix}/turn_id: unknown turn in the supplied Turns document')
+    return errors
+
+
+def semantic_evidence_errors(records, timeline, turns_document=None):
+    """Validate the constrained semantic records that feed PRD-M003/M006.
+
+    The engine silently drops an ineligible record and abstains, which is correct
+    but invisible. This validator makes the drop explicit at the producer, so a
+    mis-shaped Judge can never quietly become "no semantic evidence".
+    """
+    from .semantic_evidence import CRITERIA_VERSION, SEMANTIC_CRITERIA, turn_evidence
+    errors = []
+    evidence = {item.get('evidence_id') for item in timeline.get('evidence') or ()}
+    events = {item.get('event_id') for item in timeline.get('events') or ()}
+    turns = {item.get('turn_id'): item for item in (turns_document or {}).get('turns') or ()}
+    kinds = {'semantic_response': 'semantic_response', 'barge_in_compliance': 'barge_in_compliance'}
+    declared = {criterion['kind']: criterion for criterion in SEMANTIC_CRITERIA.values()}
+    seen = set()
+    for index, record in enumerate(records or ()):
+        prefix = f'/records/{index}'
+        if not isinstance(record, dict):
+            errors.append(f'{prefix}: a semantic record must be an object')
+            continue
+        kind = record.get('kind')
+        if kind not in kinds:
+            errors.append(f'{prefix}/kind: {kind!r} is not a constrained semantic kind')
+            continue
+        criterion = declared[kind]
+        key = (kind, record.get('turn_id'))
+        if key in seen:
+            errors.append(f'{prefix}: duplicate semantic record for this turn')
+        seen.add(key)
+        if type(record.get('decision')) is not bool:
+            errors.append(f'{prefix}/decision: must be a boolean')
+        if record.get('criterion_id') != criterion['criterion_id']:
+            errors.append(f'{prefix}/criterion_id: must name the declared criterion')
+        if record.get('criterion_version') != criterion['criterion_version']:
+            errors.append(f'{prefix}/criterion_version: must be the declared criterion version')
+        if not record.get('judge_profile'):
+            errors.append(f'{prefix}/judge_profile: required for a performed judgment')
+        if not (record.get('evidence_ids') or record.get('event_ids')):
+            errors.append(f'{prefix}: requires evidence or event references')
+        turn_id = record.get('turn_id')
+        if turn_id is not None and turns_document is not None and turn_id not in turns:
+            errors.append(f'{prefix}/turn_id: unknown turn in the supplied Turns document')
+        turn = turns.get(turn_id)
+        if turn is not None:
+            allowed_evidence, allowed_events = turn_evidence(turn, timeline)
+            for reference in record.get('evidence_ids') or ():
+                if reference not in evidence:
+                    errors.append(f'{prefix}/evidence_ids: unknown timeline evidence {reference!r}')
+                elif reference not in allowed_evidence:
+                    errors.append(f'{prefix}/evidence_ids: {reference!r} belongs to another turn')
+            for reference in record.get('event_ids') or ():
+                if reference not in events:
+                    errors.append(f'{prefix}/event_ids: unknown timeline event {reference!r}')
+                elif reference not in allowed_events:
+                    errors.append(f'{prefix}/event_ids: {reference!r} belongs to another turn')
     return errors

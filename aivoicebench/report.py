@@ -29,6 +29,18 @@ def _fmt_range(start, end):
     return f'{_fmt_ms(start)} – {_fmt_ms(end)}'
 
 
+def _fmt_confidence(confidence):
+    """Render a confidence value, or an explicit unknown marker.
+
+    A derived event legitimately carries no confidence number, so an absent value
+    must render as unknown. It must never be formatted as `0.00`, which would
+    present "no defensible number" as a measured zero.
+    """
+    if confidence is None:
+        return '—'
+    return f'{confidence:.2f}'
+
+
 def _esc(text):
     """Escape text for Markdown table cells."""
     if text is None:
@@ -85,10 +97,10 @@ def render_markdown(profile, fused_doc, turns_doc, timeline, metrics_result,
             text = s.get('text') or ''
             role = s.get('speaker_role', 'unknown')
             lines.append(f'| {s["segment_id"]} | {_fmt_ms(s["start_ms"])} | {_fmt_ms(s["end_ms"])} '
-                        f'| {dur:.0f}ms | {role} | {s.get("speaker_confidence", 0):.2f} | {_esc(text)} |')
+                        f'| {dur:.0f}ms | {role} | {_fmt_confidence(s.get("speaker_confidence"))} | {_esc(text)} |')
         lines.append('')
         lines.append(f'> 说话人归因策略：{fused_doc.get("attribution", {}).get("strategy", "unknown")} '
-                     f'(置信度 {fused_doc.get("attribution", {}).get("confidence", 0):.2f})')
+                     f'(置信度 {_fmt_confidence(fused_doc.get("attribution", {}).get("confidence"))})')
         lines.append('')
 
     # Turns
@@ -120,7 +132,7 @@ def render_markdown(profile, fused_doc, turns_doc, timeline, metrics_result,
                 t = _fmt_range(e.get('start_ms'), e.get('end_ms'))
             lines.append(f'| {e.get("event_id", "")} | {etype} | {t} '
                         f'| {e.get("turn_id") or "—"} | {e.get("source", "")} '
-                        f'| {e.get("confidence", 0):.2f} |')
+                        f'| {_fmt_confidence(e.get("confidence"))} |')
         lines.append('')
 
     # Metrics
@@ -218,7 +230,7 @@ def render_markdown(profile, fused_doc, turns_doc, timeline, metrics_result,
         lines.append('| --- | --- | --- | --- |')
         for e in evidence:
             lines.append(f'| {e.get("evidence_id", "")} | {_fmt_range(e.get("start_ms"), e.get("end_ms"))} '
-                        f'| {e.get("source", "")} | {e.get("confidence", 0):.2f} |')
+                         f'| {e.get("source", "")} | {_fmt_confidence(e.get("confidence"))} |')
         lines.append('')
 
     # Provenance

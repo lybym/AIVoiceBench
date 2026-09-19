@@ -884,6 +884,12 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
         if t['has_interruption']:
             # PRD-M005: interrupt_start must bind to the interrupted OLD response_id,
             # and be timestamped at the interrupting tester segment (not the original tester).
+            #
+            # The interrupting segment is also the interval's end: `timeline_errors`
+            # pairs `interrupt_end` with `interrupt_start`, so a `complete` timeline
+            # that carries an interruption cannot leave the start unclosed. Without
+            # the paired end the whole Timeline is invalid, which blocks every
+            # downstream consumer of the interruption (PRD-M005 and PRD-M006).
             old_response_id = t.get('interrupted_response_id') or t.get('response_id')
             for sid in t.get('interrupting_segment_ids', []):
                 seg = next((s for s in segments if s['segment_id'] == sid), None)
@@ -892,6 +898,10 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
                 ev_ids = [ev_map[sid]]
                 events.append(_event(f'EVT-{event_num + 1:04d}', 'interrupt_start',
                                      seg['start_ms'], seg['start_ms'],
+                                     t['turn_id'], old_response_id, 'derived', None, ev_ids))
+                event_num += 1
+                events.append(_event(f'EVT-{event_num + 1:04d}', 'interrupt_end',
+                                     seg['end_ms'], seg['end_ms'],
                                      t['turn_id'], old_response_id, 'derived', None, ev_ids))
                 event_num += 1
 
