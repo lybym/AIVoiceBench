@@ -189,6 +189,51 @@ class ReportEscapingTests(ReportCase, unittest.TestCase):
         self.assertIn('测试供应商', self.markdown)
 
 
+class ReportEvidenceIntegrityTests(unittest.TestCase):
+    """A report must not present unreadable evidence as absent evidence."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.directory, self.manifest = build_document_run(Path(self._tmp.name) / 'runs')
+        self.run = reopen_run(self.directory)
+
+    def test_a_corrupt_document_is_reported_as_an_incomplete_chain(self):
+        (self.run.analysis / 'timeline.json').write_text('{"events": [', encoding='utf-8')
+        payload, markdown = self._write()
+        self.assertEqual(payload['evidence_integrity']['status'], 'incomplete')
+        self.assertEqual(payload['evidence_integrity']['unreadable_documents'], ['timeline.json'])
+        stages = {item['stage']: item for item in payload['unavailable']}
+        self.assertEqual(stages['timeline']['status'], 'unreadable')
+        self.assertEqual(stages['timeline']['kind'], 'failed')
+        # The corrupt document is left exactly as found: the report records the gap and
+        # does not rewrite the evidence it could not read.
+        self.assertEqual((self.run.analysis / 'timeline.json').read_text(encoding='utf-8'),
+                         '{"events": [')
+        # The gap is prose a reviewer reads, not an empty table they have to interpret.
+        self.assertIn('证据链不完整', markdown)
+        self.assertIn('timeline.json', markdown)
+        # A stage that merely has not run is a different category from one that abstained.
+        self.assertIn('`not_run`', markdown)
+
+    def test_an_unreadable_judge_document_is_reported_instead_of_ignored(self):
+        (self.run.analysis / 'judge-results.json').write_text('not json', encoding='utf-8')
+        payload, markdown = self._write()
+        self.assertEqual(payload['evidence_integrity']['status'], 'incomplete')
+        self.assertIn('judge-results.json', payload['evidence_integrity']['unreadable_documents'])
+        self.assertIn('judge-results.json', markdown)
+
+    def test_a_readable_revision_reports_an_intact_chain(self):
+        payload, markdown = self._write()
+        self.assertEqual(payload['evidence_integrity']['status'], 'ok')
+        self.assertEqual(payload['evidence_integrity']['unreadable_documents'], [])
+        self.assertNotIn('证据链不完整', markdown)
+
+    def _write(self):
+        _, payload, _ = write_import_report(self.run)
+        return payload, (self.run.analysis / 'report.md').read_text(encoding='utf-8')
+
+
 class ReportRevisionLifecycleTests(unittest.TestCase):
     """A new human revision must not overwrite the previous revision's report."""
 

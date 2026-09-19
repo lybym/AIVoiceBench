@@ -87,23 +87,27 @@ def build_document_run(root, *, gate='complete_review', metric_value=METRIC_VALU
                  processor='speaker_alignment:1.0.0')
     run.envelope('transcript', 'complete', 'Timestamped recognition', {
         'segments': [
-            {'segment_id': 'UTT-1', 'start_ms': 0.0, 'end_ms': 1000.5, 'text': '今天天气怎么样',
+            {'segment_id': 'ASR-0001', 'start_ms': 0.0, 'end_ms': 1000.5, 'text': '今天天气怎么样',
              'speaker_id': 'speaker_0'},
-            {'segment_id': 'UTT-2', 'start_ms': 1200.0, 'end_ms': 2500.25, 'text': '北京今天晴',
+            {'segment_id': 'ASR-0002', 'start_ms': 1200.0, 'end_ms': 2500.25, 'text': '北京今天晴',
              'speaker_id': 'speaker_1'},
         ]})
     run.envelope('fused-segments', 'complete', 'Attribution and fusion', {
         'source': {'duration_ms': 3000.0, 'sample_rate': 16000, 'audio_sha256': 'a' * 64},
         'attribution': {'strategy': 'explicit_mapping' if complete else 'awaiting_role_review',
                         'confidence': 1.0 if complete else None},
+        # The fused segment is the only document that records that an ASR utterance
+        # (`ASR-####`) and an acoustic boundary (`SEG-*`) describe the same audio: the
+        # two ids are independent evidence namespaces, so the transcript link is
+        # resolved from this cross-reference and never from a shared naming scheme.
         'segments': [
             # A closed gate leaves the anonymous cluster unnamed: the fused segment
             # carries `unknown`, never a role copied from the cluster order.
-            {'segment_id': 'SEG-1', 'start_ms': 0.0, 'end_ms': 1000.5,
-             'speaker_id': 'speaker_0',
+            {'segment_id': 'FSEG-0000', 'acoustic_segment_id': 'SEG-1', 'asr_segment_id': 'ASR-0001',
+             'start_ms': 0.0, 'end_ms': 1000.5, 'speaker_id': 'speaker_0',
              'speaker_role': 'tester' if complete else 'unknown', 'text': '今天天气怎么样'},
-            {'segment_id': 'SEG-2', 'start_ms': 1200.0, 'end_ms': 2500.25,
-             'speaker_id': 'speaker_1',
+            {'segment_id': 'FSEG-0001', 'acoustic_segment_id': 'SEG-2', 'asr_segment_id': 'ASR-0002',
+             'start_ms': 1200.0, 'end_ms': 2500.25, 'speaker_id': 'speaker_1',
              'speaker_role': 'device' if complete else 'unknown', 'text': '北京今天晴'},
         ]})
     if not complete:
@@ -283,6 +287,77 @@ class ProjectionTests(WorkbenchFixture):
         self.assertEqual(self.document['audio']['url'],
                          f'/api/runs/{self.manifest["run_id"]}/audio')
 
+    def test_region_processor_comes_from_the_artifact_that_published_the_document(self):
+        # `analysis-output.schema.json` forbids extra envelope members, so an envelope
+        # can never carry `processor`: reading it there can only ever yield null.
+        acoustic = self.region('acoustic:SEG-1')
+        self.assertEqual(acoustic['source']['processor'],
+                         {'name': 'acoustic-segments', 'version': '1.0.0'})
+        event = self.region('event:EVT-1')
+        self.assertEqual(event['source']['processor'], {'name': 'timeline', 'version': '1.0.0'})
+        self.assertTrue(all(region['source']['processor'] is not None
+                            for region in self.document['regions']))
+
+    def test_every_region_processor_is_a_registered_artifact_processor(self):
+        registered = {artifact['processor'] for artifact in self.document['provenance']['artifacts']}
+        for region in self.document['regions']:
+            processor = region['source']['processor']
+            name, version = processor['name'], processor['version']
+            self.assertIn(f'{name}:{version}', registered,
+                          f'{region["region_id"]} cites an unregistered processor')
+
+    def test_transcript_rows_link_to_the_region_the_fusion_cross_reference_names(self):
+        rows = {row['segment_id']: row for row in self.document['transcript']}
+        # The ASR id and the acoustic region id are different namespaces: the link can
+        # only come from the persisted fused-segment cross-reference.
+        self.assertEqual(rows['ASR-0001']['region_id'], 'acoustic:SEG-1')
+        self.assertEqual(rows['ASR-0002']['region_id'], 'acoustic:SEG-2')
+        self.assertEqual(rows['ASR-0001']['region_basis'], 'fused_acoustic_segment')
+        self.assertNotEqual(rows['ASR-0001']['segment_id'],
+                            self.region('acoustic:SEG-1')['detail']['segment_id'])
+
+    def test_transcript_without_a_fusion_cross_reference_is_reported_unresolved(self):
+        analysis = self.directory / 'analysis' / self.manifest['analysis_id']
+        write_json(analysis / 'transcript.json', {
+            'schema_version': '1.0.0', 'run_id': self.manifest['run_id'],
+            'analysis_id': self.manifest['analysis_id'], 'kind': 'transcript', 'status': 'complete',
+            'reason': None, 'artifact_refs': [], 'data_artifact_ref': None,
+            'data': {'segments': [{'segment_id': 'ASR-9999', 'start_ms': 0.0, 'end_ms': 10.0,
+                                   'text': '孤立片段', 'speaker_id': None}]}})
+        row = build_workbench(self.directory)['transcript'][0]
+        self.assertIsNone(row['region_id'])
+        self.assertEqual(row['region_basis'], 'unresolved')
+        self.assertEqual(row['region_ids'], [])
+
+    def test_document_id_covers_the_transcript_links_it_publishes(self):
+        before = build_workbench(self.directory)
+        analysis = self.directory / 'analysis' / self.manifest['analysis_id']
+        fused = json.loads((analysis / 'fused-segments.json').read_text(encoding='utf-8'))
+        # Re-point one utterance at the other acoustic segment. The region set is
+        # unchanged, but what a reviewer can navigate to is not, so the revision identity
+        # must change with it instead of hiding the difference behind an equal id.
+        fused['data']['segments'][0]['acoustic_segment_id'] = 'SEG-2'
+        write_json(analysis / 'fused-segments.json', fused)
+        after = build_workbench(self.directory)
+        self.assertEqual({region['region_id'] for region in after['regions']},
+                         {region['region_id'] for region in before['regions']})
+        self.assertEqual(after['transcript'][0]['region_id'], 'acoustic:SEG-2')
+        self.assertNotEqual(after['document_id'], before['document_id'])
+
+    def test_one_utterance_fused_into_two_regions_is_ambiguous_not_guessed(self):
+        analysis = self.directory / 'analysis' / self.manifest['analysis_id']
+        fused = json.loads((analysis / 'fused-segments.json').read_text(encoding='utf-8'))
+        # `_split_by_speaker` splits one acoustic segment at cluster boundaries, so a
+        # single ASR utterance can legitimately claim more than one acoustic region.
+        # The projection must publish the candidates instead of silently picking one.
+        fused['data']['segments'][1]['asr_segment_id'] = 'ASR-0001'
+        write_json(analysis / 'fused-segments.json', fused)
+        row = build_workbench(self.directory)['transcript'][0]
+        self.assertEqual(row['segment_id'], 'ASR-0001')
+        self.assertIsNone(row['region_id'])
+        self.assertEqual(row['region_basis'], 'ambiguous')
+        self.assertEqual(sorted(row['region_ids']), ['acoustic:SEG-1', 'acoustic:SEG-2'])
+
     def test_document_is_deterministic_for_one_revision(self):
         self.assertEqual(build_workbench(self.directory), build_workbench(self.directory))
 
@@ -332,6 +407,129 @@ class ProvisionalGateTests(WorkbenchFixture):
         gap = self.document['abstentions']['metrics_gap']
         self.assertIn('reasons', gap)
         self.assertTrue(gap['reasons'])
+
+
+class ProvisionalEvidenceTests(unittest.TestCase):
+    """An incomplete gate withholds regions but still lets a reviewer audit geometry."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.directory, self.manifest = build_document_run(Path(self._tmp.name) / 'runs')
+        # The evidence exists, but the human decision is no longer complete: exactly
+        # the state in which a role-dependent region must not be published.
+        path = self.directory / 'analysis' / self.manifest['analysis_id'] / 'role-review.json'
+        review = json.loads(path.read_text(encoding='utf-8'))
+        review['status'] = 'incomplete_review'
+        review['reason'] = 'One cluster was reopened for review'
+        review['revision'] = None
+        write_json(path, review)
+        self.document = build_workbench(self.directory)
+
+    def test_resolved_geometry_is_published_for_audit_but_not_as_a_region(self):
+        metric = self.document['metrics'][0]
+        self.assertIsNone(metric['region_id'])
+        self.assertEqual(metric['resolved_span'], {
+            'start_ms': EVIDENCE_START_MS, 'end_ms': EVIDENCE_END_MS,
+            'start_sec': EVIDENCE_START_MS / 1000.0, 'end_sec': EVIDENCE_END_MS / 1000.0})
+        finding = self.document['findings'][0]
+        self.assertIsNone(finding['region_id'])
+        self.assertIsNotNone(finding['resolved_span'])
+        published = {region['region_id'] for region in self.document['regions']}
+        self.assertNotIn('metric:MET-1', published)
+        self.assertNotIn('finding:FND-1', published)
+        self.assertFalse(self.document['gate']['role_dependent_available'])
+
+    def test_the_withheld_region_is_explained_and_typed(self):
+        entries = {item['stage']: item for item in self.document['unavailable']}
+        self.assertEqual(entries['metric']['kind'], 'incomplete')
+        self.assertIn('resolved_span', entries['metric']['reason'])
+
+    def test_a_complete_gate_publishes_the_region_and_no_provisional_span(self):
+        review_path = self.directory / 'analysis' / self.manifest['analysis_id'] / 'role-review.json'
+        review = json.loads(review_path.read_text(encoding='utf-8'))
+        review['status'] = 'complete_review'
+        write_json(review_path, review)
+        document = build_workbench(self.directory)
+        metric = document['metrics'][0]
+        self.assertEqual(metric['region_id'], 'metric:MET-1')
+        self.assertIsNone(metric['resolved_span'])
+
+
+class EvidenceIntegrityTests(unittest.TestCase):
+    """A document that exists but cannot be read is a gap, not an empty evidence set."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.directory, self.manifest = build_document_run(Path(self._tmp.name) / 'runs')
+
+    def analysis(self):
+        return self.directory / 'analysis' / self.manifest['analysis_id']
+
+    def test_a_corrupt_document_is_published_as_an_explicit_gap(self):
+        before = build_workbench(self.directory)
+        self.assertEqual(before['evidence_integrity']['status'], 'ok')
+        self.assertTrue(any(region['track_id'] == 'event' for region in before['regions']))
+        # Truncating the document must not look like "the timeline stage produced no
+        # events": that silent downgrade is what makes a broken chain look complete.
+        (self.analysis() / 'timeline.json').write_text('{"events": [', encoding='utf-8')
+        document = build_workbench(self.directory)
+        self.assertEqual(document['events'], [])
+        self.assertEqual(document['evidence_integrity']['status'], 'incomplete')
+        self.assertEqual(document['evidence_integrity']['unreadable_documents'], ['timeline.json'])
+        gaps = {item['stage']: item for item in document['unavailable']}
+        self.assertIn('timeline', gaps)
+        self.assertEqual(gaps['timeline']['status'], 'unreadable')
+        self.assertEqual(gaps['timeline']['kind'], 'failed')
+        self.assertIn('cannot be read', gaps['timeline']['reason'])
+        self.assertNotIn('timeline.json', document['evidence_integrity']['readable_documents'])
+
+    def test_stage_categories_separate_not_run_from_abstained(self):
+        manifest = json.loads((self.directory / 'manifest.json').read_text(encoding='utf-8'))
+        manifest['stages']['judge'] = {'status': 'pending', 'reason': 'Processor not run'}
+        manifest['stages']['report'] = {'status': 'pending', 'reason': 'Processor not run'}
+        write_json(self.directory / 'manifest.json', manifest)
+        document = build_workbench(self.directory)
+        entries = {item['stage']: item for item in document['unavailable']}
+        self.assertEqual(entries['judge']['kind'], 'not_run')
+        # The report stage never describes itself.
+        self.assertNotIn('report', entries)
+        # `abstentions.stages` is the increment over `unavailable`: a stage that merely
+        # has not run yet is not an abstention.
+        abstained = {item['stage'] for item in document['abstentions']['stages']}
+        self.assertNotIn('judge', abstained)
+
+    def test_a_reference_with_no_persisted_evidence_is_recorded_as_a_gap(self):
+        metrics_path = self.analysis() / 'metrics.json'
+        metrics = json.loads(metrics_path.read_text(encoding='utf-8'))
+        metrics['data']['metrics'][0]['evidence_ids'] = ['EVD-missing']
+        write_json(metrics_path, metrics)
+        findings_path = self.analysis() / 'findings.json'
+        findings = json.loads(findings_path.read_text(encoding='utf-8'))
+        findings['data']['findings'][0]['evidence_ids'] = ['EVD-does-not-exist']
+        write_json(findings_path, findings)
+        document = build_workbench(self.directory)
+        gaps = {(gap['record'], gap['record_id'], gap['field']): gap['references']
+                for gap in document['abstentions']['unresolved_references']}
+        self.assertEqual(gaps[('metric', 'MET-1', 'evidence_ids')], ['EVD-missing'])
+        self.assertEqual(gaps[('finding', 'FND-1', 'evidence_ids')], ['EVD-does-not-exist'])
+        # The gap is published, and the region the metric still gets is attributable to
+        # a *different* declared reference (`turn_id`), never to the missing evidence.
+        metric = document['metrics'][0]
+        self.assertEqual(metric['span_origin'], 'turn')
+        self.assertEqual(metric['region_id'], 'metric:MET-1')
+        self.assertEqual(metric['value'], METRIC_VALUE)
+        region = next(item for item in document['regions'] if item['region_id'] == 'metric:MET-1')
+        self.assertEqual(region['source']['evidence_ids'], ['EVD-missing'])
+
+    def test_a_resolvable_citation_records_no_gap(self):
+        document = build_workbench(self.directory)
+        self.assertEqual(document['abstentions']['unresolved_references'], [])
+
+    def test_the_projection_is_still_deterministic_when_a_document_is_unreadable(self):
+        (self.analysis() / 'timeline.json').write_text('not json at all', encoding='utf-8')
+        self.assertEqual(build_workbench(self.directory), build_workbench(self.directory))
 
 
 class AbstainingMetricTests(WorkbenchFixture):
@@ -420,6 +618,55 @@ class WorkbenchApiTests(unittest.TestCase):
     def test_unknown_run_is_not_answered_with_a_fabricated_workbench(self):
         response = self.client.get('/api/runs/RUN-does-not-exist/evidence-workbench')
         self.assertEqual(response.status_code, 404)
+
+    def test_a_real_directory_without_evidence_is_not_answered_with_a_workbench(self):
+        # `_run_dir` only validates the id shape and that the directory exists, so this
+        # path reaches the projection: an empty Run directory must 404 rather than
+        # return "three tracks, provisional view" for a Run that never held evidence.
+        (Path(self._tmp.name) / 'runs' / 'RUN-empty-directory').mkdir(parents=True)
+        response = self.client.get('/api/runs/RUN-empty-directory/evidence-workbench')
+        self.assertEqual(response.status_code, 404, response.text)
+
+    def test_a_manifest_only_run_has_no_workbench(self):
+        directory = Path(self._tmp.name) / 'runs' / 'RUN-manifest-only'
+        directory.mkdir(parents=True)
+        write_json(directory / 'manifest.json', {
+            'schema_version': '1.0.0', 'run_id': 'RUN-manifest-only',
+            'workflow': 'recording_import', 'analysis_id': 'ANALYSIS-none',
+            'stages': {}, 'artifacts': []})
+        response = self.client.get('/api/runs/RUN-manifest-only/evidence-workbench')
+        self.assertEqual(response.status_code, 404, response.text)
+
+    def test_a_legacy_run_with_neither_evidence_nor_artifacts_is_not_a_workbench(self):
+        # No `recording_import` workflow and no `web-analysis` directory: the Run root is
+        # the analysis root, so this reaches the projection with nothing to project.
+        directory = Path(self._tmp.name) / 'runs' / 'RUN-legacy-empty'
+        directory.mkdir(parents=True)
+        write_json(directory / 'manifest.json', {
+            'schema_version': '1.0.0', 'run_id': 'RUN-legacy-empty',
+            'stages': {}, 'artifacts': []})
+        response = self.client.get('/api/runs/RUN-legacy-empty/evidence-workbench')
+        self.assertEqual(response.status_code, 404, response.text)
+
+    def test_a_run_with_artifacts_but_no_evidence_yet_still_answers(self):
+        # The 404 boundary is "nothing to review at all": a Run that registered an
+        # artifact is a real Run whose stages simply have not produced evidence, and its
+        # stages explain that instead of the endpoint denying the Run exists.
+        directory = Path(self._tmp.name) / 'runs' / 'RUN-early-stage'
+        directory.mkdir(parents=True)
+        write_json(directory / 'manifest.json', {
+            'schema_version': '1.0.0', 'run_id': 'RUN-early-stage',
+            'stages': {'asr': {'status': 'pending', 'reason': 'Processor not run'}},
+            'artifacts': [{'artifact_id': 'ART-1', 'path': 'normalized.wav',
+                           'kind': 'normalized_audio', 'processor': 'ffmpeg_normalize:1.0.0',
+                           'sha256': 'c' * 64}]})
+        response = self.client.get('/api/runs/RUN-early-stage/evidence-workbench')
+        self.assertEqual(response.status_code, 200, response.text)
+        document = response.json()
+        self.assertEqual(document['regions'], [])
+        stages = {item['stage']: item for item in document['unavailable']}
+        self.assertEqual(stages['asr']['kind'], 'not_run')
+        self.assertEqual(document['evidence_integrity']['status'], 'ok')
 
     def test_run_listing_does_not_pay_for_the_projection(self):
         listing = self.client.get('/api/runs').json()['runs']

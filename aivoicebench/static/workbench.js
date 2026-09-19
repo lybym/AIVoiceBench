@@ -20,9 +20,11 @@
  *   `unavailable` list are rendered verbatim instead of inventing role-dependent
  *   results. A `role: "unknown"` / `uncertain` region keeps its own colour and label
  *   and is never presented as tester or device.
- * - The evidence panel only resolves *served* links (a record whose own `region_id`
- *   matches, or a region whose persisted `detail.segment_id` matches a transcript
- *   segment). It never builds an id from a naming convention.
+ * - The evidence panel only resolves *served* links: a record whose own `region_id`
+ *   matches, or a transcript segment whose backend-resolved `region_id` names a
+ *   published region. It never builds an id from a naming convention — ASR
+ *   utterance ids and acoustic segment ids are different namespaces, so the
+ *   backend, not this layer, decides which region a transcript row belongs to.
  * - `WB.selectEvidence` returns `null` for an unknown region id; no region is ever
  *   synthesised.
  *
@@ -247,6 +249,11 @@ function wbTranscriptRows(document) {
     const segments = document && Array.isArray(document.transcript) ? document.transcript : [];
     return segments.map(segment => ({
         segment_id: wbStringOrNull(segment.segment_id),
+        region_id: wbStringOrNull(segment.region_id),
+        region_ids: Array.isArray(segment.region_ids)
+            ? segment.region_ids.map(value => wbString(value)).filter(value => value !== '')
+            : null,
+        region_basis: wbStringOrNull(segment.region_basis),
         start_ms: wbOrNull(segment.start_ms),
         end_ms: wbOrNull(segment.end_ms),
         text: wbStringOrNull(segment.text),
@@ -258,20 +265,20 @@ function wbTranscriptRows(document) {
 /**
  * The served region a transcript segment belongs to, or `null`.
  *
- * The backend does not publish a `region_id` on transcript segments, so this looks
- * for a region whose own persisted `detail.segment_id` equals the transcript
- * segment's id. Only ids that already exist in `document.regions[]` are returned;
- * nothing is assembled from a naming convention.
+ * The backend resolves the link and publishes it as `region_id`, because a
+ * transcript segment id and an acoustic segment id are different evidence
+ * namespaces (`ASR-####` versus `SEG-*`): no naming convention joins them, and this
+ * layer must not invent one. The served id is returned only when it names a region
+ * the backend also published, so an unresolvable id can never become a link.
  */
-function wbTranscriptRegionId(document, segmentId) {
-    const wanted = wbString(segmentId);
-    const regions = document && Array.isArray(document.regions) ? document.regions : [];
+function wbTranscriptRegionId(document, row) {
+    const wanted = wbStringOrNull(row.region_id);
     if (!wanted)
         return null;
+    const regions = document && Array.isArray(document.regions) ? document.regions : [];
     for (const region of regions) {
-        const detail = region.detail || null;
-        if (detail && wbString(detail['segment_id']) === wanted)
-            return wbStringOrNull(region.region_id);
+        if (wbStringOrNull(region.region_id) === wanted)
+            return wanted;
     }
     return null;
 }
@@ -621,7 +628,7 @@ function wbLinkedRows(regionId) {
         }
     });
     wbTranscriptRows(document).forEach(row => {
-        if (wbTranscriptRegionId(document, row.segment_id) === regionId) {
+        if (wbTranscriptRegionId(document, row) === regionId) {
             rows.push(['转写', wbButton(wbValueText(row.segment_id), regionId), wbValueText(row.text)]);
         }
     });
@@ -712,7 +719,7 @@ function wbRenderTables(document) {
         wbFlag(row.has_overlap),
     ]));
     wbSetPanel('wb-transcript', '转写（时间戳为 ASR 估计）', ['片段', 'start_ms', 'end_ms', '说话人', '角色（后端）', '文本'], wbTranscriptRows(document).map(row => [
-        wbButton(wbValueText(row.segment_id), document ? wbTranscriptRegionId(document, row.segment_id) : null),
+        wbButton(wbValueText(row.segment_id), document ? wbTranscriptRegionId(document, row) : null),
         wbValueText(row.start_ms),
         wbValueText(row.end_ms),
         wbValueText(row.speaker_id),

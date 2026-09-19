@@ -72,11 +72,16 @@ wavesurfer.js 不产生 Event，不改变 Artifact，也不是声学时间真值
 
 实现口径（#11）：
 
-- `aivoicebench/workbench.py` 是唯一的投影点：它把当前 AnalysisRevision 的持久化文档投影为 `regions`/`tracks`/`metrics`/`findings`/`unavailable`/`provenance`，并通过 `GET /api/runs/{run_id}/evidence-workbench` 与 `AnalysisResponse.workbench` 发布。
-- Region 坐标：acoustic/speaker/turn/event 直接取持久化区间；metric/finding 取其**自身引用**的证据区间包络（`evidence_ids` → `event_ids` → `turn_ids` 固定优先级），并记录 `envelope_of` 与引用列表。这是坐标解析，不是重新计算指标。
+- `aivoicebench/workbench.py` 是唯一的投影点：它把当前 AnalysisRevision 的持久化文档投影为 `regions`/`tracks`/`metrics`/`findings`/`unavailable`/`abstentions`/`evidence_integrity`/`provenance`，并通过 `GET /api/runs/{run_id}/evidence-workbench` 与 `AnalysisResponse.workbench` 发布。
+- Region 坐标：acoustic/speaker/turn/event 直接取持久化区间；metric/finding 取其**自身引用**的证据区间包络（`evidence_ids` → `event_ids` → `turn_ids` 固定优先级），并记录 `envelope_of` 与引用列表。这是坐标解析，不是重新计算指标。记录声明了却无法解析的引用会进入 `abstentions.unresolved_references`，不静默丢弃。
+- 转写行到 Region 的关联由后端解析并作为 `region_id` 发布：ASR utterance id（`ASR-####`）与声学片段 id（`SEG-*`）是**互相独立的证据命名空间**，二者唯一的持久化对应关系来自 fused segment 的 `asr_segment_id`/`acoustic_segment_id` 交叉引用。前端不得按命名约定猜 id；一个 utterance 对应多个声学片段时发布候选列表并保持不可点击，不任选其一。
+- `region.source.processor` 取自发布该文档的 artifact（stage envelope 按 schema 不含 `processor`），不再恒为 null。
 - 毫秒到秒只在后端换算一次（`start_sec`/`end_sec`），浏览器只绘制后端给的值，不重算边界。
-- 角色确认未完成时，role-dependent 轨道（turn/metric/finding）**不发布**，并在 `unavailable` 中给出 `awaiting_role_review` 原因；浏览器只呈现明确标注的 provisional 视图。
+- 角色确认未完成时，role-dependent 轨道（turn/metric/finding）**不发布**，并在 `unavailable` 中给出 `awaiting_role_review` 原因；解析出的区间仅以 `resolved_span` 供审计。浏览器只呈现明确标注的 provisional 视图。
+- 文档存在但无法解析时，投影在 `unavailable` 中给出 `status: unreadable` 条目并置 `evidence_integrity.status = incomplete`：损坏证据不得与“该阶段没有证据”同形。
+- `unavailable` 条目标注类别：`not_run`（尚未执行）与 `incomplete`/`failed`（已尝试但未产出结论）；`abstentions.stages` 只包含后者。
 - wavesurfer.js 7.12.12 以同源 `/static/vendor/` 方式随仓库分发（版本、来源与逐文件 SHA256 记录在 `VENDOR.json`），不依赖 CDN，浏览器不持有 Provider 凭据。
+- `scripts/verify-workbench-render.mjs` 已接入 `npm run verify`；除合成文档外支持 `--document <workbench.json>`，用真实 `build_workbench()` 输出校验渲染契约。
 
 ## 共同验收边界
 

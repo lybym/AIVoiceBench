@@ -41,6 +41,8 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from aivoicebench import api
+from aivoicebench.workbench import build_workbench
+from tests.test_workbench import build_document_run
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = REPO_ROOT / 'aivoicebench' / 'static'
@@ -129,6 +131,28 @@ def _gate_output(script_path, cwd):
             "import { closeSync, openSync, writeFileSync } from 'node:fs';\n"
             f"const fd = openSync({json.dumps(str(output))}, 'w');\n"
             f"const r = spawnSync(process.execPath, [{json.dumps(str(script_path))}, '--json'],"
+            f" {{ cwd: {json.dumps(str(cwd))}, stdio: ['ignore', fd, fd] }});\n"
+            "closeSync(fd);\n"
+            f"writeFileSync({json.dumps(str(status))}, String(r.status));\n",
+            encoding='utf-8')
+        _run_node(runner, cwd)
+        text = output.read_text(encoding='utf-8') if output.exists() else ''
+        code = int(status.read_text(encoding='utf-8').strip() or '-1') if status.exists() else -1
+    return code, text
+
+
+def _document_gate_output(script_path, cwd, document_path):
+    """Run the gate against a real projection document, with stdio kept off the pipe."""
+    with _scratch_directory('web-workbench-served') as scratch:
+        output = scratch / 'output.txt'
+        status = scratch / 'status.txt'
+        runner = scratch / 'run.mjs'
+        runner.write_text(
+            "import { spawnSync } from 'node:child_process';\n"
+            "import { closeSync, openSync, writeFileSync } from 'node:fs';\n"
+            f"const fd = openSync({json.dumps(str(output))}, 'w');\n"
+            f"const r = spawnSync(process.execPath, [{json.dumps(str(script_path))}, '--json',"
+            f" '--document', {json.dumps(str(document_path))}],"
             f" {{ cwd: {json.dumps(str(cwd))}, stdio: ['ignore', fd, fd] }});\n"
             "closeSync(fd);\n"
             f"writeFileSync({json.dumps(str(status))}, String(r.status));\n",
@@ -305,6 +329,67 @@ class WorkbenchDeliveryTests(unittest.TestCase):
             self.assertNotEqual(code, 0,
                                 'the render gate must exit non-zero without its artifact')
             self.assertIn('artifact_unreadable', text)
+
+
+class ServedProjectionRenderTests(unittest.TestCase):
+    """The gate can be pointed at a real `build_workbench()` projection.
+
+    The synthetic document the gate builds for itself is shaped by the gate, so on its
+    own it cannot prove the renderer agrees with what the Python backend actually
+    publishes. These tests feed the gate the fixture Run's own projection, which is how
+    a drift between the two (for example a transcript link the frontend resolves by
+    naming convention) becomes a failure instead of a passing synthetic case.
+    """
+
+    def setUp(self):
+        if shutil.which('node') is None:
+            _unavailable('node is not installed')
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.directory, self.manifest = build_document_run(Path(self._tmp.name) / 'runs')
+        self.document = build_workbench(self.directory)
+        self.path = Path(self._tmp.name) / 'served-workbench.json'
+        self._write(self.path, self.document)
+
+    def _write(self, path, document):
+        path.write_text(json.dumps(document, ensure_ascii=False), encoding='utf-8')
+
+    def _run_gate(self, path):
+        code, text = _document_gate_output(RENDER_GATE, REPO_ROOT, path)
+        return code, json.loads(text)
+
+    def test_the_gate_passes_on_the_real_projection(self):
+        code, result = self._run_gate(self.path)
+        self.assertTrue(result.get('ok'), result.get('log'))
+        self.assertEqual(code, 0)
+        self.assertEqual(result.get('mode'), 'served_document')
+        names = [str(entry.get('name')) for entry in result.get('checks') or []]
+        self.assertTrue(any('served start_sec/end_sec' in name for name in names), names)
+        self.assertTrue(any('navigable exactly when the backend published' in name for name in names), names)
+
+    def test_the_projection_links_transcript_rows_through_the_fusion_cross_reference(self):
+        rows = {row['segment_id']: row for row in self.document['transcript']}
+        self.assertEqual(rows['ASR-0001']['region_id'], 'acoustic:SEG-1')
+        regions = {region['region_id']: region for region in self.document['regions']}
+        self.assertIn(rows['ASR-0001']['region_id'], regions)
+        # The link is never a shared id: that is what the render gate's naming-convention
+        # check would catch if the frontend went back to guessing.
+        self.assertNotEqual(rows['ASR-0001']['segment_id'],
+                            regions['acoustic:SEG-1']['detail']['segment_id'])
+
+    def test_the_gate_rejects_a_record_referencing_an_unpublished_region(self):
+        tampered = json.loads(json.dumps(self.document))
+        missing = tampered['findings'][0]['region_id']
+        self.assertIsNotNone(missing)
+        tampered['regions'] = [region for region in tampered['regions']
+                               if region['region_id'] != missing]
+        path = Path(self._tmp.name) / 'unpublished-region.json'
+        self._write(path, tampered)
+        code, result = self._run_gate(path)
+        self.assertFalse(result.get('ok'), result.get('log'))
+        self.assertNotEqual(code, 0)
+        self.assertTrue(any('never published' in str(error) for error in result.get('errors') or []),
+                        result.get('errors'))
 
 
 if __name__ == '__main__':

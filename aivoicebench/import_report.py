@@ -92,6 +92,25 @@ def _load(analysis, name):
     return payload if isinstance(payload, dict) else {}
 
 
+def _load_checked(analysis, name):
+    """Return ``(payload, status)`` where status is ``ok``/``missing``/``unreadable``.
+
+    A document that exists but cannot be parsed is not the same evidence as a
+    document the pipeline never wrote, and a report must not present the first as
+    the second.
+    """
+    path = analysis / name
+    if not path.is_file():
+        return {}, 'missing'
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}, 'unreadable'
+    if not isinstance(payload, dict):
+        return {}, 'unreadable'
+    return payload, 'ok'
+
+
 def _data(document, analysis):
     """Payload of a stage envelope, or a separately published document as-is."""
     if not document:
@@ -254,18 +273,26 @@ def _evidence_index_section(workbench):
     return lines
 
 
-def _availability_section(workbench):
+def _availability_section(workbench, payload=None):
     unavailable = workbench.get('unavailable') or []
     abstentions = workbench.get('abstentions') or {}
+    integrity = ((payload or {}).get('evidence_integrity')
+                 or workbench.get('evidence_integrity') or {})
     lines = ['', '## 未完成、失败与弃权', '']
+    unreadable = integrity.get('unreadable_documents') or []
+    if unreadable:
+        lines += [f'**证据链不完整：** {", ".join(_text(name) for name in unreadable)} '
+                  '存在但无法解析；这些证据从本次投影中缺失，报告不把它们当作“空证据”。', '']
     if not unavailable:
         lines += ['本次 revision 的每个阶段都已 complete。', '']
     else:
-        lines += ['| 阶段 | 状态 | 原因 |', '| --- | --- | --- |']
-        lines += [f'| {_text(item.get("stage"))} | {_text(item.get("status"))} | {_text(item.get("reason"))} |'
+        lines += ['| 阶段 | 状态 | 类别 | 原因 |', '| --- | --- | --- | --- |']
+        lines += [f'| {_text(item.get("stage"))} | {_text(item.get("status"))} | '
+                  f'{_text(item.get("kind"))} | {_text(item.get("reason"))} |'
                   for item in unavailable]
         lines.append('')
-        lines.append('未完成或弃权的阶段不产生结论；它们不会以 0、空数组或“无问题”占位。')
+        lines.append('`not_run` 表示该阶段尚未执行，`incomplete`/`failed` 表示阶段已尝试但未产出结论；'
+                     '两类都不会以 0、空数组或“无问题”占位。')
         lines.append('')
     findings_abstentions = abstentions.get('findings') or []
     rejected = abstentions.get('rejected_findings') or []
@@ -334,7 +361,13 @@ def build_report_payload(run, workbench=None):
     artifacts = [item for item in manifest['artifacts']
                  if item.get('kind') not in REPORT_ARTIFACT_KINDS]
     classes = _classify(artifacts)
-    judge_document = _data(_load(run.analysis, 'judge-results.json'), run.analysis)
+    judge_document, judge_status = _load_checked(run.analysis, 'judge-results.json')
+    judge_document = _data(judge_document, run.analysis)
+    integrity = dict(workbench.get('evidence_integrity') or {})
+    if judge_status == 'unreadable':
+        integrity['status'] = 'incomplete'
+        integrity['unreadable_documents'] = sorted(
+            set(integrity.get('unreadable_documents') or []) | {'judge-results.json'})
     stages = {key: value for key, value in manifest['stages'].items() if key != 'report'}
     return {
         'schema_version': '1.0.0',
@@ -360,6 +393,7 @@ def build_report_payload(run, workbench=None):
         'findings_summary': workbench.get('findings') or [],
         'unavailable': workbench.get('unavailable') or [],
         'abstentions': workbench.get('abstentions') or {},
+        'evidence_integrity': integrity,
         'provenance': workbench.get('provenance') or {},
         'note': ('Revision-scoped report. Provisional until a complete manual speaker-role '
                  'decision exists; an unrun, failed or abstaining stage never becomes a '
@@ -390,7 +424,7 @@ def render_report_markdown(run, payload, workbench):
     lines += _metrics_section(workbench)
     lines += _evidence_class_section(payload['evidence_classes'])
     lines += _evidence_index_section(workbench)
-    lines += _availability_section(workbench)
+    lines += _availability_section(workbench, payload)
     lines += _provenance_section(run, workbench, judge_document)
     lines += ['', '## 本地证据文件', '', '| Artifact | 文件 | SHA256 |', '| --- | --- | --- |']
     for item in payload['artifacts']:

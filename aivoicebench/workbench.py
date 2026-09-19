@@ -19,7 +19,17 @@ recomputation:
   fabricated zero;
 - when the manual speaker-role gate is not ``complete_review`` the
   role-dependent tracks are **omitted** and listed under ``unavailable``, so the
-  workbench cannot present an unconfirmed role as a result.
+  workbench cannot present an unconfirmed role as a result. Their resolved
+  geometry is still published per record as ``resolved_span`` for audit, but no
+  region is created, so the browser cannot navigate to it;
+- a transcript segment's ``region_id`` is resolved from the persisted *fusion*
+  cross-reference (``asr_segment_id`` → ``acoustic_segment_id``), because ASR
+  utterance ids and acoustic segment ids are independent evidence namespaces;
+- a document that exists but cannot be read is published as an explicit
+  ``unreadable`` gap in ``unavailable`` and reflected in ``evidence_integrity``,
+  never silently degraded into "this evidence is empty";
+- references a metric or finding declared but that no persisted evidence
+  satisfies are reported under ``abstentions.unresolved_references``.
 
 The document is fully deterministic for a given revision (``document_id`` is a
 hash of the revision's region identity), so re-reading a Run never produces a
@@ -57,6 +67,28 @@ ROLE_DEPENDENT_TRACKS = ('turn', 'metric', 'finding')
 #: source — which would also make re-writing a revision's report change its bytes.
 REPORT_ARTIFACT_KINDS = ('report_json', 'report_markdown')
 
+#: The persisted documents this projection consumes. They are what "this Run has a
+#: reviewable evidence chain" means, so the absence of *all* of them is an absent
+#: workbench rather than an empty one.
+EVIDENCE_DOCUMENTS = (
+    'acoustic-segments', 'speaker-assignments', 'timeline', 'turns', 'metrics',
+    'findings', 'transcript', 'fused-segments', 'alignment', 'role-review',
+)
+
+#: Manifest stage statuses that mean "the stage was never attempted", as opposed to
+#: a stage that ran and abstained or failed. The two are reported separately: a
+#: reviewer must be able to tell "not needed yet" from "expected but missing".
+STAGE_NOT_RUN = ('pending',)
+STAGE_FAILED = ('failed', 'error', 'failure')
+
+
+def _stage_kind(status):
+    if status in STAGE_NOT_RUN:
+        return 'not_run'
+    if status in STAGE_FAILED:
+        return 'failed'
+    return 'incomplete'
+
 #: Non-secret fields of a provider invocation that may enter the workbench. The
 #: invocation document's ``config``/``endpoint`` never do: the browser must not
 #: receive request parameters or anything that could carry a credential.
@@ -70,20 +102,30 @@ _INVOCATION_FIELDS = ('invocation_id', 'operation_id', 'attempt', 'provider', 'm
 _ROUTE_FIELDS = ('provider', 'model', 'protocol', 'enabled')
 
 
+#: Read outcomes. "A stage produced nothing" and "the document cannot be read"
+#: must never collapse into the same value: the first is a legitimate empty stage,
+#: the second is a broken evidence chain a reviewer has to be told about.
+READ_OK = 'ok'
+READ_MISSING = 'missing'
+READ_UNREADABLE = 'unreadable'
+
+
+def _read_checked(path):
+    """Return ``(payload, status)`` for one JSON object document."""
+    path = Path(path)
+    if not path.is_file():
+        return {}, READ_MISSING
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}, READ_UNREADABLE
+    if not isinstance(payload, dict):
+        return {}, READ_UNREADABLE
+    return payload, READ_OK
+
+
 def _read(path):
-    try:
-        payload = json.loads(Path(path).read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _read_list(path):
-    try:
-        payload = json.loads(Path(path).read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return []
-    return payload if isinstance(payload, list) else []
+    return _read_checked(path)[0]
 
 
 def analysis_root(directory):
@@ -93,35 +135,57 @@ def analysis_root(directory):
     ``recording_import`` Run keeps every AnalysisRevision under
     ``analysis/<analysis_id>``, while a legacy ``web-analysis`` Run has a single
     flat directory. Returns ``(root, manifest, unified)``.
+
+    A directory that carries no readable ``manifest.json`` is **not** a Run with an
+    empty workbench: ``ValueError`` is raised so the endpoint can answer 404 instead
+    of serving a fabricated "three tracks, provisional view" document for a path
+    that never held evidence. The same applies to a unified manifest without an
+    ``analysis_id`` or without the AnalysisRevision directory it points at.
     """
     directory = Path(directory)
-    manifest = _read(directory / 'manifest.json')
+    manifest, status = _read_checked(directory / 'manifest.json')
+    if status != READ_OK:
+        raise ValueError(f'Run manifest is {status}: no evidence to project')
     if manifest.get('workflow') == 'recording_import' and not (directory / 'web-analysis').exists():
-        return directory / 'analysis' / str(manifest.get('analysis_id') or ''), manifest, True
+        analysis_id = str(manifest.get('analysis_id') or '')
+        if not analysis_id:
+            raise ValueError('Run manifest carries no analysis_id')
+        root = directory / 'analysis' / analysis_id
+        if not root.is_dir():
+            raise ValueError('AnalysisRevision directory is missing')
+        return root, manifest, True
     if (directory / 'web-analysis').is_dir():
         return directory / 'web-analysis', manifest, False
     return directory, manifest, False
 
 
-def read_revision_document(root, name, unified):
-    """Return ``(envelope, data)`` for a registered document.
+def read_revision_document_checked(root, name, unified):
+    """Return ``(envelope, data, status)`` for a registered document.
 
     A stage envelope carries its payload in ``data``; a separately published
     document (alignment, role review, report) *is* its own payload. Distinguishing
     them by the envelope's ``kind`` member keeps a published document from being
     silently unwrapped into an empty dict.
+
+    ``status`` separates an absent document (a stage that produced nothing) from one
+    that exists but cannot be parsed, so the caller can publish the second as an
+    explicit gap instead of an empty evidence set.
     """
     root = Path(root)
-    if name.endswith('.json'):
-        document = _read(root / name)
-    else:
-        document = _read(root / f'{name}.json')
-    if not document:
-        return {}, {}
+    filename = name if name.endswith('.json') else f'{name}.json'
+    document, status = _read_checked(root / filename)
+    if status != READ_OK:
+        return {}, {}, status
     if unified and 'kind' in document:
         data = document.get('data')
-        return document, data if isinstance(data, dict) else {}
-    return document, document
+        return document, data if isinstance(data, dict) else {}, READ_OK
+    return document, document, READ_OK
+
+
+def read_revision_document(root, name, unified):
+    """Return ``(envelope, data)`` for a registered document, ignoring its status."""
+    envelope, data, _ = read_revision_document_checked(root, name, unified)
+    return envelope, data
 
 
 def _number(value):
@@ -225,19 +289,50 @@ def build_workbench(directory):
     run_id = manifest.get('run_id') or directory.name
     analysis_id = manifest.get('analysis_id')
 
-    role_review = read_revision_document(root, 'role-review', unified)[1] or build_role_review(directory)
+    # A document's processor is recorded on the *artifact* that published it, not on
+    # the stage envelope: `analysis-output.schema.json` is `additionalProperties:
+    # false` and an envelope has no `processor` member, so reading it from the
+    # envelope can only ever yield null.
+    processors_by_document = {}
+    for artifact in (manifest.get('artifacts') or []):
+        filename = Path(str(artifact.get('path') or '')).name
+        if filename and artifact.get('processor'):
+            processors_by_document.setdefault(filename, artifact['processor'])
+
+    def document_processor(name):
+        return _processor(processors_by_document.get(name))
+
+    present = []
+    unreadable = []
+
+    def load(name):
+        """Read one revision document, recording its integrity for the projection."""
+        envelope, data, status = read_revision_document_checked(root, name, unified)
+        if status == READ_OK:
+            present.append(name)
+        elif status == READ_UNREADABLE:
+            unreadable.append(name)
+        return envelope, data
+
+    role_review = load('role-review')[1] or build_role_review(directory)
     gate_status = role_review.get('status') or 'awaiting_role_review'
     gate_reason = role_review.get('reason') or 'Role review state is unavailable for this Run'
     gate_complete = gate_status == 'complete_review'
     decisions = dict(((role_review.get('revision') or {}).get('decisions')) or {})
 
-    fused = read_revision_document(root, 'fused-segments', unified)[1]
-    alignment = read_revision_document(root, 'alignment', unified)[1]
-    transcript = read_revision_document(root, 'transcript', unified)[1]
-    turns_doc = read_revision_document(root, 'turns', unified)[1]
-    timeline = read_revision_document(root, 'timeline', unified)[1]
-    metrics_doc = read_revision_document(root, 'metrics', unified)[1]
-    findings_doc = read_revision_document(root, 'findings', unified)[1]
+    fused = load('fused-segments')[1]
+    alignment = load('alignment')[1]
+    transcript = load('transcript')[1]
+    turns_doc = load('turns')[1]
+    timeline = load('timeline')[1]
+    metrics_doc = load('metrics')[1]
+    findings_doc = load('findings')[1]
+
+    if not present and not (manifest.get('artifacts') or []):
+        # A Run whose directory holds neither evidence nor a single registered artifact
+        # has nothing to review: answering 404 is what the endpoint contract promises,
+        # and an empty document would instead read as "reviewed, found nothing".
+        raise ValueError('Run carries no readable evidence and no registered artifacts')
 
     builder = _RegionBuilder(gate_complete)
     evidence_spans = {}
@@ -246,14 +341,15 @@ def build_workbench(directory):
     turn_regions = {}
 
     # --- deterministic evidence regions -------------------------------------
-    acoustic_envelope, acoustic = read_revision_document(root, 'acoustic-segments', unified)
-    acoustic_processor = _processor(acoustic_envelope.get('processor'))
+    acoustic_envelope, acoustic = load('acoustic-segments')
+    acoustic_processor = document_processor('acoustic-segments.json')
+    acoustic_region_by_segment = {}
     for index, segment in enumerate(acoustic.get('segments') or []):
         span = _span(segment)
         if span is None:
             continue
         segment_id = str(segment.get('segment_id') or f'#{index}')
-        builder.add(_region(
+        acoustic_region_by_segment[segment_id] = builder.add(_region(
             'acoustic', f'acoustic:{segment_id}', 'acoustic_segment',
             str(segment.get('segment_id') or f'acoustic {index + 1}'), span,
             detail=segment, status=segment.get('status'),
@@ -262,8 +358,8 @@ def build_workbench(directory):
                     'processor': acoustic_processor, 'artifact_ref': None,
                     'evidence_ids': [], 'event_ids': [], 'metric_ids': [], 'turn_ids': []}))
 
-    diarization_envelope, diarization = read_revision_document(root, 'speaker-assignments', unified)
-    diarization_processor = _processor(diarization_envelope.get('processor'))
+    diarization_envelope, diarization = load('speaker-assignments')
+    diarization_processor = document_processor('speaker-assignments.json')
     for index, speaker in enumerate(diarization.get('speaker_segments') or []):
         span = _span(speaker)
         if span is None:
@@ -305,7 +401,7 @@ def build_workbench(directory):
             detail=event, status=event.get('status') or 'observed',
             confidence=_confidence(event.get('confidence')),
             source={'document': 'timeline.json', 'document_id': timeline.get('document_id'),
-                    'processor': _processor(timeline.get('processor')), 'artifact_ref': None,
+                    'processor': document_processor('timeline.json'), 'artifact_ref': None,
                     'evidence_ids': list(event.get('evidence_ids') or []),
                     'event_ids': [event_id], 'metric_ids': [], 'turn_ids': []}))
 
@@ -327,17 +423,42 @@ def build_workbench(directory):
             'turn', f'turn:{turn_id}', 'turn', turn_id, span,
             detail=turn, status=turn.get('status') or 'observed',
             source={'document': 'turns.json', 'document_id': turns_doc.get('document_id'),
-                    'processor': _processor(turns_doc.get('processor')), 'artifact_ref': None,
+                    'processor': document_processor('turns.json'), 'artifact_ref': None,
                     'evidence_ids': [], 'event_ids': [], 'metric_ids': [], 'turn_ids': [turn_id]}))
 
     # --- deterministic / semantic regions that resolve their own span --------
     def resolve_ids(ids, index):
         return [index[item] for item in ids if item in index]
 
+    #: References a persisted record declared but that no published evidence
+    #: satisfies. They are reported as an explicit gap: silently dropping them would
+    #: let a record appear to rest on evidence it never actually cited.
+    unresolved_refs = []
+
+    def declared_gaps(record_kind, record_id, references):
+        for field, ids, index in references:
+            missing = [item for item in ids if item not in index]
+            if missing:
+                unresolved_refs.append({
+                    'record': record_kind, 'record_id': record_id, 'field': field,
+                    'references': missing,
+                    'reason': f'{record_kind} {record_id} cites {field} entries that are not in this '
+                              'revision; they cannot be drawn or verified',
+                })
+
+    def resolved_span(span):
+        if span is None:
+            return None
+        return {'start_ms': span[0], 'end_ms': span[1],
+                'start_sec': span[0] / 1000.0, 'end_sec': span[1] / 1000.0}
+
     metric_regions = {}
     metrics = []
     for index, metric in enumerate(metrics_doc.get('metrics') or []):
         metric_id = str(metric.get('metric_id') or f'#{index}')
+        declared_gaps('metric', metric_id, (
+            ('evidence_ids', list(metric.get('evidence_ids') or []), evidence_spans),
+            ('event_ids', list(metric.get('event_ids') or []), event_spans)))
         spans = resolve_ids(metric.get('evidence_ids') or [], evidence_spans)
         origin = 'evidence'
         if not spans:
@@ -346,9 +467,10 @@ def build_workbench(directory):
         if not spans and metric.get('turn_id') in turn_spans:
             spans = [turn_spans[metric['turn_id']]]
             origin = 'turn'
+        envelope = _envelope_of(spans) if spans else None
         region_id = None
         if spans and gate_complete:
-            span = _envelope_of(spans)
+            span = envelope
             region_id = builder.add(_region(
                 'metric', f'metric:{metric_id}', 'metric',
                 f'{metric.get("name") or metric_id} = {metric.get("value")}', span,
@@ -358,7 +480,7 @@ def build_workbench(directory):
                 uncertain=metric.get('value') is None,
                 envelope_of=len(spans),
                 source={'document': 'metrics.json', 'document_id': metrics_doc.get('document_id'),
-                        'processor': _processor(metrics_doc.get('processor')), 'artifact_ref': None,
+                        'processor': document_processor('metrics.json'), 'artifact_ref': None,
                         'evidence_ids': list(metric.get('evidence_ids') or []),
                         'event_ids': list(metric.get('event_ids') or []),
                         'metric_ids': [metric_id],
@@ -370,11 +492,20 @@ def build_workbench(directory):
             'turn_id': metric.get('turn_id'), 'region_id': region_id, 'span_origin': origin,
             'evidence_ids': list(metric.get('evidence_ids') or []),
             'provisional': not gate_complete,
+            # The interval the metric's own references resolve to, published even
+            # while the role gate withholds the region: a reviewer can audit the
+            # resolved geometry without the browser being able to navigate to a
+            # role-dependent interval that is not yet confirmed.
+            'resolved_span': None if gate_complete else resolved_span(envelope),
         })
 
     findings = []
     for index, finding in enumerate(findings_doc.get('findings') or []):
         finding_id = str(finding.get('finding_id') or f'#{index}')
+        declared_gaps('finding', finding_id, (
+            ('evidence_ids', list(finding.get('evidence_ids') or []), evidence_spans),
+            ('event_ids', list(finding.get('event_ids') or []), event_spans),
+            ('turn_ids', list(finding.get('turn_ids') or []), turn_spans)))
         spans = resolve_ids(finding.get('evidence_ids') or [], evidence_spans)
         origin = 'evidence'
         if not spans:
@@ -391,9 +522,10 @@ def build_workbench(directory):
             spans = resolve_ids(finding.get('turn_ids') or [], turn_spans)
             if spans:
                 origin = 'turn'
+        envelope = _envelope_of(spans) if spans else None
         region_id = None
         if spans and gate_complete:
-            span = _envelope_of(spans)
+            span = envelope
             region_id = builder.add(_region(
                 'finding', f'finding:{finding_id}', 'finding',
                 str(finding.get('title') or finding_id), span,
@@ -403,7 +535,7 @@ def build_workbench(directory):
                 uncertain=bool(finding.get('requires_log_verification')),
                 envelope_of=len(spans),
                 source={'document': 'findings.json', 'document_id': findings_doc.get('document_id'),
-                        'processor': _processor(findings_doc.get('processor')), 'artifact_ref': None,
+                        'processor': document_processor('findings.json'), 'artifact_ref': None,
                         'evidence_ids': list(finding.get('evidence_ids') or []),
                         'event_ids': list(finding.get('event_ids') or []),
                         'metric_ids': list(finding.get('metric_ids') or []),
@@ -421,18 +553,76 @@ def build_workbench(directory):
             'metric_ids': list(finding.get('metric_ids') or []),
             'turn_ids': list(finding.get('turn_ids') or []),
             'provisional': not gate_complete,
+            'resolved_span': None if gate_complete else resolved_span(envelope),
         })
 
     # --- availability, abstentions and provenance ---------------------------
     stages = manifest.get('stages') or {}
-    unavailable = [{'stage': name, 'status': stage.get('status'), 'reason': stage.get('reason')}
+    unavailable = [{'stage': name, 'status': stage.get('status'),
+                    'kind': _stage_kind(stage.get('status')), 'reason': stage.get('reason')}
                    for name, stage in sorted(stages.items())
                    if name != 'report' and stage.get('status') != 'complete']
+    # A document that exists but cannot be parsed is a *different* failure from a
+    # stage that produced nothing: the evidence is there but unreadable, so the
+    # chain for this revision is incomplete and the reviewer must be told.
+    for name in unreadable:
+        unavailable.append({
+            'stage': name, 'status': READ_UNREADABLE, 'kind': 'failed',
+            'document': f'{name}.json',
+            'reason': f'{name}.json exists but cannot be read as JSON; its evidence is missing from '
+                      'this projection, so the evidence chain for this revision is incomplete'})
     if not gate_complete:
         for track_id in ROLE_DEPENDENT_TRACKS:
             unavailable.append({
-                'stage': track_id, 'status': 'insufficient_evidence',
-                'reason': f'人工角色确认未完成（{gate_status}）：{gate_reason}'})
+                'stage': track_id, 'status': 'insufficient_evidence', 'kind': 'incomplete',
+                'reason': f'人工角色确认未完成（{gate_status}）：{gate_reason}；'
+                          '该轨道不发布 region，解析出的区间仅以 resolved_span 供审计'})
+
+    # --- transcript ↔ region linkage ----------------------------------------
+    # A transcript segment id and an acoustic segment id are *different evidence
+    # namespaces* (``ASR-####`` versus ``SEG-*``): the ASR span and the acoustic
+    # boundary stay independent evidence, so no naming convention can join them. The
+    # only persisted statement that they describe the same audio is the fused
+    # segment's cross-reference, so the link is resolved here, once, from that
+    # cross-reference and published as a `region_id` the browser only has to trust.
+    acoustic_ids_by_asr = {}
+    for segment in (fused.get('segments') or []):
+        asr_id = segment.get('asr_segment_id')
+        acoustic_id = segment.get('acoustic_segment_id')
+        if not asr_id or not acoustic_id:
+            continue
+        acoustic_ids_by_asr.setdefault(str(asr_id), []).append(str(acoustic_id))
+
+    def transcript_link(segment_id):
+        candidates = []
+        for acoustic_id in acoustic_ids_by_asr.get(str(segment_id), []):
+            region_id = acoustic_region_by_segment.get(acoustic_id)
+            if region_id and region_id not in candidates:
+                candidates.append(region_id)
+        if len(candidates) == 1:
+            return candidates[0], candidates, 'fused_acoustic_segment'
+        if len(candidates) > 1:
+            # One ASR utterance fused into several acoustic segments: the browser must
+            # not silently pick one, so the candidates are published and the row stays
+            # unlinked until a reviewer resolves it.
+            return None, candidates, 'ambiguous'
+        return None, [], 'unresolved'
+
+    transcript_rows = []
+    for segment in (transcript.get('segments') or []):
+        region_id, candidates, basis = transcript_link(segment.get('segment_id'))
+        transcript_rows.append({
+            'segment_id': segment.get('segment_id'),
+            'region_id': region_id,
+            'region_ids': candidates,
+            'region_basis': basis,
+            'start_ms': _number(segment.get('start_ms')),
+            'end_ms': _number(segment.get('end_ms')),
+            'text': segment.get('text'),
+            'speaker_id': segment.get('speaker_id'),
+            'speaker_role': segment.get('speaker_role'),
+            'timestamp_source': segment.get('timestamp_source'),
+        })
 
     artifacts = [item for item in (manifest.get('artifacts') or [])
                  if item.get('kind') not in REPORT_ARTIFACT_KINDS]
@@ -473,8 +663,13 @@ def build_workbench(directory):
         alignment)
 
     revision = role_review.get('revision') or None
-    document_basis = json.dumps([region['region_id'] for region in builder.regions],
-                                ensure_ascii=False, sort_keys=True)
+    # The identity covers everything the browser navigates on: the published regions and
+    # the transcript → region links. A revision whose fusion cross-reference changes
+    # therefore gets its own workbench id even when the region set happens to be equal.
+    document_basis = json.dumps({
+        'regions': [region['region_id'] for region in builder.regions],
+        'transcript_links': [[row['segment_id'], row['region_id']] for row in transcript_rows],
+    }, ensure_ascii=False, sort_keys=True)
     document_id = 'WORKBENCH-' + hashlib.sha256(
         f'{analysis_id}|{document_basis}'.encode('utf-8')).hexdigest()[:16]
 
@@ -530,20 +725,25 @@ def build_workbench(directory):
                    'start_ms': turn_spans.get(str(turn.get('turn_id')), (None, None))[0],
                    'end_ms': turn_spans.get(str(turn.get('turn_id')), (None, None))[1]}
                   for turn in (turns_doc.get('turns') or [])],
-        'transcript': [{'segment_id': segment.get('segment_id'),
-                        'start_ms': _number(segment.get('start_ms')),
-                        'end_ms': _number(segment.get('end_ms')),
-                        'text': segment.get('text'),
-                        'speaker_id': segment.get('speaker_id'),
-                        'speaker_role': segment.get('speaker_role'),
-                        'timestamp_source': segment.get('timestamp_source')}
-                       for segment in (transcript.get('segments') or [])],
+        'transcript': transcript_rows,
         'unavailable': unavailable,
+        'evidence_integrity': {
+            'status': 'incomplete' if unreadable else 'ok',
+            'readable_documents': [f'{name}.json' for name in present],
+            'unreadable_documents': [f'{name}.json' for name in unreadable],
+        },
         'abstentions': {
             'metrics_gap': metrics_gap,
             'findings': list(findings_doc.get('abstentions') or []),
             'rejected_findings': list(findings_doc.get('rejected') or []),
-            'stages': [item for item in unavailable if item['stage'] in (manifest.get('stages') or {})],
+            # The increment over `unavailable`: stages that were attempted and
+            # abstained or failed, i.e. that were expected to conclude and did not.
+            # Stages that simply have not run yet (`kind: not_run`) are reported in
+            # `unavailable` only, so "not reached" is never read as "abstained".
+            'stages': [item for item in unavailable
+                       if item['stage'] in (manifest.get('stages') or {})
+                       and item.get('kind') in ('incomplete', 'failed')],
+            'unresolved_references': unresolved_refs,
         },
         'provenance': {
             'run_id': run_id,

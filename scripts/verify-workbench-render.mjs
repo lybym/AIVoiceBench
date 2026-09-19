@@ -3,6 +3,8 @@
  * Usage:
  *   node scripts/verify-workbench-render.mjs          # human readable
  *   node scripts/verify-workbench-render.mjs --json   # machine readable (used by tests)
+ *   node scripts/verify-workbench-render.mjs --document <workbench.json>
+ *                                                     # check a real build_workbench() output
  *
  * `aivoicebench/static/workbench.js` is the compiled renderer of
  * `web/src/workbench.ts`. The browser may only *display* persisted AIVoiceBench
@@ -30,6 +32,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATIC = join(ROOT, 'aivoicebench', 'static');
 const ARTIFACT = join(STATIC, 'workbench.js');
 const asJson = process.argv.includes('--json');
+const documentFlag = process.argv.indexOf('--document');
+const servedDocumentPath = documentFlag === -1 ? null : process.argv[documentFlag + 1];
+/** Region count of the `--document` projection, for the summary line. */
+let servedRegionCount = 0;
 
 /** Ids `index.html` provides. The gate only needs the workbench panels. */
 const ELEMENT_IDS = [
@@ -416,11 +422,20 @@ const DOCUMENT = {
   ],
   transcript: [
     {
-      segment_id: 'SEG-1', start_ms: 1234500.0, end_ms: 1300000.0, text: '合成文本',
+      // Production shape: the ASR utterance id (`ASR-####`) and the acoustic region's
+      // own `detail.segment_id` (`SEG-*`) are different evidence namespaces, so the
+      // backend publishes the resolved link as `region_id` and this layer must use it.
+      segment_id: 'ASR-0001', region_id: 'event:EVT-1', region_ids: ['event:EVT-1'],
+      region_basis: 'fused_acoustic_segment',
+      start_ms: 1234500.0, end_ms: 1300000.0, text: '合成文本',
       speaker_id: 'speaker_0', speaker_role: null, timestamp_source: 'asr',
     },
     {
-      segment_id: 'SEG-9', start_ms: 2000000.0, end_ms: 2100000.0, text: '无对应区间',
+      // Deliberately carries an id that *does* equal a served region's
+      // `detail.segment_id` while publishing no `region_id`: matching on the persisted
+      // detail id must never create a link.
+      segment_id: 'SEG-1', region_id: null, region_ids: [], region_basis: 'unresolved',
+      start_ms: 2000000.0, end_ms: 2100000.0, text: '无对应区间',
       speaker_id: 'speaker_1', speaker_role: null, timestamp_source: 'asr',
     },
   ],
@@ -493,7 +508,117 @@ function inContext(expression) {
   return vm.runInContext(expression, sandbox);
 }
 
-if (evaluated) {
+/**
+ * Check the renderer against a **real** `build_workbench()` projection.
+ *
+ * The synthetic document above is deliberately shaped by this gate; this mode takes a
+ * document the Python backend actually produced, so the two cannot drift apart. It
+ * asserts the same invariants (served coordinates drawn verbatim, one seek per
+ * navigable record, no link the backend did not publish) without any synthetic
+ * constants.
+ */
+async function runServedDocumentChecks(path) {
+  let served = null;
+  try {
+    served = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    errors.push(`--document ${path} could not be read: ${error.message}`);
+    return;
+  }
+  const documentRegions = Array.isArray(served.regions) ? served.regions : [];
+  servedRegionCount = documentRegions.length;
+  check('the served document is a real workbench projection', () => {
+    if (!served || typeof served !== 'object') return 'the document is not an object';
+    if (!served.document_id) return 'the document carries no document_id';
+    if (!Array.isArray(served.regions)) return 'the document carries no regions array';
+    if (!Array.isArray(served.transcript)) return 'the document carries no transcript array';
+    return true;
+  });
+  sandbox.__served = { run_id: served.run_id, workbench: served };
+  let mountError = '';
+  try {
+    await vm.runInContext('window.WB.mount(__served)', sandbox);
+  } catch (error) {
+    mountError = error && error.message ? error.message : String(error);
+  }
+  check('mount() renders the real projection without throwing', () =>
+    mountError ? `mount() threw ${mountError}` : true);
+
+  check('every served region is drawn at its own served start_sec/end_sec', () => {
+    if (seen.regions.length !== documentRegions.length) {
+      return `expected ${documentRegions.length} drawn regions, saw ${seen.regions.length}`;
+    }
+    for (let index = 0; index < documentRegions.length; index += 1) {
+      const drawn = seen.regions[index];
+      const expected = documentRegions[index];
+      if (drawn.id !== expected.region_id) {
+        return `region ${index} is ${drawn.id} instead of ${expected.region_id}`;
+      }
+      if (drawn.start !== expected.start_sec || drawn.end !== expected.end_sec) {
+        return `region ${expected.region_id} drew ${drawn.start}..${drawn.end} instead of `
+          + `${expected.start_sec}..${expected.end_sec}`;
+      }
+    }
+    if (!documentRegions.length) return 'the served document published no region to check';
+    return true;
+  });
+
+  const targets = [];
+  for (const member of ['findings', 'metrics', 'events', 'turns']) {
+    for (const row of (Array.isArray(served[member]) ? served[member] : [])) {
+      if (row && row.region_id) targets.push(String(row.region_id));
+    }
+  }
+  const uniqueTargets = [...new Set(targets)];
+  let navigationError = '';
+  for (const regionId of uniqueTargets) {
+    const expected = documentRegions.find(region => region.region_id === regionId);
+    if (!expected) {
+      navigationError = `${regionId} is referenced but was never published as a region`;
+      break;
+    }
+    sandbox.__targetId = regionId;
+    const before = seen.seeks.length;
+    const row = await vm.runInContext('window.WB.selectEvidence(__targetId)', sandbox);
+    const seeks = seen.seeks.slice(before);
+    if (!row || row.region_id !== regionId) {
+      navigationError = `${regionId} did not resolve to its served region`;
+      break;
+    }
+    if (seeks.length !== 1 || seeks[0] !== expected.start_sec) {
+      navigationError = `${regionId} seeked ${JSON.stringify(seeks)} instead of ${expected.start_sec}`;
+      break;
+    }
+  }
+  check('every record with a served region_id navigates to that region exactly once', () => {
+    if (navigationError) return navigationError;
+    if (!uniqueTargets.length) return 'the served document published no navigable record';
+    return true;
+  });
+
+  check('a transcript row is navigable exactly when the backend published its region_id', () => {
+    const published = new Set(documentRegions.map(region => String(region.region_id)));
+    const html = elements.get('wb-transcript').innerHTML;
+    const rows = Array.isArray(served.transcript) ? served.transcript : [];
+    if (!rows.length) return 'the served document published no transcript row to check';
+    for (const row of rows) {
+      const label = String(row.segment_id == null ? '' : row.segment_id);
+      const linked = new RegExp(`<button[^>]*data-wb-region="([^"]*)"[^>]*>${label}</button>`).test(html);
+      if (row.region_id && published.has(String(row.region_id))) {
+        if (!linked) {
+          return `transcript ${label} carries region_id ${row.region_id} but is not navigable`;
+        }
+      } else if (linked) {
+        return `transcript ${label} has no published region_id yet was made navigable`;
+      }
+    }
+    return true;
+  });
+}
+
+if (servedDocumentPath) {
+  await runServedDocumentChecks(servedDocumentPath);
+} else if (evaluated) {
   check('publishes window.WB with the documented surface', () => {
     const surface = inContext('Object.keys(window.WB || {}).sort().join(",")');
     const expected = ['eventRows', 'findingRows', 'load', 'metricRows', 'mount', 'playerState',
@@ -660,7 +785,7 @@ if (evaluated) {
   sandbox.__hostDoc = { run_id: DOCUMENT.run_id, workbench: DOCUMENT };
   sandbox.__hostProvisional = { run_id: provisionalDocument.run_id, workbench: provisionalDocument };
   let mountError = '';
-  const confirmed = { gate: '', metrics: '', status: '', regions: [], panels: {} };
+  const confirmed = { gate: '', metrics: '', status: '', transcript: '', regions: [], panels: {} };
   const provisional = { regions: [] };
   try {
     await vm.runInContext('window.WB.mount(__hostDoc)', sandbox);
@@ -668,6 +793,7 @@ if (evaluated) {
     confirmed.gate = elements.get('wb-gate').innerHTML;
     confirmed.metrics = elements.get('wb-metrics').innerHTML;
     confirmed.status = elements.get('wb-status').innerHTML;
+    confirmed.transcript = elements.get('wb-transcript').innerHTML;
     // Navigate to every navigable kind and capture what the panels show.
     for (const target of NAVIGABLE) {
       sandbox.__target = target.id;
@@ -746,13 +872,44 @@ if (evaluated) {
     return true;
   });
 
+  check('a transcript row links only through the served region_id, never a name match', () => {
+    const html = confirmed.transcript;
+    if (!html) return 'the transcript panel was not rendered';
+    // The linked row: produced by the backend-resolved `region_id`.
+    const linked = html.match(/<button[^>]*data-wb-region="([^"]*)"[^>]*>ASR-0001<\/button>/);
+    if (!linked) return 'a transcript row with a served region_id was not made navigable';
+    if (linked[1] !== 'event:EVT-1') {
+      return `the transcript row linked to ${linked[1]} instead of its served region`;
+    }
+    // The unlinked row: its `segment_id` equals a served region's `detail.segment_id`,
+    // which must not be enough to build a link.
+    if (/<button[^>]*>\s*SEG-1\s*<\/button>/.test(html)) {
+      return 'a transcript row was linked by matching detail.segment_id instead of region_id';
+    }
+    if (!html.includes('SEG-1')) return 'the unmatched transcript row is missing from the table';
+    return true;
+  });
+
+  check('a transcript link reaches the synchronized evidence panel', () => {
+    const panel = confirmed.panels['event:EVT-1'];
+    if (!panel) return 'the event panel probe did not run';
+    if (!panel.evidence.includes('ASR-0001')) {
+      return 'the transcript row linked to the selected region is missing from the panel';
+    }
+    // The unlinked row must not appear: it has no served region to synchronize with.
+    if (panel.evidence.includes('无对应区间')) {
+      return 'a transcript row without a served region_id was synchronized anyway';
+    }
+    return true;
+  });
+
   check('the finding/event/metric panels show the served transcript, provenance and role fields', () => {
     const finding = confirmed.panels['finding:FND-1'];
     const metric = confirmed.panels['metric:MET-1'];
     const event = confirmed.panels['event:EVT-1'];
     if (!finding || !metric || !event) return 'a navigation panel was not recorded';
-    // Served transcript text reaches the panel through the region's persisted
-    // detail.segment_id link; it is copied, never re-transcribed or re-timed.
+    // Served transcript text reaches the panel through the transcript row's
+    // backend-resolved `region_id`; it is copied, never re-transcribed or re-timed.
     if (!event.evidence.includes('合成文本')) {
       return 'the served transcript text is missing from the synchronized panel';
     }
@@ -870,15 +1027,20 @@ const log = [];
 for (const entry of checks) log.push(`${entry.ok ? 'ok  ' : 'FAIL'} ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`);
 for (const error of errors) if (!log.some(line => line.includes(error))) log.push(`ERROR ${error}`);
 if (ok) {
-  log.push('Evidence Workbench projections reproduce the backend document verbatim and every '
-    + `Finding/Metric/Event region navigates to the served interval (${checks.length} checks, `
-    + `${DOCUMENT.regions.length} synthetic regions).`);
+  log.push(servedDocumentPath
+    ? `A real build_workbench() projection reproduces its served coordinates and every `
+      + `record with a region_id navigates to it exactly once (${checks.length} checks, `
+      + `${servedRegionCount} served regions).`
+    : 'Evidence Workbench projections reproduce the backend document verbatim and every '
+      + `Finding/Metric/Event region navigates to the served interval (${checks.length} checks, `
+      + `${DOCUMENT.regions.length} synthetic regions).`);
 }
 
 const payload = {
   ok,
   reason: ok ? 'ok' : 'workbench_render_verification_failed',
   artifact: 'aivoicebench/static/workbench.js',
+  mode: servedDocumentPath ? 'served_document' : 'synthetic_document',
   checks,
   errors,
   log,
