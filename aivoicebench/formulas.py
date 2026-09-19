@@ -49,6 +49,27 @@ def character_error_rate(reference, hypothesis):
             'status': 'observed', 'normalization': 'nfc-v1'}
 
 
+def word_error_rate(reference, hypothesis):
+    """Word error rate over whitespace-separated tokens, NFC normalized (nfc-v1).
+
+    Case and punctuation are preserved: normalizing them would silently change the
+    measurement. An empty reference is `not_applicable`, never a zero error.
+    """
+    reference, hypothesis = unicodedata.normalize('NFC', reference), unicodedata.normalize('NFC', hypothesis)
+    if not reference.split():
+        return {'value': None, 'edits': None, 'reference_words': 0, 'status': 'not_applicable',
+                'normalization': 'nfc-v1'}
+    expected, actual = reference.split(), hypothesis.split()
+    row = list(range(len(actual) + 1))
+    for i, left in enumerate(expected, 1):
+        next_row = [i]
+        for j, right in enumerate(actual, 1):
+            next_row.append(min(next_row[-1] + 1, row[j] + 1, row[j - 1] + (left != right)))
+        row = next_row
+    return {'value': row[-1] / len(expected), 'edits': row[-1], 'reference_words': len(expected),
+            'status': 'observed', 'normalization': 'nfc-v1'}
+
+
 def _union(intervals):
     checked = []
     for start, end in intervals:

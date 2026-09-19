@@ -2,6 +2,31 @@
 
 > Technical reference / 技术参考。产品范围、验收与当前代码实现标识统一见 [PRD](PRD.md)。设计目标或示例不表示功能已实现；历史执行状态不替代当前 ref 审计。
 
+## MetricResult 3.0.0 / definition_version 4.0.0 (Issue #25)
+
+MetricResult **schema_version stays `3.0.0`**; the independent
+`definition_version` moves to **`4.0.0`** so the document keeps saying which PRD
+decomposition assigns its `prd_ref`. Additive changes only — no member is removed and
+no historical document stops validating:
+
+- `status` gains `invalid` (artifact/contract integrity failure). Like
+  `not_applicable`/`insufficient_evidence` it requires a `reason`, `value: null` and
+  `aggregation.sample_count: 0`, and is excluded from "decided" white-box checks.
+- `name` gains `response_end_candidate_ms` (PRD-M002), `semantic_response` (PRD-M003),
+  `barge_in_semantic_compliance` (PRD-M006), `false_endpoint_confirmed` (PRD-M007) and
+  `coverage` (PRD-M010), each with its own unit/scope/method constraint.
+- `aggregation` gains optional `invalid_count`, `abstained_count` and `planned_count`.
+
+Migration for `prd_ref`: a stored document whose `definition_version` is `3.0.0` keeps
+its original id (`PRD-M002` = First Speech Latency). `aivoicebench.metrics` exposes
+`PRD_REFS_BY_DEFINITION`, `prd_ref_for`, `definition_versions_for`, `migrate_prd_ref`
+and `migrate_metric_document`; the last returns a **copy**, so history is never
+rewritten. `metric_errors` rejects a document whose `definition_version` maps its name
+to a different `prd_ref`, and rejects a PRD-less metric unless it is a declared legacy
+continuity name (`feedback_latency_ms`, `meaningful_response_latency_ms`,
+`barge_in_new_intent_latency_ms`, `barge_in_success`) carrying that reason. See
+[指标定义](03-metric-definition.md) for the conflict and its resolution.
+
 ## TestCase 2.0.0 (Issue #1)
 
 Breaking change from the seed 1.0.0: strict mode-specific stimulus objects replace open-ended fields. Case ID remains stable; migrated example content uses Case version 2.0.0. Each contract evolves independently; current imported Transcript is 1.1.0 and MetricResult is 3.0.0. The sections below also document legacy versions.

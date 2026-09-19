@@ -41,6 +41,11 @@
         "feedback_latency_ms",
         "first_speech_latency_ms",
         "meaningful_response_latency_ms",
+        "response_end_candidate_ms",
+        "semantic_response",
+        "barge_in_semantic_compliance",
+        "false_endpoint_confirmed",
+        "coverage",
         "turn_gap_ms",
         "barge_in_stop_latency_ms",
         "barge_in_new_intent_latency_ms",
@@ -110,7 +115,8 @@
         "pass",
         "fail",
         "not_applicable",
-        "insufficient_evidence"
+        "insufficient_evidence",
+        "invalid"
       ]
     },
     "reason": {
@@ -229,6 +235,18 @@
           "type": "integer",
           "minimum": 0
         },
+        "invalid_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "abstained_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "planned_count": {
+          "type": "integer",
+          "minimum": 0
+        },
         "percentile": {
           "enum": [
             50,
@@ -296,7 +314,8 @@
           "status": {
             "enum": [
               "not_applicable",
-              "insufficient_evidence"
+              "insufficient_evidence",
+              "invalid"
             ]
           }
         }
@@ -687,6 +706,129 @@
               "context_success_rate",
               "instruction_success_rate"
             ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "ratio"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "method": {
+            "const": "deterministic"
+          },
+          "aggregation": {
+            "properties": {
+              "kind": {
+                "const": "rate"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "PRD-M002 response-end candidate: an acoustic position on the audio_relative_ms time base with its own uncertainty.",
+      "if": {
+        "properties": {
+          "name": {
+            "const": "response_end_candidate_ms"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "ms"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "measurement_scope": {
+            "const": "black_box"
+          },
+          "method": {
+            "const": "deterministic"
+          }
+        }
+      }
+    },
+    {
+      "description": "PRD-M003 / PRD-M006 semantic requirements are boolean; a performed judgment carries a judge_profile through the llm_judge rule.",
+      "if": {
+        "properties": {
+          "name": {
+            "enum": [
+              "semantic_response",
+              "barge_in_semantic_compliance"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "boolean"
+          },
+          "value": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "measurement_scope": {
+            "const": "black_box"
+          }
+        }
+      }
+    },
+    {
+      "description": "PRD-M007 confirmed false endpoint: composite evidence only, never a bare heuristic.",
+      "if": {
+        "properties": {
+          "name": {
+            "const": "false_endpoint_confirmed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "boolean"
+          },
+          "value": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "measurement_scope": {
+            "const": "black_box"
+          },
+          "method": {
+            "const": "composite"
+          }
+        }
+      }
+    },
+    {
+      "description": "PRD-M010 coverage is a rate over declared planned/attempted units.",
+      "if": {
+        "properties": {
+          "name": {
+            "const": "coverage"
           }
         }
       },

@@ -1,9 +1,9 @@
 """Tests for PRD-M001-M010 canonical MetricResult 3.0.0 metrics.
 
 Verifies:
-- First Speech Latency (PRD-M002)
+- First Speech Latency (PRD-M001)
 - Turn Gap signed semantics (PRD-M004): positive, negative, zero
-- False Endpoint candidate vs confirmed (PRD-M008)
+- False Endpoint candidate vs confirmed (PRD-M007)
 - Barge-in stop bound to interrupted old response_id (PRD-M005)
 - not_applicable vs insufficient_evidence distinction
 - Canonical MetricResult schema validity
@@ -12,6 +12,7 @@ Verifies:
 
 import unittest
 
+from aivoicebench import metrics
 from aivoicebench.formulas import (
     latency_ms, turn_gap_ms, turn_gap_ms_legacy,
     barge_in_stop_latency_ms, overlap_duration_ms, overlap_ratio,
@@ -76,8 +77,11 @@ class CanonicalSchemaTests(unittest.TestCase):
         ]
         result = compute_timeline_metrics(make_timeline(events))
         fs = find(result['metrics'], 'first_speech_latency_ms')[0]
-        self.assertEqual(fs['prd_ref'], 'PRD-M002')
+        # PRD 1.5.0 moved First Speech Latency from PRD-M002 to PRD-M001; the
+        # historical assignment stays resolvable through the 3.0.0 definition.
+        self.assertEqual(fs['prd_ref'], 'PRD-M001')
         self.assertEqual(fs['schema_version'], '3.0.0')
+        self.assertEqual(fs['definition_version'], metrics.DEFINITION_VERSION)
         self.assertIsNotNone(fs['policy'])
         self.assertIsNotNone(fs['policy_version'])
 
@@ -189,14 +193,18 @@ class TurnGapTests(unittest.TestCase):
 class FalseEndpointTests(unittest.TestCase):
     def test_candidate_only(self):
         events = [make_event('E1', 'possible_false_endpoint', 700, turn_id=None, response_id=None)]
-        metrics = compute_timeline_metrics(make_timeline(events))['metrics']
-        cand = find(metrics, 'false_endpoint_candidate')
+        metrics_out = compute_timeline_metrics(make_timeline(events))['metrics']
+        cand = find(metrics_out, 'false_endpoint_candidate')
         self.assertTrue(cand)
         self.assertEqual(cand[0]['value'], True)
         self.assertEqual(cand[0]['policy'], 'candidate_only')
+        self.assertEqual(cand[0]['prd_ref'], 'PRD-M007')
         self.assertIn('confirmation', cand[0]['reason'].lower())
-        # No confirmed false_endpoint
-        self.assertFalse(find(metrics, 'false_endpoint'))
+        # A candidate is never the confirmed form.
+        self.assertFalse(find(metrics_out, 'false_endpoint'))
+        confirmed = find(metrics_out, 'false_endpoint_confirmed')[0]
+        self.assertEqual(confirmed['status'], 'insufficient_evidence')
+        self.assertIsNone(confirmed['value'])
 
 
 class BargeInTests(unittest.TestCase):
@@ -234,34 +242,68 @@ class BargeInTests(unittest.TestCase):
         self.assertIsNone(m['value'])
 
     def test_new_intent_abstains(self):
+        """`barge_in_new_intent_latency_ms` is a legacy name without a PRD id."""
         events = [make_event('E1', 'tester_speech_end', 1000)]
         m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
                  'barge_in_new_intent_latency_ms')[0]
         self.assertEqual(m['status'], 'insufficient_evidence')
-        self.assertEqual(m['prd_ref'], 'PRD-M006')
+        self.assertIsNone(m['prd_ref'])
+        self.assertIn('Legacy metric', m['reason'])
 
     def test_barge_in_success_abstains(self):
+        """`barge_in_success` is a legacy name without a PRD id."""
         events = [make_event('E1', 'interrupt_start', 1500)]
         m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
                  'barge_in_success')[0]
         self.assertEqual(m['status'], 'insufficient_evidence')
-        self.assertEqual(m['prd_ref'], 'PRD-M007')
+        self.assertIsNone(m['prd_ref'])
+        self.assertIn('Legacy metric', m['reason'])
+
+    def test_barge_in_semantic_compliance_abstains_under_m006(self):
+        """PRD-M006 now requires constrained semantic evidence."""
+        events = [
+            make_event('E1', 'tester_speech_end', 1000),
+            make_event('E2', 'device_speech_start', 1500),
+            make_event('E3', 'interrupt_start', 1600),
+        ]
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'barge_in_semantic_compliance')[0]
+        self.assertEqual(m['prd_ref'], 'PRD-M006')
+        self.assertEqual(m['status'], 'insufficient_evidence')
+        self.assertIsNone(m['value'])
+        self.assertIn('semantic', m['reason'])
 
 
 class SemanticAbstentionTests(unittest.TestCase):
     def test_feedback_abstains(self):
+        """`feedback_latency_ms` is a legacy name; the current PRD has no M001 for it."""
         events = [make_event('E1', 'tester_speech_end', 1000)]
         m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
                  'feedback_latency_ms')[0]
         self.assertEqual(m['status'], 'insufficient_evidence')
-        self.assertEqual(m['prd_ref'], 'PRD-M001')
+        self.assertIsNone(m['prd_ref'])
+        self.assertIn('Legacy metric', m['reason'])
 
     def test_meaningful_response_abstains(self):
+        """`meaningful_response_latency_ms` is legacy; PRD-M003 is now Semantic Response."""
         events = [make_event('E1', 'tester_speech_end', 1000)]
         m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
                  'meaningful_response_latency_ms')[0]
         self.assertEqual(m['status'], 'insufficient_evidence')
+        self.assertIsNone(m['prd_ref'])
+        self.assertIn('Legacy metric', m['reason'])
+
+    def test_semantic_response_abstains_under_m003(self):
+        events = [
+            make_event('E1', 'tester_speech_end', 1000),
+            make_event('E2', 'device_speech_start', 1500),
+        ]
+        m = find(compute_timeline_metrics(make_timeline(events))['metrics'],
+                 'semantic_response')[0]
         self.assertEqual(m['prd_ref'], 'PRD-M003')
+        self.assertEqual(m['status'], 'insufficient_evidence')
+        self.assertIsNone(m['value'])
+        self.assertIn('semantic', m['reason'])
 
     def test_empty_timeline(self):
         result = compute_timeline_metrics(make_timeline([]))

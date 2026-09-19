@@ -94,7 +94,8 @@ class LegacyReadableTests(unittest.TestCase):
     def test_legacy_route_computation_still_works(self):
         """The legacy 2.0.0 contract is readable, not executable-as-canonical."""
         import aivoicebench.metrics as metrics
-        self.assertEqual(metrics.DEFINITION_VERSION, '3.0.0')
+        self.assertEqual(metrics.DEFINITION_VERSION, '4.0.0')
+        self.assertEqual(metrics.LEGACY_DEFINITION_VERSION, '3.0.0')
         self.assertEqual(metrics.METRIC_POLICY_VERSION, '1.0.0')
 
 
@@ -220,7 +221,16 @@ class FalseEndpointNonInterchangeableTests(unittest.TestCase):
         metrics = compute_timeline_metrics(make_timeline(events))['metrics']
         candidate = next(m for m in metrics if m['name'] == 'false_endpoint_candidate')
         self.assertEqual(candidate['status'], 'observed')
-        self.assertEqual(candidate['prd_ref'], 'PRD-M008')
+        # PRD-M007 owns false endpoints; PRD-M008 is now ASR/transcript quality.
+        self.assertEqual(candidate['prd_ref'], 'PRD-M007')
+
+    def test_engine_confirmation_abstains_without_full_evidence(self):
+        events = [make_event('E1', 'possible_false_endpoint', 700, turn_id=None, response_id=None)]
+        metrics = compute_timeline_metrics(make_timeline(events))['metrics']
+        confirmed = next(m for m in metrics if m['name'] == 'false_endpoint_confirmed')
+        self.assertEqual(confirmed['status'], 'insufficient_evidence')
+        self.assertIsNone(confirmed['value'])
+        self.assertEqual(confirmed['prd_ref'], 'PRD-M007')
 
 
 if __name__ == '__main__':
