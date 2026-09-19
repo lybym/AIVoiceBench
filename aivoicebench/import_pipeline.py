@@ -230,28 +230,50 @@ def _fusion_with_speakers(run, acoustic_doc, transcript_doc, diarization_doc,
 
 
 def _acoustic(run, normalized_path, parent):
-    """Run energy VAD acoustic segmentation on the normalized audio.
+    """Run the configured acoustic-boundary provider on the normalized audio.
 
-    The sensitivity profile is resolved from configuration and recorded in the
-    document. The default is the canonical measurement policy; a non-canonical
-    profile (for evaluating quiet device responses) is marked as such, so it can
-    never be silently presented as the canonical measurement.
+    Two independent selections are recorded in the document and echoed into the
+    stage manifest:
+
+    * the **provider** (``AIVOICEBENCH_ACOUSTIC_PROVIDER``, default ``energy``) —
+      the legacy energy/RMS VAD, or the Silero model provider. A model provider
+      that cannot load raises; it is never silently replaced by the energy VAD.
+    * the **sensitivity profile** (``AIVOICEBENCH_ACOUSTIC_PROFILE``) for the
+      energy provider. The default is the canonical measurement policy; a
+      non-canonical profile (for evaluating quiet device responses) is marked as
+      such, so it can never be silently presented as the canonical measurement.
     """
     import os
 
-    from .acoustic import EnergyVadSegmenter
+    from .acoustic import EnergyVadSegmenter, resolve_segmenter
     profile = os.environ.get('AIVOICEBENCH_ACOUSTIC_PROFILE') or None
-    segmenter = EnergyVadSegmenter.from_profile(profile)
+    provider = (os.environ.get('AIVOICEBENCH_ACOUSTIC_PROVIDER') or 'energy').strip().lower()
+    if provider in ('', 'energy', 'energy_vad'):
+        segmenter = EnergyVadSegmenter.from_profile(profile)
+    elif profile:
+        raise ValueError('AIVOICEBENCH_ACOUSTIC_PROFILE selects an energy-VAD sensitivity '
+                         'profile and cannot be combined with a model acoustic provider')
+    else:
+        # resolve_segmenter raises for an unknown provider or an unavailable model
+        # runtime/weights, so the stage fails explicitly rather than degrading.
+        segmenter = resolve_segmenter(provider)
     result = segmenter.segment(Path(normalized_path).resolve())
     doc = result.to_dict()
     status = doc['status']
     output = run.envelope('acoustic-segments', status,
                           'Acoustic VAD; signal timing, no speaker role',
                           _envelope_data(doc, status), [parent])
+    processor = doc.get('processor', {})
     run.manifest['stages']['acoustic']['processor'] = {
-        'name': 'energy_vad', 'version': '1.0.0',
-        'method': 'energy_vad', 'parameters': doc.get('processor', {}).get('parameters', {}),
-        'sensitivity': doc.get('processor', {}).get('sensitivity'),
+        'name': processor.get('method', 'energy_vad'),
+        'version': processor.get('processor_version', '1.0.0'),
+        'method': processor.get('method', 'energy_vad'),
+        'parameters': processor.get('parameters', {}),
+        'sensitivity': processor.get('sensitivity'),
+        # Model identity/runtime and the boundary policy version are part of the
+        # stage provenance: without them the Run's boundaries are not replayable.
+        'model': processor.get('model'),
+        'policy': processor.get('sensitivity', {}).get('profile') if processor.get('model') else None,
     }
     return [output], doc, None if doc['segments'] else 'No speech segments detected'
 
