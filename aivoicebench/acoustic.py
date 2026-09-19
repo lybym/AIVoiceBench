@@ -18,6 +18,7 @@ invented segment.
 from array import array
 from dataclasses import dataclass, field
 import math
+import os
 import sys
 import uuid
 import wave
@@ -106,17 +107,40 @@ def resolve_sensitivity(profile=None, overrides=None):
 
 @dataclass
 class AcousticSegment:
-    """A speech-segment candidate with acoustic evidence."""
+    """A speech-segment candidate with acoustic evidence.
+
+    ``frame_stats`` defaults to the energy/RMS evidence of the legacy energy VAD.
+    A model-based provider passes its own method-specific evidence dict instead
+    (see :mod:`aivoicebench.silero_vad`); the common acoustic contract — segment
+    id, ``audio_relative_ms`` coordinates, confidence, method and uncertainty —
+    stays identical, so a downstream consumer never reads a provider-specific
+    member to use a segment.
+    """
 
     start_ms: float
     end_ms: float
     confidence: float
     method: str
     uncertainty_ms: float
-    peak_rms: float
-    mean_rms: float
-    threshold_rms: float
-    frame_count: int
+    #: Energy/RMS evidence of this segment. Only the energy provider sets these;
+    #: a model provider reports its own ``frame_stats`` instead and leaves them
+    #: ``None``, so an absent energy reading is never serialized as a measured
+    #: zero.
+    peak_rms: float | None = None
+    mean_rms: float | None = None
+    threshold_rms: float | None = None
+    frame_count: int | None = None
+    frame_stats: dict | None = None
+
+    def _stats(self):
+        if self.frame_stats is not None:
+            return dict(self.frame_stats)
+        return {
+            'peak_rms': round(self.peak_rms, 6),
+            'mean_rms': round(self.mean_rms, 6),
+            'threshold_rms': round(self.threshold_rms, 6),
+            'frame_count': self.frame_count,
+        }
 
     def to_dict(self, segment_id):
         return {
@@ -127,12 +151,7 @@ class AcousticSegment:
             'source': 'acoustic',
             'method': self.method,
             'uncertainty_ms': round(self.uncertainty_ms, 3),
-            'frame_stats': {
-                'peak_rms': round(self.peak_rms, 6),
-                'mean_rms': round(self.mean_rms, 6),
-                'threshold_rms': round(self.threshold_rms, 6),
-                'frame_count': self.frame_count,
-            },
+            'frame_stats': self._stats(),
         }
 
 
@@ -143,13 +162,25 @@ class AcousticResult:
     reason: str | None
     source: dict
     processor: dict
+    #: Optional extra processor provenance merged into ``processor`` by
+    #: :meth:`to_dict`. Used by model-based providers (runtime/model identity);
+    #: the legacy energy VAD leaves it empty, so its document is byte-identical
+    #: to what earlier versions produced.
+    processor_extra: dict | None = None
+
+    def document_processor(self):
+        """The processor block as ``to_dict`` emits it (base + extra provenance)."""
+        processor = dict(self.processor)
+        if self.processor_extra:
+            processor.update(self.processor_extra)
+        return processor
 
     def to_dict(self):
         return {
             'schema_version': '1.0.0',
             'document_id': 'ACOUSTIC-' + uuid.uuid4().hex,
             'source': self.source,
-            'processor': self.processor,
+            'processor': self.document_processor(),
             'status': self.status,
             'reason': self.reason,
             'segments': [seg.to_dict(f'SEG-{i:04d}') for i, seg in enumerate(self.segments)],
@@ -160,8 +191,13 @@ class AcousticSegmenter(Protocol):
     def segment(self, path: Path) -> AcousticResult: ...
 
 
-def _read_canonical(path):
-    """Stream-decode PCM16 mono WAV; return samples and metadata."""
+def _read_canonical(path, scale=False):
+    """Stream-decode PCM16 mono WAV; return samples and metadata.
+
+    ``scale=False`` keeps the integer sample values the energy VAD works with.
+    ``scale=True`` returns float32 samples normalised to ``[-1, 1)``, which is
+    the input range a model-based provider expects.
+    """
     path = Path(path)
     try:
         with wave.open(str(path), 'rb') as audio:
@@ -185,6 +221,8 @@ def _read_canonical(path):
         raise AcousticError(f'Cannot parse WAV: {error}') from None
     except OSError as error:
         raise AcousticError(f'Audio file is unavailable: {error}') from None
+    if scale:
+        return array('f', [value / 32768.0 for value in values]), frames, rate, channels, sample_width
     return values, frames, rate, channels, sample_width
 
 
@@ -432,12 +470,56 @@ class EnergyVadSegmenter:
             source=source, processor=processor)
 
 
-def segment_audio(path, output=None, segmenter=None):
+#: Selects the acoustic-boundary provider family for Recording Analysis and the
+#: CLI: ``energy`` (the stdlib legacy/fallback implementation, and the default) or
+#: ``silero``. Requesting a model provider never degrades to energy silently.
+ACOUSTIC_PROVIDER_ENV = 'AIVOICEBENCH_ACOUSTIC_PROVIDER'
+
+#: Named provider families accepted by :func:`resolve_segmenter`.
+ACOUSTIC_PROVIDERS = ('energy', 'silero')
+
+
+def resolve_segmenter(name=None, policy=None, **energy_parameters):
+    """Build the acoustic-boundary provider selected by ``name``.
+
+    ``name`` defaults to ``AIVOICEBENCH_ACOUSTIC_PROVIDER`` and then to
+    ``energy``, so an unconfigured deployment keeps the existing behaviour exactly.
+    A model provider requires its optional runtime and weights: when they are
+    missing this raises (``SileroUnavailableError``) instead of substituting the
+    energy VAD, so a Run can never silently change what produced its boundaries.
+    """
+    selected = (name if name is not None
+                else os.environ.get(ACOUSTIC_PROVIDER_ENV) or 'energy')
+    selected = str(selected).strip().lower()
+    if selected in ('', 'energy', 'energy_vad'):
+        if policy is not None:
+            raise AcousticError('policy applies only to the silero provider')
+        return EnergyVadSegmenter(**energy_parameters)
+    if selected in ('silero', 'silero_vad'):
+        from .silero_vad import SileroVadSegmenter
+        return SileroVadSegmenter(policy=policy)
+    raise AcousticError(
+        'Unknown acoustic VAD provider: ' + str(name if name is not None
+                                                else os.environ.get(ACOUSTIC_PROVIDER_ENV))
+        + '; implemented: ' + ', '.join(ACOUSTIC_PROVIDERS))
+
+
+def segment_audio(path, output=None, segmenter=None, vad=None, policy=None):
     """Segment a canonical WAV and optionally write the result JSON.
+
+    ``vad`` selects the provider family by name: ``energy`` (the default, and the
+    only stdlib implementation), or ``silero``. A model provider is **never**
+    substituted silently: requesting ``silero`` without the optional runtime
+    installed raises instead of falling back to the energy VAD.
 
     Returns ``(result_dict, result_path_or_None)``.
     """
-    segmenter = segmenter or EnergyVadSegmenter()
+    if segmenter is not None and vad is not None:
+        raise AcousticError('Choose segmenter or vad, not both')
+    if segmenter is None:
+        segmenter = resolve_segmenter(vad, policy)
+    elif policy is not None:
+        raise AcousticError('policy applies only to the silero VAD provider')
     result = segmenter.segment(path)
     document = result.to_dict()
     out_path = None

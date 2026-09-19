@@ -1,0 +1,21 @@
+# Optional server-side model VAD (Issue #23: Silero acoustic-boundary provider).
+#
+# Install this on the Linux Server that runs Recording Analysis. It is optional
+# for the repository's other checks: the energy/RMS VAD in aivoicebench/acoustic.py
+# needs only the standard library, and the Silero tests skip when this file is not
+# installed - or fail loudly when AIVOICEBENCH_REQUIRE_SILERO_TESTS=1, which CI
+# sets so "the model gate was skipped" can never be reported as a pass.
+#
+# Why silero-vad and onnxruntime are both listed:
+#   * onnxruntime executes the exported graph. aivoicebench/silero_vad.py talks to
+#     it directly and never imports torch.
+#   * silero-vad provides the audited ONNX weight file
+#     (silero_vad/data/silero_vad.onnx). The adapter verifies its size and known
+#     sha256 before use and records the digest it loaded, so a different or
+#     truncated weight file fails instead of being reported as the audited model.
+#     silero-vad declares torch, so installing it also fetches torch; that is a
+#     packaging cost only, not an inference dependency of this project.
+#
+# No model binary is committed to this repository, and no credentials are needed.
+silero-vad>=6.2.2,<7
+onnxruntime>=1.16.1,<2
