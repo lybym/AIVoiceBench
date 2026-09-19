@@ -1,5 +1,14 @@
 # Continuous work log
 
+## 2026-09-19 — Issue #10 Step 05（第四轮）：修复 PR #105 第四轮 Review findings（PRD-F010/F011、PRD-M005/M006、PRD-N001/N005）
+
+- **输入 Handoff 与核实。** 第四轮 `REVIEW_VERDICT: REQUEST_CHANGES`、`REVIEWED_HEAD_SHA: 776a567009d5e3065ec634ffed0156483ed95449`、作者 `lybym-codex-reviewer[bot]`（review id `5255240697`）由 `gh api` 复核。
+- **P0（成立，我在同一文件同一位置重犯同一错误）。** 第三轮我把一个测试从类外搬进类内，却又**新增了另一个类外测试**：`tests/test_judge_pipeline.py` 的 `test_an_invalid_input_timeline_abstains_instead_of_blaming_the_judge` 仍是模块级函数（带 `self`），`unittest discover` 从不收集它。独立复核：修复前 `loadTestsFromName('tests.test_judge_pipeline')` 收集 **5** 项，而该模块 AST 声明的测试函数为 6；我轮次记录里那句"`ast` 检查确认模块级只剩 `write_wav`"在 HEAD 上**为假**——那次检查是在新增该测试**之前**跑的，写进 work log 时没有重跑。**该错误声明已在此更正，不静默改写历史。** 修复：该测试缩进进 `FullPipelineJudgeTests`（收集数 5 → 6）；并新增**机制性护栏** `tests/test_test_collection.py`：(a) 全仓 54 个测试模块**不得存在模块级 `def test_*`**，(b) 每个模块"AST 声明的测试方法数"必须 ≤ "loader 实际收集数"（< 即失败）。该护栏正是能自动抓住我这三次同类错误的检查，已并入测试套件（CI 会跑）。
+- **P1（成立，暴露真实缺陷并已修 root cause）。** 把该测试按原意实现为真测试后，`run_full_pipeline` 不是在弃权而是在 `report.py:123` 抛 `TypeError: unsupported format string passed to NoneType.__format__`——因为 `confidence` 为 `None` 是 **derived 事件的正常形态**（`fusion.py` 的 `overlap_*`/`interrupt_*`/`response_*`/`silence`/`possible_false_endpoint` 都发布 `confidence: None`），而该行用 `{e.get("confidence", 0):.2f}` 直接格式化。这是与本次改动相邻的真实潜在缺陷（经典路径此前因角色未解析→0 事件而从未触发）。修复方式**不是** `or 0`（那会把"没有可辩护数值"渲染成实测 0.00）：新增 `report._fmt_confidence()`，`None` 渲染为 `—`（未知），数值才格式化为两位小数。修复后该测试通过。
+- **P2（成立，已改）。** (a) `findings.migrate_finding_document` 的 docstring 仍写 "linked events/metrics"，与收紧后的 event-only 规则不一致——已改为 events 并指向 `validation._finding_turn_errors`。(b) 未写明"中间 commit 产出的 2.1.0 文档不可迁移"——已在 `docs/07-contract-versions.md` 明确：迁移只覆盖 `2.0.0 → 2.1.0`；2.1.0 由本次引入且无已发布 artifact，因此不提供 2.1.0 迁移，早期未合并 commit 产出的、仅靠 metric 声明 Turn 的 2.1.0 文档会被拒绝并需重新生成，不影响任何已发布文档。(c) `docs/21-llm-harness.md` 中"两个引擎都先跑 `timeline_errors`"表述过宽——已改为：import 主链该分支在真实角色确认后可达且有测试；经典 `run_full_pipeline` 的同名分支是**防御性**的（该路径无 ASR/聚类，角色未解析时不产生事件，故其自有 producer 目前不会产出无效 Timeline），由 fault injection 测试覆盖而非真实输入触发。
+- **验证（实际执行的命令与结果）。** 收集护栏：修复后 `loadTestsFromName('tests.test_judge_pipeline')` = 6（AST 声明 6）；全仓模块级 `def test_*` 扫描结果为空；`tests.test_test_collection` 2 项通过。定向：`test_judge_pipeline` + `test_test_collection` + `test_judge_import_stage` + `test_barge_in_producer` → 19 tests, 0 failures, 0 errors。全量 `python -m unittest discover -s tests` → **988 tests, 0 failures, 0 errors, 8 skipped**。
+- **未验证边界（不变）。** 真实 provider、真实录音、Docker 发布与人工复核仍未在本地产出；AC"至少一次授权真实 Recording Analysis Run 执行真实 Judge 路径"仍由 #85 承载。
+
 ## 2026-09-19 — Issue #10 Step 05（第三轮）：修复 PR #105 第三轮 Review findings（PRD-F010/F011、PRD-M005/M006、PRD-N001/N005）
 
 - **输入 Handoff 与核实。** 第三轮 `REVIEW_VERDICT: REQUEST_CHANGES`、`REVIEWED_HEAD_SHA: 7db5a43a2e9474092526ad1f890a0f8fa7a683b3`、作者 `lybym-codex-reviewer[bot]`（review id `5255181632`）由 `gh api` 复核；`gh pr view` 确认 `headRefOid` 仍为该 SHA。

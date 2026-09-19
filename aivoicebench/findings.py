@@ -283,10 +283,11 @@ def _abstention(candidate, state, reason):
 def migrate_finding_document(finding, to_version=CURRENT_FINDING_VERSION, timeline=None):
     """Re-emit a Finding document under the current contract.
 
-    A 2.0.0 document has no ``turn_ids``. They are resolved from the Timeline when
-    one is supplied and the Finding's own linked events/metrics; when they cannot
-    be resolved the list is empty rather than guessed, so a migrated document
-    never claims a Turn the original evidence does not establish.
+    A 2.0.0 document has no ``turn_ids``. They are resolved from the Timeline and
+    the Finding's own linked **events** (the only object that establishes which
+    Turn a Finding is about — see ``validation._finding_turn_errors``); when they
+    cannot be resolved the list is empty rather than guessed, so a migrated
+    document never claims a Turn the original evidence does not establish.
     """
     if not isinstance(finding, dict):
         raise ValueError('Finding must be an object')

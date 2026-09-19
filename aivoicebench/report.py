@@ -29,6 +29,18 @@ def _fmt_range(start, end):
     return f'{_fmt_ms(start)} – {_fmt_ms(end)}'
 
 
+def _fmt_confidence(confidence):
+    """Render a confidence value, or an explicit unknown marker.
+
+    A derived event legitimately carries no confidence number, so an absent value
+    must render as unknown. It must never be formatted as `0.00`, which would
+    present "no defensible number" as a measured zero.
+    """
+    if confidence is None:
+        return '—'
+    return f'{confidence:.2f}'
+
+
 def _esc(text):
     """Escape text for Markdown table cells."""
     if text is None:
@@ -120,7 +132,7 @@ def render_markdown(profile, fused_doc, turns_doc, timeline, metrics_result,
                 t = _fmt_range(e.get('start_ms'), e.get('end_ms'))
             lines.append(f'| {e.get("event_id", "")} | {etype} | {t} '
                         f'| {e.get("turn_id") or "—"} | {e.get("source", "")} '
-                        f'| {e.get("confidence", 0):.2f} |')
+                        f'| {_fmt_confidence(e.get("confidence"))} |')
         lines.append('')
 
     # Metrics

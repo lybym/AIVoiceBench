@@ -156,8 +156,7 @@ class FullPipelineJudgeTests(unittest.TestCase):
         self.assertEqual(findings_document['findings'], [])
         self.assertTrue((out / 'report.md').exists())
 
-
-def test_an_invalid_input_timeline_abstains_instead_of_blaming_the_judge(self):
+    def test_an_invalid_input_timeline_abstains_instead_of_blaming_the_judge(self):
         """An invalid *input* Timeline is not a Judge-contract violation."""
         import aivoicebench.pipeline as pipeline_module
         original = pipeline_module.generate_timeline
@@ -169,7 +168,8 @@ def test_an_invalid_input_timeline_abstains_instead_of_blaming_the_judge(self):
             timeline['events'].append({
                 'schema_version': '2.0.0', 'event_id': 'EVT-INJECTED',
                 'run_id': timeline['run_id'], 'case_id': timeline['case_id'],
-                'turn_id': None, 'response_id': None, 'type': 'interrupt_start',
+                'turn_id': 'TURN-0001', 'response_id': 'RESP-0001',
+                'type': 'interrupt_start',
                 'start_ms': 0, 'end_ms': 0, 'source': 'derived',
                 'observation_scope': 'black_box', 'confidence': None,
                 'confidence_source': None, 'uncertainty_ms': None,
@@ -192,9 +192,12 @@ def test_an_invalid_input_timeline_abstains_instead_of_blaming_the_judge(self):
         abstention = next(item for item in judge_data['abstentions']
                           if item['dimension'] == 'timeline')
         self.assertEqual(abstention['state'], 'not_eligible')
-        self.assertIn('EVD-DOES-NOT-EXIST', abstention['reason'])
+        self.assertIn('unknown evidence_id', abstention['reason'])
         self.assertEqual(judge_document_errors(judge_data), [])
-        self.assertTrue(self.read(out, 'metrics.json')['metrics'] == [])
+        # Deterministic metrics are still computed; no metric may claim a semantic
+        # value, because no judgment was accepted.
+        metrics = self.read(out, 'metrics.json')['metrics']
+        self.assertFalse([metric for metric in metrics if metric['method'] == 'llm_judge'])
         self.assertEqual(self.read(out, 'findings.json')['findings'], [])
 
 

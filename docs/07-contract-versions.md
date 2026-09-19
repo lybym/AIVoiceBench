@@ -85,6 +85,14 @@ are linked. This tightens generated output; historical 2.0.0 documents are
 unaffected, and no data migration is required because no stored document changes
 meaning under its own version tag.
 
+Migration coverage, stated precisely: `migrate_finding_document` covers
+`2.0.0 -> 2.1.0` only. `2.1.0` is introduced by this change and no released
+artifact carries it, so there is no `2.1.0 -> 2.1.0` migration. In particular, a
+2.1.0 document produced by an earlier commit of this same (unmerged) branch could
+declare a Turn reachable only through a linked metric; under the tightened rule
+that document is rejected rather than migrated, and it must be regenerated. No
+published artifact is affected.
+
 ## MetricResult 3.0.0 / definition_version 4.0.0 (Issue #25)
 
 MetricResult **schema_version stays `3.0.0`**; the independent
