@@ -11,7 +11,7 @@
 | ⬜ `planned` | 无可交付实现；设计、配置或关闭 Issue 不算实现 |
 | ⏸ `deferred` | 不在当前 MVP 排程，保留已有基础 |
 
-验证状态独立：`software_verified`、`container_verified`、`browser_verified`、`real_recording_pending`、`real_device_pending`、`validation_pending`。除非有直接证据，不能声明 `real_recording_verified` 或 `measurement_equivalence_verified`。
+验证状态独立：`software_verified`、`container_verified`、`browser_verified`、`real_cloud_verified`、`real_recording_pending`/`real_recording_verified`、`real_device_pending`、`validation_pending`。除非有直接证据，不能声明 `real_recording_verified` 或 `measurement_equivalence_verified`。状态语言由 `AcceptanceRecord 1.0.0` 逐 gate 落盘（见下），未达到的 gate 记 `pending`/`not_reached`，不得省略。
 
 ## 非功能要求
 
@@ -32,6 +32,27 @@ M1 尚未通过。最终验收需要授权的真实 5–20 分钟录音、有效
 - 导入、标准化、QA、File ASR、聚类/归属、Timeline、MetricResult、语义、Findings、人工修订和报告的实际链路必须分别呈现成功、失败、缺失和弃权。
 - 软件 fixture、预览版或 CI 只能证明有限契约，不能代替真实录音质量、真实云服务、实体设备或人工标注。
 - 验收记录必须保留 Artifact/Hash、版本、环境、样本选择、分母、失败样本和不确定性。
+
+### 验收证据契约（不改变门槛）
+
+M1 的五个 gate（`software_verified`、`container_verified`、`browser_verified`、`real_cloud_verified`、`real_recording_verified`）由 `AcceptanceRecord 1.0.0`（`schemas/acceptance-evidence.schema.json`）记录，并由确定性检查器 `aivoicebench/acceptance_evidence.py`（CLI `python -m aivoicebench acceptance init|check`）校验。该契约把本节门槛变成可执行检查，**不降低任何门槛**。产生绿色结论的调用必须显式启用两项控制：
+
+```text
+python -m aivoicebench acceptance check <record.json> \
+  --verify-artifacts --repository-root <repo>
+```
+
+- `real_recording_verified` 只在存在授权真实样本（5–20 分钟区间）、人工复核证据与机器原件分离、**声明的 artifact 与 evidence 摘要经 `--verify-artifacts` 实际重算匹配**、且 **`--repository-root` 指向的仓库目录被真实遍历且未发现 Git 内音频**时才成立；synthetic/fixture 样本、mock、CI、机器生成却被记为人工的标注会被判为未授权声明并使记录 `invalid`。
+- 未请求 artifact/evidence 校验、未提供仓库根、仓库根**不存在或不是目录**、或记录声明的 `exposure_scan.scan_roots` 条目无法遍历时，该 gate 不予授权，CLI 也不会以 0 退出。**未被执行的对照不得被报告为已执行**。
+- 授权真实 gate 的 evidence 与每个 stage 分母的 evidence 都必须解析到本地真实存在的 Artifact 且摘要匹配（声明了摘要却不匹配为 error，无法解析为 blocking gap）；只有 `--verify-artifacts` 会执行该解析。
+- 每个 stage 的分母必须显式计入 complete/partial/failed/unknown/abstained/not_applicable 且与 `expected_total` 对账，**禁止只报成功的分母**；**任何**已声明的 evaluation（含 `failed`/`abstained`/`not_attempted`）都必须有其 stage 的分母。
+- 声明真实录音 gate 的记录必须覆盖 M1 的全部 stage（`not_applicable` 是有效答案）；某 stage 整体缺席时，其失败/未知/弃权无法计入分母，故视为未授权。
+- 每条结论必须可回溯 Run → Turn/Event → 音频区间 → Evidence → processor/model/policy version；证据 id 必须在记录内唯一声明，缺口作为显式 blocking gap 报出。
+- 真实云 gate 的 evidence 必须以显式 `sample_id` 绑定到**授权真实样本**（路径子串不算绑定），synthetic/fixture 样本不得授权真实云 gate。
+- 角色修改必须生成新 AnalysisRevision、保留旧结果字节并给出 recompute/diff 证据，且不得重跑识别/聚类。
+- 未达到的 gate 必须写明缺口；**没有真实验收记录时不得把任何 gate 写成已验证**。blocking gap 未清零时记录不得判为 `complete`。
+
+检查器本身只是工具，其通过不等于 M1 通过；它只能证明声明摘要与本地文件一致、声明之间互相授权，**不能证明某个声明样本确实是授权真实录音**。M1 仍以真实证据记录为准。
 
 ## 正式里程碑
 

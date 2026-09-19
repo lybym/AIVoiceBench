@@ -1,0 +1,392 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivoicebench.local/schemas/acceptance-evidence.schema.json",
+  "title": "AcceptanceRecord 1.0.0",
+  "description": "The M1 real-recording acceptance record (Issue #85). It states which verification gates were reached and what authorizes each claim. It carries no result values of its own: every conclusion is a reference to a preserved artifact. A gate may only be recorded as 'verified' when the referenced evidence exists and is of the required kind; a pending gate is recorded as not reached rather than as passed. Synthetic fixtures, mocks, CI runs, preview releases and machine-generated annotations can never authorize the real-recording gate.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "record_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+    "issue_url": { "type": "string", "minLength": 1 },
+    "recorded_at": { "type": "string", "minLength": 1 },
+    "recorded_by": {
+      "description": "Who authored this record. A machine-authored draft must not be presented as the human acceptance decision.",
+      "type": "string",
+      "minLength": 1
+    },
+    "prd_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^PRD-[FMN][0-9]{3}$" }
+    },
+    "product_version": { "type": "string", "minLength": 1 },
+    "code_commit": { "type": "string", "pattern": "^[a-f0-9]{7,40}$" },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "deployment": { "type": "string", "minLength": 1 },
+        "browser": { "type": ["string", "null"] },
+        "browser_remote": { "type": ["boolean", "null"] },
+        "os": { "type": ["string", "null"] },
+        "container_image": { "type": ["string", "null"] },
+        "container_digest": { "type": ["string", "null"] },
+        "notes": { "type": ["string", "null"] }
+      },
+      "required": ["deployment"],
+      "additionalProperties": false
+    },
+    "samples": {
+      "description": "Authorized real recordings evaluated by this record. A sample set is only real-recording evidence when its authorization and handling constraints are recorded and its artifacts are hash-bound.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sample_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+          "source": {
+            "description": "Where the recording came from. 'synthetic' and 'fixture' describe audio that was generated for testing and can never authorize the real-recording gate.",
+            "type": "string",
+            "enum": ["authorized_real_recording", "authorized_field_recording", "synthetic", "fixture", "imported_unknown"]
+          },
+          "device": { "type": "string", "minLength": 1 },
+          "duration_ms": { "type": "number", "minimum": 0 },
+          "sample_rate_hz": { "type": "integer", "minimum": 1 },
+          "channels": { "type": "integer", "minimum": 1 },
+          "encoding": { "type": "string", "minLength": 1 },
+          "language": { "type": ["string", "null"] },
+          "authorization": {
+            "type": "object",
+            "properties": {
+              "authorized_by": { "type": "string", "minLength": 1 },
+              "authorized_at": { "type": ["string", "null"] },
+              "scope": { "type": "string", "minLength": 1 },
+              "handling_constraints": { "type": "string", "minLength": 1 }
+            },
+            "required": ["authorized_by", "scope", "handling_constraints"],
+            "additionalProperties": false
+          },
+          "unresolved_constraints": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "selection_reason": { "type": "string", "minLength": 1 },
+          "artifacts": {
+            "description": "Preserved artifact locations. The M1 gate never commits private recordings or credentials to Git or a release artifact, so every location must be marked outside Git and hash-bound.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": ["audio", "transcript", "annotation", "report", "log", "screenshot", "invocation_audit", "other"]
+                },
+                "location": { "type": "string", "minLength": 1 },
+                "in_git": { "type": "boolean" },
+                "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "byte_length": { "type": ["integer", "null"], "minimum": 0 },
+                "produced_by": { "type": ["string", "null"] },
+                "notes": { "type": ["string", "null"] }
+              },
+              "required": ["kind", "location", "in_git", "sha256"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["sample_id", "source", "device", "duration_ms", "sample_rate_hz",
+                     "channels", "encoding", "authorization", "selection_reason", "artifacts"],
+        "additionalProperties": false
+      }
+    },
+    "human_reviews": {
+      "description": "Human annotations and reviews. These are preserved separately from every machine original and are never derived from a machine output.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "review_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+          "kind": {
+            "type": "string",
+            "enum": ["boundary_annotation", "speaker_role_review", "semantic_review",
+                     "metric_review", "report_review", "acceptance_decision"]
+          },
+          "sample_id": { "type": ["string", "null"] },
+          "annotator": {
+            "description": "The human who made the decision. A machine-generated or synthetic annotation must never be recorded here as human review.",
+            "type": "string",
+            "minLength": 1
+          },
+          "annotated_at": { "type": ["string", "null"] },
+          "artifact": {
+            "type": "object",
+            "properties": {
+              "location": { "type": "string", "minLength": 1 },
+              "in_git": { "type": "boolean" },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "derived_from_machine_outputs": {
+                "description": "True only when the review material was produced by a machine and merely confirmed. A machine-generated annotation presented as human review is not human review.",
+                "type": "boolean"
+              }
+            },
+            "required": ["location", "in_git", "sha256", "derived_from_machine_outputs"],
+            "additionalProperties": false
+          },
+          "preserved_separately_from_machine_originals": { "type": "boolean" },
+          "notes": { "type": ["string", "null"] }
+        },
+        "required": ["review_id", "kind", "annotator", "artifact",
+                     "preserved_separately_from_machine_originals"],
+        "additionalProperties": false
+      }
+    },
+    "evaluations": {
+      "description": "Measurements taken on the authorized samples. Each entry names its preserved evidence; no measurement value is invented here.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "evaluation_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+          "kind": {
+            "type": "string",
+            "enum": ["import_qa", "asr_native_speaker", "acoustic_boundary", "speaker_alignment",
+                     "role_review_workload", "metric_eligibility", "semantic_judge",
+                     "human_role_correction", "browser_navigation", "report_traceability"]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["measured", "partial", "abstained", "failed", "not_attempted"]
+          },
+          "sample_ids": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "evidence": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/evidence" }
+          },
+          "measures": {
+            "description": "Optional recorded measurements. Absent means the evaluation reports no number, which is honest; a missing measurement must never be filled with a zero.",
+            "type": ["object", "null"]
+          },
+          "unresolved": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "reason": { "type": ["string", "null"] }
+        },
+        "required": ["evaluation_id", "kind", "status", "evidence"],
+        "additionalProperties": false
+      }
+    },
+    "denominators": {
+      "description": "Per-stage outcome counts. The M1 gate forbids a success-only denominator, so every stage states its failures, unknowns, abstentions and not-applicable records explicitly and the counts must reconcile.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string",
+            "enum": ["import_normalization_qa", "file_asr", "acoustic_boundary", "speaker_clustering",
+                     "speaker_alignment", "role_review", "attribution", "fusion", "turns", "timeline",
+                     "metrics", "semantic_judge", "findings", "report", "browser_navigation"]
+          },
+          "counters": {
+            "type": "object",
+            "properties": {
+              "complete": { "type": "integer", "minimum": 0 },
+              "partial": { "type": "integer", "minimum": 0 },
+              "failed": { "type": "integer", "minimum": 0 },
+              "unknown": { "type": "integer", "minimum": 0 },
+              "abstained": { "type": "integer", "minimum": 0 },
+              "not_applicable": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["complete", "partial", "failed", "unknown", "abstained", "not_applicable"],
+            "additionalProperties": false
+          },
+          "expected_total": {
+            "description": "The denominator this stage was evaluated against. It must equal the sum of the counters so an exclusion cannot be hidden by omission.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "evidence": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/evidence" }
+          },
+          "notes": { "type": ["string", "null"] }
+        },
+        "required": ["stage", "counters", "expected_total", "evidence"],
+        "additionalProperties": false
+      }
+    },
+    "traceability": {
+      "description": "Reported conclusions traced Run -> Turn/Event -> audio interval -> Evidence -> processor/model/policy/version (PRD-N001).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "chain_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+          "conclusion": { "type": "string", "minLength": 1 },
+          "run_id": { "type": "string", "minLength": 1 },
+          "analysis_id": { "type": ["string", "null"] },
+          "turn_id": { "type": ["string", "null"] },
+          "event_id": { "type": ["string", "null"] },
+          "audio_interval": {
+            "type": "object",
+            "properties": {
+              "start_ms": { "type": "number", "minimum": 0 },
+              "end_ms": { "type": "number", "minimum": 0 }
+            },
+            "required": ["start_ms", "end_ms"],
+            "additionalProperties": false
+          },
+          "evidence_ids": {
+            "description": "Evidence this conclusion is traced to. The list must not be empty for a reported conclusion; the checker enforces that with an actionable message rather than a shape error.",
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "processor": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "version": { "type": "string", "minLength": 1 }
+            },
+            "required": ["name", "version"],
+            "additionalProperties": false
+          },
+          "model": { "type": ["string", "null"] },
+          "policy": { "type": ["string", "null"] }
+        },
+        "required": ["chain_id", "conclusion", "run_id", "audio_interval", "evidence_ids", "processor"],
+        "additionalProperties": false
+      }
+    },
+    "manual_role_corrections": {
+      "description": "Human role-mapping changes. Each correction must produce a new immutable AnalysisRevision and a recompute/diff reference; the prior revision is never overwritten.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "correction_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+          "run_id": { "type": "string", "minLength": 1 },
+          "reviewer": { "type": "string", "minLength": 1 },
+          "prior_analysis_id": { "type": "string", "minLength": 1 },
+          "new_analysis_id": { "type": "string", "minLength": 1 },
+          "prior_result_preserved": {
+            "description": "Whether the prior revision's artifacts are still byte-identical. The correction may not overwrite them.",
+            "type": "boolean"
+          },
+          "recompute_evidence": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/evidence" }
+          },
+          "diff_evidence": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/evidence" }
+          },
+          "recompute_scope": {
+            "description": "Which stages were re-run. Recognition/clustering evidence must not be recomputed to apply a role decision.",
+            "type": "string",
+            "enum": ["downstream_only", "recomputed_recognition", "unknown"]
+          },
+          "notes": { "type": ["string", "null"] }
+        },
+        "required": ["correction_id", "run_id", "reviewer", "prior_analysis_id", "new_analysis_id",
+                     "prior_result_preserved", "recompute_evidence", "diff_evidence", "recompute_scope"],
+        "additionalProperties": false
+      }
+    },
+    "gates": {
+      "description": "The staged verification gates. A gate records only the state actually reached: software, container, browser, real cloud and real recording are separate claims and none substitutes for another.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "gate": {
+            "type": "string",
+            "enum": ["software_verified", "container_verified", "browser_verified",
+                     "real_cloud_verified", "real_recording_verified"]
+          },
+          "state": {
+            "type": "string",
+            "enum": ["verified", "pending", "not_reached"]
+          },
+          "verified_at": { "type": ["string", "null"] },
+          "evidence": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/evidence" }
+          },
+          "unresolved": {
+            "description": "What is still missing for this gate. A pending gate that cannot say what is missing is not auditable.",
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "reason": { "type": ["string", "null"] }
+        },
+        "required": ["gate", "state", "evidence"],
+        "additionalProperties": false
+      }
+    },
+    "exposure_scan": {
+      "description": "PRD-N004 evidence: no private recording, credential or provider secret is committed to Git or embedded in a release artifact.",
+      "type": "object",
+      "properties": {
+        "scanned_at": { "type": ["string", "null"] },
+        "scan_roots": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "clean": { "type": "boolean" },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "location": { "type": "string", "minLength": 1 },
+              "category": {
+                "type": "string",
+                "enum": ["credential_shaped_value", "credential_field", "private_key",
+                         "signed_url", "private_recording_path", "real_recording_in_git"]
+              },
+              "detail": { "type": ["string", "null"] },
+              "resolution": { "type": ["string", "null"] }
+            },
+            "required": ["location", "category"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["clean", "findings"],
+      "additionalProperties": false
+    },
+    "notes": { "type": ["string", "null"] }
+  },
+  "required": ["schema_version", "record_id", "issue_url", "recorded_at", "recorded_by",
+               "prd_refs", "product_version", "code_commit", "environment", "samples",
+               "human_reviews", "evaluations", "denominators", "traceability",
+               "manual_role_corrections", "gates", "exposure_scan"],
+  "additionalProperties": false,
+  "$defs": {
+    "evidence": {
+      "description": "A reference to a preserved artifact. Only the location and digest travel with the record; the artifact itself stays outside Git. A real-cloud or human-review reference must name the authorized sample it belongs to, so the binding is structural rather than inferred from a path substring.",
+      "type": "object",
+      "properties": {
+        "evidence_id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["human_review", "synthetic_fixture", "container_run", "browser_run",
+                   "real_cloud_invocation", "real_recording_artifact", "ci_run", "documentation"]
+        },
+        "location": { "type": "string", "minLength": 1 },
+        "sample_id": {
+          "description": "The sample this evidence belongs to. Required for evidence that authorizes a real gate, so a claim cannot be satisfied by evidence about an unrelated or synthetic sample.",
+          "type": ["string", "null"]
+        },
+        "sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+        "produced_at": { "type": ["string", "null"] },
+        "detail": { "type": ["string", "null"] }
+      },
+      "required": ["evidence_id", "kind", "location"],
+      "additionalProperties": false
+    }
+  }
+}

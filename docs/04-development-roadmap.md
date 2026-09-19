@@ -27,7 +27,7 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 | 范围 | 当前事实 | 明确缺口 |
 | --- | --- | --- |
-| Recording Analysis | 导入、标准化、云 File ASR、聚类/归属、融合，以及有角色证据时的 Turn/Event/Metric 主链已有 | #87 外置配置 + inline/TOS transport 已由 #90 实现（software_verified，真实 TOS 路径待 main 线验证）；真实火山 speaker separation（#22）、Judge/Findings、人工修订、wavesurfer、完整报告和真实录音验收（#85）未闭环 |
+| Recording Analysis | 导入、标准化、云 File ASR、聚类/归属、融合，以及有角色证据时的 Turn/Event/Metric 主链已有 | #87 外置配置 + inline/TOS transport 已由 #90 实现（software_verified，真实 TOS 路径待 main 线验证）；真实火山 speaker separation（#22）、Judge/Findings、人工修订、wavesurfer、完整报告和真实录音验收（#85）未闭环。#85 的证据契约与 Gate 检查器（`AcceptanceRecord 1.0.0` + `aivoicebench acceptance init|check`）已实现（software_verified），但它不产生任何真实录音证据，M1 仍未通过 |
 | Browser Station implementation | 手写源码为 `web/src/{app,models,voice_test,pcm_capture_worklet}.ts` + `audioworklet-globals.d.ts`；`aivoicebench/static/*.js` 为编译产物，仍由 FastAPI/Docker 直接交付 | 等价迁移与 deterministic typecheck/build 已完成（#84）；远端 Chrome 与容器内行为回归继续由既有 browser/container 测试与发布流程证明 |
 | Fixed Voice Test | 浏览器播放、麦克风、Control RMS VAD、WebSocket 控制、Turn ID、超时、停止和迟到事件防护已有；当前 TTS 仍为 V3 HTTP SSE | #98 的 V3 单向 WS asset synthesis、冻结 Stimulus、TEN VAD Browser Adapter、Frozen Golden Voice、Measurement Audio、条件 Barge-in、设备设置快照和实体设备验收未闭环 |
 | Free Voice Test | AudioWorklet 在设备回答阶段把 PCM 送入 Streaming ASR；partial/final、Agent 下一轮和显式 File ASR fallback 已有；当前仍等待完整 LLM/TTS 音频资产 | #98 的 Streaming LLM → V3 双向 WS TTS → streaming playback 未完成；另有 durable Measurement Audio、真实云/设备、预算、Coverage、Barge-in 缺口 |
