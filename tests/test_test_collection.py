@@ -7,8 +7,11 @@ never executed, so it silently provides no coverage while looking like evidence.
 `unittest discover` — which CI runs — only collects `TestCase` methods, so a
 module-level `def test_*` is invisible. The check below is deliberately mechanical
 rather than heuristic: no `tests/test_*.py` may declare a module-level test
-function, and the number of test methods declared inside each test class must
-equal the number `unittest` collects for that module.
+function, and the number of test methods declared inside each test class must not
+exceed the number `unittest` collects for that module. The comparison is
+one-directional (collected must not be *fewer* than declared) because a class
+whose `setUpClass` skips it — for example an optional dependency such as
+`silero_vad` being absent — legitimately collects fewer than it declares.
 """
 
 import ast

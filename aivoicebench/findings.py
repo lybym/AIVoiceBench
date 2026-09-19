@@ -110,7 +110,7 @@ def generate_findings_document(judge_results, timeline, metrics_result, run_id=N
                 'bound to a Turn'))
             continue
         metric_ids = _linked_metric_ids(candidate, metrics_by_id, events_by_id, event_ids)
-        turn_ids = _turn_ids(candidate, event_ids, metric_ids, events_by_id, metrics_by_id)
+        turn_ids = _turn_ids(candidate, event_ids, events_by_id)
         if not turn_ids:
             abstentions.append(_abstention(
                 candidate, 'insufficient_evidence',
@@ -202,7 +202,7 @@ def _event_turns(event_ids, events_by_id):
             if events_by_id[event_id].get('turn_id')}
 
 
-def _turn_ids(candidate, event_ids, metric_ids, events_by_id, metrics_by_id):
+def _turn_ids(candidate, event_ids, events_by_id):
     """Turns the Finding is actually bound to.
 
     Only turns established by the cited events count. A linked metric cannot add

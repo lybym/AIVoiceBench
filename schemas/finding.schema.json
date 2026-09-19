@@ -152,7 +152,7 @@
     },
     "turn_ids": {
       "type": "array",
-      "description": "Turns this Finding is bound to. Finding 2.1.0 records them explicitly; each must resolve to the Turn of the linked events/metrics.",
+      "description": "Turns this Finding is bound to. Finding 2.1.0 records them explicitly; each must resolve to the Turn of the linked events. Only an event carries a Turn binding, so a linked metric cannot establish a turn (see docs/07-contract-versions.md).",
       "items": {
         "type": "string",
         "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"

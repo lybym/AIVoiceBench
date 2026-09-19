@@ -499,7 +499,7 @@ def _publish_judge_artifacts(run, document, semantic_records, parent_ids, absten
 
 
 def _findings(run, judge_document, timeline_doc, metrics_result, parent_ids):
-    """Turn judged finding candidates into validated Finding documents (#11).
+    """Turn judged finding candidates into validated Finding documents (#10, PRD-F011).
 
     Candidates that cite no resolvable evidence never become Findings; they are
     recorded as abstentions. Each emitted Finding is validated against the same
