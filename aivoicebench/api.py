@@ -25,6 +25,8 @@ from .runner import write_json, digest
 from .version import VERSION
 from .import_pipeline import import_recording, resume_recording
 from .audio_processing import MAX_INPUT_BYTES
+from .run_view import (RunViewError, list_run_views, project_workbench, read_json,
+                       read_run_view)
 
 app = FastAPI(
     title="AIVoiceBench",
@@ -161,10 +163,7 @@ async def analyze(
 
 
 def _read(path):
-    try:
-        return json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return {}
+    return read_json(path)
 
 
 def _run_dir(run_id):
@@ -178,192 +177,32 @@ def _run_dir(run_id):
 
 
 def _workbench(directory, *, tolerant=True):
-    """Persisted-evidence projection for the Evidence Workbench.
-
-    Only *absence* becomes an absent document: a Run whose directory carries no
-    manifest, no ``analysis_id`` or no AnalysisRevision has no workbench, and the
-    endpoint says so with 404. A projection that fails for any other reason is a defect
-    in the evidence, not an absence of it, and must never be reported as "this record
-    has no reviewable evidence" — with ``tolerant=False`` the caller sees the real error
-    so it can be surfaced as a failure instead. The projection itself never computes a
-    metric, event or role.
-    """
-    from .workbench import NoWorkbench, build_workbench
-    try:
-        return build_workbench(directory)
-    except NoWorkbench:
-        return {}
-    except (OSError, ValueError):
-        if tolerant:
-            return {}
-        raise
+    """Web adapter for the shared Workbench projection (see :mod:`aivoicebench.run_view`)."""
+    return project_workbench(directory, tolerant=tolerant)
 
 
 def _load_run(directory, *, include_workbench=True):
-    manifest = _read(directory / 'manifest.json')
-    unified = manifest.get('workflow') == 'recording_import' and not (directory / 'web-analysis').exists()
-    root = directory / 'analysis' / manifest['analysis_id'] if unified else (
-        directory / 'web-analysis' if (directory / 'web-analysis').is_dir() else directory)
-    if not root.resolve().is_relative_to(directory.resolve()):
-        raise HTTPException(404, 'Invalid analysis path')
-    report = _read(root / 'report.json')
-    manifest = _read(directory / 'manifest.json')
-    timeline = _read(root / 'timeline.json') or report.get('timeline', {})
-    status_doc = _read(directory / 'web-status.json')
-    status = manifest.get('status') if unified else (status_doc.get('status') or report.get('run_summary', {}).get('status')
-              or timeline.get('status') or manifest.get('status') or 'partial')
-    def items(name, key, fallback):
-        doc = _read(root / (name + '.json')) or report.get(fallback, {})
-        if isinstance(doc, dict) and unified:
-            doc = doc.get('data') or {}
-        return doc if isinstance(doc, list) else doc.get(key, [])
-    def document(name):
-        doc = _read(root / (name + '.json'))
-        if isinstance(doc, dict) and unified:
-            return doc.get('data') or {}
-        return doc if isinstance(doc, dict) else {}
-    def published(name):
-        """Read a registered document that is not a stage envelope.
+    """Web adapter for the shared Run view.
 
-        The alignment artifact is published as its own schema-validated document
-        (like the Audio QA conditions), so it has no `data` member to unwrap.
-        Reading it through the envelope helper would silently report an empty
-        alignment next to a Run that has one.
-        """
-        doc = _read(root / (name + '.json'))
-        return doc if isinstance(doc, dict) else {}
-    def audio_qa():
-        """QA facts for the canonical artifact, across the Run's AnalysisRevisions.
-
-        A completed QA envelope carries the measurements as its data. An abstaining
-        envelope cannot carry data, so the measurements are read from the registered
-        canonical metadata document or from the separately published condition
-        document. Either way these are measurements and validity conditions, never a
-        recognition, accuracy or acceptance verdict.
-
-        Canonical audio QA is measured once per Run and preserved by `resume`, which
-        deliberately keeps the ingestion/normalization/audio_qa stage state while
-        creating a new analysis directory without re-emitting the QA envelope. Reading
-        only the current revision would therefore report "never measured QA" next to a
-        `partial` QA ledger. The current revision's envelope wins when it exists; the
-        manifest's latest registered `audio-qa` artifact is the fallback.
-
-        A Run measured before conditions existed has measurements but no conditions.
-        It is reported as `unassessed` rather than as an empty list, so an absent
-        condition set can never be mistaken for a satisfied one.
-        """
-        def view(envelope, measurements):
-            resolved = dict(measurements)
-            if 'conditions' not in resolved:
-                resolved['conditions'] = [{
-                    'condition_id': 'conditions_version', 'status': 'unassessed',
-                    'basis': 'this Run predates recorded Audio QA conditions',
-                    'limitation': 'Absent conditions are not satisfied conditions; re-import to measure them'}]
-            return {'status': envelope.get('status'), 'reason': envelope.get('reason'),
-                    'measurements': resolved}
-        if not unified:
-            return {}
-        registered = {item['artifact_id']: item for item in manifest.get('artifacts', [])}
-        current = _read(root / 'audio-qa.json')
-        envelope = current if isinstance(current, dict) and current else None
-        if envelope is None:
-            latest = next((item for item in reversed(manifest.get('artifacts', []))
-                           if item['kind'] == 'audio-qa'), None)
-            if latest is None:
-                return {}
-            candidate = _read(directory / latest['path'])
-            if not isinstance(candidate, dict) or not candidate:
-                return {}
-            # The measurements live in the documents this envelope references, exactly as
-            # they do for the current revision, so follow its own refs.
-            envelope, registered_refs = candidate, list(candidate.get('artifact_refs', []))
-        else:
-            registered_refs = list(envelope.get('artifact_refs', []))
-        data = envelope.get('data')
-        if isinstance(data, dict) and data:
-            return view(envelope, data)
-        for ref in registered_refs:
-            artifact = registered.get(ref)
-            if artifact is None:
-                continue
-            path = directory / artifact['path']
-            if not path.is_file() or artifact['kind'] not in ('audio_qa_conditions', 'audio_metadata'):
-                continue
-            published = _read(path)
-            measurements = (published.get('measurements') if artifact['kind'] == 'audio_qa_conditions'
-                            else published.get('normalized'))
-            if isinstance(measurements, dict) and measurements:
-                return view(envelope, measurements)
-        return {}
-    if unified:
-        timeline = timeline.get('data') or {}
-    diarization_doc = document('speaker-assignments')
-    alignment_doc = published('alignment')
-    fused_segments = items('fused-segments', 'segments', 'fused_segments')
-    metrics_items = items('metrics', 'metrics', 'metrics')
-    # A blank metric list must be explainable from evidence, with counts, instead of
-    # looking like the UI dropped fields. This is computed from the same documents
-    # the reader can open, and it never invents a measurement.
-    from .alignment import explain_metric_gap
-    metrics_gap = explain_metric_gap(
-        {'segments': fused_segments}, timeline, {'metrics': metrics_items}, alignment_doc)
-
-    def role_review():
-        """The manual role gate for this Run's current AnalysisRevision.
-
-        The revision's own published document is authoritative because it records the
-        gate state that revision was produced under. A Run analysed before the gate
-        existed has no such document, so an equivalent surface is built from its own
-        preserved speaker clusters rather than reported as missing.
-        """
-        document_payload = _read(root / 'role-review.json')
-        if isinstance(document_payload, dict) and document_payload:
-            return document_payload
-        if not unified:
-            return {}
-        from .role_review import build_role_review
-        try:
-            return build_role_review(directory)
-        except (OSError, ValueError):
-            return {}
-
-    result = dict(transcript=(_read(root / 'transcript.json').get('data') or {}) if unified else {},
-        workbench=_workbench(directory) if include_workbench else {},
-        stages=manifest.get('stages', {}), analysis_id=manifest.get('analysis_id', ''),
-        invocation_refs=[a for a in manifest.get('artifacts', []) if a['kind']=='provider_invocation'],
-        run_id=directory.name, status=status, reason=status_doc.get('reason'),
-        profile=_read(root / 'profile.json') or manifest.get('profile', {}),
-        fused_segments=fused_segments,
-        acoustic_segments=items('acoustic-segments', 'segments', 'acoustic_segments'),
-        speaker_segments=diarization_doc.get('speaker_segments', []),
-        diarization_scope=diarization_doc.get('scope', {}),
-        attribution=document('attribution'),
-        alignment={'status': alignment_doc.get('status'), 'reason': alignment_doc.get('reason'),
-                   'document_id': alignment_doc.get('document_id'),
-                   'policy': alignment_doc.get('policy'),
-                   'processor': alignment_doc.get('processor'),
-                   'diagnostics': alignment_doc.get('diagnostics')} if alignment_doc else {},
-        metrics_gap=metrics_gap,
-        role_review=role_review(),
-        audio_qa=audio_qa(),
-        turns=items('turns', 'turns', 'turns'), events=timeline.get('events', []),
-        timeline=timeline, metrics=metrics_items,
-        judge_results=items('judge-results', 'results', 'judge_results'),
-        findings=items('findings', 'findings', 'findings'),
-        report_md=(root / 'report.md').read_text(encoding='utf-8') if (root / 'report.md').exists() else '',
-        audio_url='/api/runs/' + directory.name + '/audio')
-    return result
+    The projection itself is surface-neutral (`aivoicebench.run_view`), so the API,
+    the CLI and any automation read the same Run/revision/status semantics. This
+    adapter only translates "no view can exist for this directory" into the HTTP
+    status the endpoints already promise.
+    """
+    try:
+        return read_run_view(directory, include_workbench=include_workbench)
+    except RunViewError as error:
+        raise HTTPException(404, str(error)) from None
 
 
 @app.get('/api/runs')
 def list_runs():
-    runs = []
-    for entry in OUTPUT_ROOT.iterdir():
-        if entry.is_dir() and entry.name.startswith('RUN-') and not entry.is_symlink():
-            data = _load_run(entry, include_workbench=False)
-            runs.append(dict(run_id=entry.name, status=data['status'],
-                device=data['profile'].get('device'), created=entry.stat().st_mtime))
-    return {'runs': sorted(runs, key=lambda r: r['created'], reverse=True)}
+    """The Run listing, produced by the same projection one Run's detail view uses.
+
+    A separate listing implementation would be a second source of truth for
+    `status`/revision, which is exactly what Issue #27 forbids.
+    """
+    return {'runs': list_run_views(OUTPUT_ROOT, include_workbench=False)}
 
 
 @app.get('/api/runs/{run_id}')

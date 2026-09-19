@@ -7,7 +7,7 @@
 | F001 | 导入 WAV/MP3/M4A 与可选设备资料；不要求 TestCase；损坏输入也保留 Import Run 与失败原因 | ✅ implemented；真实 5–20 分钟录音验收待完成 |
 | F002 | 原始/标准化/派生资产不可变，记录 Hash、元数据、父引用、转换器与参数 | ✅ implemented（限定导入资产） |
 | F003 | 统一标准化与 Audio QA；格式、时长、空音频、解码失败等须明确诊断 | ✅ implemented；QA 不等于准确率保证 |
-| F004 | 可恢复分阶段编排，阶段输入输出、失败、重试与审计可追溯 | 🟡 partial；Judge/Findings 已接入 Recording Analysis 主链（#10，受配置与角色 Gate 约束），真实 provider 调用与发布验收待完成 |
+| F004 | 可恢复分阶段编排，阶段输入输出、失败、重试与审计可追溯 | 🟡 partial；Judge/Findings 已接入 Recording Analysis 主链（#10，受配置与角色 Gate 约束）；#27 已把编排收敛为单一入口与单一读取投影（`run_view.py`，API/CLI 同源），并验证逐阶段失败保留、冷拷贝重建与容器 `docker restart` 重建当前 revision/阶段账本/证据链接/报告；真实 provider 调用与发布验收待完成 |
 | F005 | File ASR 的完整录音识别、原生响应审计与时间戳；默认豆包 Seed ASR 2.0 `volc.seedasr.auc` 异步 submit/query，极速版为兼容模式；部分时间戳缺陷不得删除其余有效证据 | 🟡 partial；#87 已实现 transport，#93 跟踪 Seed recovery/partial evidence；真实质量待验收 |
 | F006 | Speaker/source attribution：消费火山 File ASR 匿名 speaker labels；tester/device/unknown 只由用户人工确认，不使用 LLM 角色判断，不按先后猜角色 | ✅ implemented（软件）；匿名聚类、人工确认 Gate、不可变 revision 与 diff 已实现（#95）；真实录音人工标注验收待完成 |
 | F007 | Turn/Response 关联必须有可解释角色和时序证据；歧义可弃权 | 🟡 partial；#94 提供确定性 acoustic↔speaker-span 对齐与覆盖诊断，#24 使 Turn/Response 关联在已确认角色下确定且可复现（连续同角色、设备先发言、编号唯一连续），未确认/冲突/未匹配一律弃权且不谎报 complete；真实混音打断判定待验收 |
@@ -17,7 +17,7 @@
 | F011 | Findings 必须关联指标、证据、置信度、影响和复核状态 | ✅ implemented（软件）：Finding 2.1.0 显式记录 Turn/Event/Metric/Evidence 链接，缺可解析证据引用只记录弃权、不生成 Finding（#10）；真实录音复核待验收 |
 | F012 | 人工修订为新 revision，不覆盖机器原件；可重算并显示差异 | ✅ implemented（软件）：角色 mapping 每次保存生成不可变 `role-review/role-mapping-REV-NNNN.json` 与新 AnalysisRevision，旧 artifact 字节不变并显示 diff（#95） |
 | F013 | 生成 Markdown/JSON 报告，保留结论至证据的回溯路径 | 🟡 partial；报告已改为按 AnalysisRevision 产出，含证据分级（deterministic/semantic/human_reviewed）、证据索引、阶段失败/弃权与 provenance（#11）；正式 role-dependent 结论仍需人工角色确认（#95），真实录音报告待验收 |
-| F014 | Web/CLI 统一分析工作台；Web Evidence Workbench 使用 wavesurfer.js 展示 waveform、Regions/Timeline 与点击证据定位，不自研 waveform renderer | 🟡 partial；wavesurfer.js 工作台（waveform + Regions/Timeline + Finding/Metric/Event 定位 + 同步 transcript/role/provenance）与人工角色确认面板已实现（#11/#95）；Docker/远端 Chrome 实机与真实录音视觉复核待完成（#85） |
+| F014 | Web/CLI 统一分析工作台；Web Evidence Workbench 使用 wavesurfer.js 展示 waveform、Regions/Timeline 与点击证据定位，不自研 waveform renderer | 🟡 partial；wavesurfer.js 工作台（waveform + Regions/Timeline + Finding/Metric/Event 定位 + 同步 transcript/role/provenance）与人工角色确认面板已实现（#11/#95）；#27 补齐 CLI 读取面（`aivoicebench runs`）使其与 API/Web 共用同一 Run 投影；Docker/远端 Chrome 实机与真实录音视觉复核待完成（#85） |
 | F015 | 后端托管的 Provider 配置、路由、快照与调用审计；目标由服务器侧外置 `providers.yaml` / `storage.yaml` 提供非敏感配置，密钥仅以 env/secret reference 解析 | 🟡 partial；#87 已实现外置 YAML loader/validator + SQLite migration/conflict + Docker read-only mount，software_verified；真实部署验收待完成 |
 | F016 | File ASR、Streaming ASR 与 TTS 按生命周期分家族；File ASR 支持 `inline | object_storage | auto`，Streaming ASR 不经过对象存储；浏览器不持有长期凭据 | 🟡 partial；#87 已实现 transport selection + TOS adapter，software_verified；真实云/设备待验收 |
 | F017 | 同一原件可产生新 AnalysisRevision；旧产物、配置和差异可追溯 | ✅ implemented（软件）：角色确认与 ASR retry 都生成新 AnalysisRevision，旧产物保留并在 `role_review.diff` 显示变化（#95） |
@@ -99,5 +99,7 @@ wavesurfer.js 不产生 Event，不改变 Artifact，也不是声学时间真值
 - 指标为空时必须能从证据解释：API `metrics_gap`、报告“指标可用性”与 Web 面板给出原因代码与涉及片段数，不用 0 或成功占位符填充。
 - 未保存人工角色 mapping 前，role-dependent Turns、Timeline、Metrics 与正式测试报告不运行；可展示的仅是明确标注为 provisional 的导入/诊断状态。人工 mapping 变更必须创建新 AnalysisRevision，不能覆盖机器原件或旧结论。Gate 状态必须可区分 `awaiting_role_review`、`incomplete_review`、`complete_review` 与人工判定的 `unknown`；保存后重分析只从 Attribution 向下重跑，识别与聚类作为原始机器证据被恢复而不是重算，因此不产生第二次云调用。
 - 真实录音、真实云服务、人工标注和实体设备验收必须与软件/容器/浏览器验证分开记录。
+- Web、API 与 CLI 必须读取同一个持久化 Run/AnalysisRevision 模型并返回相同的 Run/revision/status 语义；读取面不得自行推导状态，也不得并行维护第二套分析语义（#27：`aivoicebench/run_view.py` 为唯一读取投影，CLI `runs --json` 与 API 响应体一致）。
+- 阻断 role-dependent 阶段的原因必须描述该 revision 的真实状态，尤其不得把「人工确认后无 acoustic↔speaker 可归属重叠」或「Attribution 处理器失败」报成「用户没有把任何聚类判为 tester/device」。
 
 详细技术边界见 [录音导入](../14-recording-import.md)、[Recording backbone](../23-recording-backbone.md)、[声学分段](../17-acoustic-segmentation.md)、[融合/Turn/Event](../18-fusion-turns-events.md)、[契约版本](../07-contract-versions.md) 与 [确定性引擎](../12-deterministic-engine.md)。

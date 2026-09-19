@@ -154,3 +154,17 @@ Web Evidence Workbench 目标使用 wavesurfer.js。音频 Artifact 仍由 Serve
 - 真实 Recording Analysis 与实体 AI Device 的端到端运行。
 
 当前代码/发布事实不自动证明上述远端场景已通过。
+
+## Recording Analysis 读取面与容器重启验证（#27）
+
+Recording Analysis 的 Run/revision/status 语义只有一个来源：`aivoicebench/run_view.py` 的持久化投影。API 与 CLI 都是它的外壳，因此同一份 Run 目录在任何读取面都得到同一份结论：
+
+| 读取面 | 用途 |
+| --- | --- |
+| `GET /api/runs` | Run 列表（`run_id` / `status` / 当前 `analysis_id` / device） |
+| `GET /api/runs/{run_id}` | 当前 revision 的完整视图：阶段账本、role Gate、证据链接（`workbench`）、指标/Findings、`report_md` |
+| `python -m aivoicebench runs [RUN_ID] [--output DIR] [--json]` | 同一文档的 CLI 读取面；`--json` 输出与 API 响应体逐字段相同，便于脚本比对两个面 |
+
+CLI 退出码与 `import` 一致（`1` = Run 不可读或存在 `failed` 阶段，`2` = 可读但仍有未完成阶段，`0` = 全部阶段 `complete`）。CLI 与 API 都只读持久化文档，不重新计算指标、事件或角色。
+
+容器验证由 `.github/workflows/backbone-smoke.yml` 承担：镜像内先跑 `scripts/docker_smoke.py`（三格式导入、历史/详情、音频回放），再 `--save-history`（通过真实 Web API 保存一组人工角色决定，生成第二个 AnalysisRevision），随后 `docker restart` 并由 `--verify-history` 断言重启后重建的**当前 AnalysisRevision、完整阶段账本、role Gate（`complete_review` 及其 revision 身份）、证据链接（workbench 与 invocation artifact 可达性）与报告**与重启前逐字段一致，且每个 artifact 重新哈希通过。该 job 只证明容器/持久化行为，不构成真实 provider 调用或真实录音验收（[#85](https://github.com/lybym/AIVoiceBench/issues/85)）。

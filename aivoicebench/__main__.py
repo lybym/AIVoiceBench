@@ -49,6 +49,77 @@ def _print_speaker_summary(directory, manifest):
               f'(derived from the existing ASR response; no second recognition request)')
 
 
+def _runs_command(args):
+    """Read persisted Runs through the shared projection, never a second reader.
+
+    Issue #27 requires the Web, API and CLI surfaces to report the same Run,
+    AnalysisRevision and stage status for the same persisted data. This command
+    therefore renders `aivoicebench.run_view.read_run_view`, the exact projection
+    `GET /api/runs/{run_id}` serves, and `--json` prints that document unmodified so
+    the two surfaces can be compared byte for byte. It never re-derives a status from
+    a partial read, and it never computes a metric, event or role.
+
+    Exit codes follow the `import` command's convention: 1 when the Run cannot be
+    read or a stage failed, 2 when the Run is readable but some stage has not
+    completed, 0 when every stage is complete.
+    """
+    import os
+    import re
+
+    from .run_view import RunViewError, list_run_views, read_run_view
+    root = Path(args.output) if args.output else Path(os.environ.get('AIVOICEBENCH_OUTPUT', 'artifacts'))
+    if args.run_id is None:
+        rows = list_run_views(root, include_workbench=False)
+        if args.json:
+            print(json.dumps({'runs': rows}, ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            print(f'NO RUNS under {root} (no persisted Recording Analysis Run)')
+            return 2
+        for row in rows:
+            print(f'{row["run_id"]}  {row["status"]}  revision={row["analysis_id"]}  '
+                  f'device={row["device"] or "unknown"}')
+        return 0
+    if not re.fullmatch(r'RUN-[A-Za-z0-9_-]+', args.run_id):
+        print(f'RUNS ERROR: {args.run_id} is not a Run id', file=sys.stderr)
+        return 1
+    directory = (root / args.run_id).resolve()
+    if not directory.is_relative_to(root.resolve()) or not directory.is_dir():
+        print(f'RUNS ERROR: no Run {args.run_id} under {root}', file=sys.stderr)
+        return 1
+    try:
+        view = read_run_view(directory)
+    except RunViewError as error:
+        print(f'RUNS ERROR: {error}', file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(view, ensure_ascii=False, indent=2))
+    else:
+        print(f'{view["run_id"]}  {view["status"]}  revision={view["analysis_id"]}')
+        if view.get('reason'):
+            print(f'  run reason: {view["reason"]}')
+        print('  stages:')
+        for name, stage in view['stages'].items():
+            processor = stage.get('processor') or {}
+            print(f'    {name}: {stage["status"]}'
+                  f'  [{processor.get("name")}/{processor.get("version")}]'
+                  f'{("  " + str(stage.get("reason"))) if stage.get("reason") else ""}')
+        review = view.get('role_review') or {}
+        if review:
+            print(f'  role gate: {review.get("status")}  '
+                  f'({review.get("reason") or "no reason recorded"})')
+            print(f'  role revisions: {len(review.get("history") or [])}')
+        print(f'  invocation evidence: {len(view.get("invocation_refs") or [])} artifact(s)')
+        print(f'  workbench: {"available" if view.get("workbench") else "none"}')
+        print(f'  report: {"report.md present" if view.get("report_md") else "no report"}')
+    failed = [name for name, stage in view['stages'].items() if stage['status'] == 'failed']
+    incomplete = [name for name, stage in view['stages'].items()
+                  if stage['status'] not in ('complete', 'failed')]
+    if failed:
+        return 1
+    return 2 if incomplete else 0
+
+
 def main(argv=None):
     # Keep redirected Windows CLI JSON/text readable across shell code pages.
     for stream in (sys.stdout, sys.stderr):
@@ -67,6 +138,16 @@ def main(argv=None):
     importer.add_argument('--model-settings', type=Path, help='Explicit configured cloud ASR route; may upload to the selected service')
     importer.add_argument('--model-dir', type=Path)
     importer.add_argument('--model-version')
+    runs_cmd = subparsers.add_parser(
+        'runs',
+        help='Read persisted Recording Analysis Runs with the same Run/revision/status '
+             'semantics the Web API serves')
+    runs_cmd.add_argument('run_id', nargs='?',
+                          help='Run id (RUN-...); omit it to list the output root')
+    runs_cmd.add_argument('--output', type=Path,
+                          help='Run output root (default: AIVOICEBENCH_OUTPUT, else artifacts)')
+    runs_cmd.add_argument('--json', action='store_true',
+                          help='Emit the exact document GET /api/runs[/{run_id}] serves')
     analyze = subparsers.add_parser('analyze', help='Evaluate canonical events with deterministic metrics')
     analyze.add_argument('case', type=Path)
     analyze.add_argument('--timeline', type=Path, required=True)
@@ -488,6 +569,8 @@ def main(argv=None):
             for blocker in manifest['blockers']:
                 print(f'  {blocker}')
         return 2 if any(manifest['status'] == 'blocked' for _, manifest in results) else 0
+    if args.command == 'runs':
+        return _runs_command(args)
     if args.kind in ('metric', 'finding') and args.timeline is None:
         parser.error('--kind metric/finding requires --timeline')
     failures = 0

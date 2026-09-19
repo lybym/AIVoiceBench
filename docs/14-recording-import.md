@@ -105,3 +105,29 @@ Remaining: real ASR/speaker-label verification, real-provider Judge/Findings acc
 保存会写入一份不可变 `role-review/role-mapping-REV-NNNN.json`，并创建新的 AnalysisRevision。识别与聚类是原始机器证据，因此从当前 revision **恢复**（不重新调用 Provider、不重新聚类、不需要 Provider 配置），只从 Attribution 向下重跑；旧 revision 的 artifact 字节不变，修改 mapping 会再生成一份 revision 并在 `diff` 中显示变化。真实录音与人工标注验收仍属 [#85](https://github.com/lybym/AIVoiceBench/issues/85)。
 
 Official media references: [FFmpeg stream selection/conversion](https://ffmpeg.org/ffmpeg.html), [FFprobe structured metadata](https://ffmpeg.org/ffprobe.html), [resampler options](https://ffmpeg.org/ffmpeg-resampler.html). Local CLI needs installed FFmpeg/FFprobe; Docker already includes them.
+
+## 分阶段编排、失败状态与读取面一致性（#27）
+
+Recording Analysis 只有一个持久化 Run/AnalysisRevision 模型和一个读取投影，Web、API 与 CLI 都渲染它：
+
+```text
+aivoicebench/import_pipeline.py   写入 stage ledger / envelopes / revisions
+aivoicebench/run_view.py          唯一的 Run 读取投影（无 Web 依赖）
+      ├─ GET /api/runs            列表
+      ├─ GET /api/runs/{run_id}   详情（含 stages / role_review / workbench / report）
+      └─ aivoicebench runs        同一文档；`--json` 输出与 API 逐字段相同
+```
+
+`GET /api/runs` 与 `GET /api/runs/{run_id}` 不再各自推导 `status`/revision：二者与 CLI 都调用同一个投影，因此“同一份持久化数据在不同读取面得到不同结论”在结构上不可达。`aivoicebench runs` 的退出码沿用 `import` 的约定：`1` 表示 Run 不可读或存在 `failed` 阶段，`2` 表示可读但仍有未完成阶段，`0` 表示全部阶段 `complete`。`--json` 打印的文档与 `GET /api/runs[/{run_id}]` 的响应体一致，可直接逐字段比对。
+
+阶段账本（`manifest.stages`）为每个阶段记录 `status`（`pending`/`running`/`complete`/`partial`/`failed`/`insufficient_evidence`）、processor 名称与版本、输入/输出 artifact 引用、`reason` 与耗时。失败不会删除已产生的证据：失败阶段保留真实原因，未运行的下游阶段发布 `insufficient_evidence` envelope 并写明原因，报告阶段照常产出，Run 仍通过 `recording_run_errors` 完整性校验。
+
+阻断 role-dependent 阶段的原因必须描述**该 revision 实际发生的事**，不能把不同状态混为一谈：
+
+- 存在匿名聚类且没有人工决定 → `awaiting_role_review`；
+- 只有部分聚类有决定 → `incomplete_review`；
+- 全部聚类都被人工判为 `unknown` → 说明“没有任何聚类被判为 tester/device”；
+- 人工 mapping 已确认 tester/device，但 fused segment 未取得角色（声学区间与 speaker span 无可归属重叠，`speaker-alignment` 记录该事实）→ 说明是**没有可归属重叠**，不得声称“用户没判 tester/device”；
+- Attribution 阶段自身 `failed` → 直接引用该阶段的失败原因，不得用角色 Gate 掩盖处理器故障。
+
+`tests/test_recording_orchestration.py` 覆盖上述区分、逐阶段故障注入（Run 仍有效、旧 revision artifact 字节不变、报告仍产出）、冷拷贝重建（当前 revision / 阶段状态 / 证据链接 / 报告只来自磁盘）、CLI 与 API 一致性以及 secret/签名 URL 不进入任何读取面。容器 `docker restart` 后的同一组断言由 CI 的 `Recording backbone container` job（`scripts/docker_smoke.py --save-history` / `--verify-history`）承担：重启后必须重建当前 AnalysisRevision、完整阶段账本、role Gate、证据链接与报告。以上均为软件/容器验证，不构成 `real_recording_verified`（[#85](https://github.com/lybym/AIVoiceBench/issues/85)）。
