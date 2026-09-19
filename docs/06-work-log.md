@@ -1,5 +1,17 @@
 # Continuous work log
 
+## 2026-09-19 — Issue #85 Step 05（第六轮）：修复 PR #108 第六轮 Review findings（PRD-N001/N002/N004/N007）
+
+- **输入与核实。** 第六个全新独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5257422774`）对 `d348651` 给出 `REQUEST_CHANGES`：**无 P0**，1 条 P1 + 3 条 P2。审查者未继承前轮结论，独立核查了四类 P0 风险（未验证被报为已验证、fixture/CI 包装成真实录音、synthetic 承接真实录音声明、文档过度声明）均不成立，并确认第五轮修复有效；同时明示本轮无需修的方向（对未识别/压缩编码不发明算术）是正确形态。
+- **P1-1（成立，已修）。** `encoding` 在 schema 中是自由字符串（无 enum），而 `_implied_pcm_bytes()` 对表外拼写返回 `None`，`_check_declared_audio_size()` 随即**静默 continue**——既不进 `errors`/`gaps`/`observations`，也不进 `declared_only_controls`。因此「这道算术是否行使」由被测记录自己的一个自由文本字段决定，而跳过本身不留痕。审查者用真实文件经**文档化 CLI** 复现：27 字节 artifact + `encoding: "wav"` + 8 分钟 → `ACCEPTANCE COMPLETE` / `real_recording_verified=True` / 0 error / exit 0；`"MP3"`、`"PCM_S16LE "`（尾空格）同样。本机复现一致。这与本 PR 自己主张的「未被行使的控制绝不报告为已行使」直接冲突——同一原则在 `repository_directories_skipped`/`repository_files_unread`/`detection_policy_sources_skipped` 都已正确落实，尺寸算术是唯一漏掉的一处。
+- **修复取舍。** 采纳审查者的方案 1（具名披露），不采纳方案 3（把 `encoding` 收紧为 enum）：收紧 enum 会拒绝合法编码拼写，且压缩编码本就永远不适用该算术，enum 并不能消除不适用。压缩/容器格式恰恰是本仓库真实支持的格式（`REAL_AUDIO_SUFFIXES` 含 mp3/m4a/opus），要求授权样本必须是 PCM 会拒绝合法录音。因此 `_check_declared_audio_size` 改为返回 `(applied, not_applicable)`，结果新增 `audio_size_arithmetic_applied` / `audio_size_arithmetic_not_applicable`，报告新增 “Audio size arithmetic NOT applied to …”，`declared_only_controls` 增加对应条目，schema 的 `encoding` 描述同步说明其决定该对照是否适用。**未行使的控制现在被具名，而不是被静默跳过。**
+- **P2-1（成立，已修）。** `test_a_compressed_encoding_is_not_judged_by_pcm_arithmetic` 是空测试：它在 `materialize()` 之后把 `byte_length` 改成 4096，而磁盘文件仍是 15,360,000 字节，因此记录因**另一条**错误（文件尺寸不符）而 invalid，`assertNotIn(pcm 消息)` 恒真。修复：该用例先构造**内部自洽**的 MP3 记录（真实文件大小 = 声明 `byte_length`），断言 `status == complete` 且 `errors == []`，再断言 PCM 消息不出现、且该样本出现在 `audio_size_arithmetic_not_applicable` ——把「不发明算术」与「跳过须披露」分开测。
+- **P2-2（成立，已修）。** 无任何用例覆盖未识别的 `encoding` 拼写。新增 `test_an_unrecognised_encoding_spelling_is_disclosed_as_not_applied`（`wav` 与 `PCM_S16LE ` 两种拼写：`audio_size_arithmetic_applied` 为空、该样本被列入 not_applicable、报告含披露行）与 `test_a_pcm_sample_reports_that_the_size_arithmetic_ran`（PCM 样本报告已行使、报告不含未适用行）。
+- **P2-3（成立，已修）。** schema 的 `samples`/`encoding` 描述未说明取值会决定 `byte_length` 是否被对账。已在 `encoding` 上补 `description`，说明自由文本的取舍、PCM 的算术关系、压缩编码不发明算术、以及不适用时会在结果与报告中具名披露。
+- **测试（123 项，新增 2 项并修正 1 项空测试）。** 除上列外，前 121 项全部保留通过。
+- **验证（实际执行）。** 定向：`tests.test_acceptance_evidence` → **123 tests, OK**。逐条复现第六轮 finding 并确认修复后结论：27 字节 + `encoding:"wav"` + 8 分钟 → 不再被静默跳过，样本出现在 `audio_size_arithmetic_not_applicable`，报告显示 “Audio size arithmetic NOT applied to `SAMPLE-0001` (wav)”；自洽 MP3 记录 → `complete` + `errors=[]` 且被具名披露；PCM 记录 → 报告已行使。全量：`AIVOICEBENCH_REQUIRE_MEDIA_TESTS=1 python -m unittest discover -s tests` → **1210 tests, OK (skipped=8)**（本机 Windows/CPython 3.13；此前在全量中失败的 `test_voice_browser` flaky 本轮未复现，仍按既有 flaky 记录对待）。受影响套件与 CI 由本 PR 复跑。
+- **未验证边界（不升级为完成）。** 本 PR 仍为 **software_verified**：无真实录音、无真实云调用、无人工标注、无实体设备。`real_recording_verified` 保持**未声明**，#85 保持 Open，M1 仍未通过。第六轮 Review 同样不把“授权真实录音缺席”计为 finding。
+
 ## 2026-09-19 — Issue #85 Step 05（第五轮）：修复 PR #108 第五轮 Review findings（PRD-N001/N002/N004/N007）
 
 - **输入与核实。** 第五个全新独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5257333640`）对 `5c9dcaf` 给出 `REQUEST_CHANGES`：**无 P0**，1 条 P1 + 2 条 P2。审查者从零重建了一份自洽 fixture 记录来定位检查器边界，并独立验证第四轮 P1-A（gate 与人工层摘要绑定）及其余各轮修复在本 SHA 生效。

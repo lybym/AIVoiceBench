@@ -1562,15 +1562,69 @@ class ContractTest(unittest.TestCase):
         self.assertNotIn("contradicts the sample's own parameters", ' '.join(result['errors']))
 
     def test_a_compressed_encoding_is_not_judged_by_pcm_arithmetic(self):
-        # No size arithmetic exists for compressed encodings; the checker must not
-        # invent one, so the sample is judged only by the file-size reconciliation.
+        # No size arithmetic exists for compressed encodings; the checker must not invent
+        # one. The record is made internally consistent (declared size == file size) so the
+        # assertion is about the *absent* PCM message and nothing else — asserting it on a
+        # record that is invalid for an unrelated reason would pass vacuously.
         with tempfile.TemporaryDirectory() as directory:
             document = materialize(record(), directory)
-            document['samples'][0]['encoding'] = 'MP3'
-            document['samples'][0]['artifacts'][0]['byte_length'] = 4096
+            sample = document['samples'][0]
+            artifact = sample['artifacts'][0]
+            sample['encoding'] = 'MP3'
+            path = Path(artifact['location'])
+            path.write_bytes(path.read_bytes()[:4096])
+            artifact['byte_length'] = 4096
+            artifact['sha256'] = sha256_file(path)
+            sample['duration_ms'] = 8 * 60 * 1000
             result = validate(document, verify_artifacts=True,
                               repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['status'], STATUS_COMPLETE)
+        self.assertEqual(result['errors'], [])
         self.assertNotIn("contradicts the sample's own parameters", ' '.join(result['errors']))
+        # ... and the non-application is named rather than silent.
+        self.assertEqual([item['sample_id']
+                          for item in result['audio_size_arithmetic_applied']], [])
+        self.assertIn({'sample_id': 'SAMPLE-0001', 'encoding': 'MP3'},
+                      result['audio_size_arithmetic_not_applicable'])
+
+    def test_an_unrecognised_encoding_spelling_is_disclosed_as_not_applied(self):
+        # P1 regression: `encoding` is free text, so a sample could sidestep the size
+        # arithmetic *and* report "every control ran" merely by spelling its encoding
+        # differently ('wav' instead of 'PCM_S16LE'). It could not be checked before; now
+        # it cannot be checked *silently*.
+        for encoding in ('wav', 'PCM_S16LE '):
+            with self.subTest(encoding=encoding):
+                with tempfile.TemporaryDirectory() as directory:
+                    document = materialize(record(), directory)
+                    sample = document['samples'][0]
+                    artifact = sample['artifacts'][0]
+                    sample['encoding'] = encoding
+                    sample['duration_ms'] = 8 * 60 * 1000
+                    path = Path(artifact['location'])
+                    path.write_bytes(b'not really eight minutes')
+                    artifact['byte_length'] = path.stat().st_size
+                    artifact['sha256'] = sha256_file(path)
+                    result = validate(document, verify_artifacts=True,
+                                      repository_root=Path(__file__).resolve().parent)
+                self.assertEqual(result['audio_size_arithmetic_applied'], [])
+                self.assertEqual(
+                    [item['sample_id'] for item in result['audio_size_arithmetic_not_applicable']],
+                    ['SAMPLE-0001'])
+                disclosure = ' '.join(result['declared_only_controls'])
+                self.assertIn('audio_size_arithmetic_not_applicable', disclosure)
+                text = render_report(result)
+                self.assertIn('Audio size arithmetic NOT applied to', text)
+                self.assertIn('`SAMPLE-0001`', text)
+
+    def test_a_pcm_sample_reports_that_the_size_arithmetic_ran(self):
+        with tempfile.TemporaryDirectory() as directory:
+            document = materialize(record(), directory)
+            result = validate(document, verify_artifacts=True,
+                              repository_root=Path(__file__).resolve().parent)
+        self.assertEqual(result['audio_size_arithmetic_not_applicable'], [])
+        self.assertEqual([item['encoding'] for item in result['audio_size_arithmetic_applied']],
+                         ['PCM_S16LE'])
+        self.assertNotIn('Audio size arithmetic NOT applied to', render_report(result))
 
 
 class AcceptanceCliTest(unittest.TestCase):

@@ -761,11 +761,28 @@ def _check_declared_audio_size(document, errors):
     because both numbers are the author's; this closes the gap between them without
     decoding any audio and without claiming anything about encodings that have no
     such arithmetic.
+
+    Returns ``(applied, not_applicable)``, each a list of ``(sample_id, encoding)``.
+    The control is only applicable to encodings this module has size arithmetic for and
+    to samples that declare an audio artifact with a size, so *not applying* it is a
+    normal outcome — and one that must be named. A record's own free-text ``encoding``
+    field decides whether this control runs at all, so an undisclosed skip would let a
+    sample sidestep the check by spelling its encoding differently while still
+    reporting "every control ran".
     """
+    applied = []
+    not_applicable = []
     for index, sample in enumerate(document.get('samples') or []):
+        audio_artifacts = [artifact for artifact in sample.get('artifacts') or []
+                           if artifact['kind'] == 'audio']
         implied = _implied_pcm_bytes(sample)
-        if implied is None:
+        declared_any = any(artifact.get('byte_length') is not None
+                           for artifact in audio_artifacts)
+        if implied is None or not declared_any:
+            if audio_artifacts:
+                not_applicable.append((sample['sample_id'], sample['encoding']))
             continue
+        applied.append((sample['sample_id'], sample['encoding']))
         for position, artifact in enumerate(sample.get('artifacts') or []):
             if artifact['kind'] != 'audio':
                 continue
@@ -783,6 +800,7 @@ def _check_declared_audio_size(document, errors):
                     f'{round(sample["duration_ms"] / 1000.0, 3)}s), which imply about '
                     f'{int(round(implied))} bytes; a declared size that cannot describe the '
                     'declared recording is not evidence of it')
+    return applied, not_applicable
 
 
 def _check_artifact_identity(document, errors, gaps):
@@ -1128,7 +1146,7 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
     _check_samples(document, errors, observations)
     _check_human_reviews(document, errors)
     _check_artifact_identity(document, errors, gaps)
-    _check_declared_audio_size(document, errors)
+    audio_size_applied, audio_size_not_applicable = _check_declared_audio_size(document, errors)
     _check_evaluations(document, errors, gaps, observations)
     declared_evidence = _check_evidence_identity(document, errors)
     stages = _check_denominators(document, errors, gaps)
@@ -1267,7 +1285,22 @@ def validate(document, *, verify_artifacts=False, repository_root=None):
             'it; when --repository-root is given the scan re-derives the finding independently '
             'and a declared clean contradicts a detected finding as an error rather than '
             'updating the flag',
+            'audio size vs the sample\'s own parameters: the arithmetic relation only exists '
+            'for the raw PCM encodings in `PCM_ENCODING_BYTES_PER_SAMPLE`, so it is applied '
+            'to the samples named in `audio_size_arithmetic_applied` and not to those in '
+            '`audio_size_arithmetic_not_applicable` (compressed/containerised or unrecognised '
+            'encodings). Those samples declare a duration that no size relation corroborates, '
+            'so no arithmetic was invented for them; this is a named non-application, not a '
+            'passed control',
         ],
+        # Which samples the size arithmetic actually ran for, so "the control ran" is a
+        # fact about named samples rather than an inference from a green verdict.
+        'audio_size_arithmetic_applied': [
+            {'sample_id': sample_id, 'encoding': encoding}
+            for sample_id, encoding in audio_size_applied],
+        'audio_size_arithmetic_not_applicable': [
+            {'sample_id': sample_id, 'encoding': encoding}
+            for sample_id, encoding in audio_size_not_applicable],
         'errors': errors,
         'note': ('An acceptance record may only state a gate it can authorize. `real_recording_'
                  'verified` requires authorized 5–20 minute recordings, human review preserved '
@@ -1376,6 +1409,12 @@ def render_report(result):
     lines.append('')
     for item in result.get('declared_only_controls') or []:
         lines.append(f'- {item}')
+    if result.get('audio_size_arithmetic_not_applicable'):
+        described = ', '.join(f'`{item["sample_id"]}` ({item["encoding"]})'
+                              for item in result['audio_size_arithmetic_not_applicable'])
+        lines.append(f'- Audio size arithmetic NOT applied to: {described}. For these samples '
+                     'no relation between the declared duration and the declared artifact size '
+                     'was checked, because none exists for their encoding.')
     lines.append('')
     lines.append('## Gates')
     lines.append('')

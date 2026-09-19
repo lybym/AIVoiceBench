@@ -51,7 +51,11 @@
           "duration_ms": { "type": "number", "minimum": 0 },
           "sample_rate_hz": { "type": "integer", "minimum": 1 },
           "channels": { "type": "integer", "minimum": 1 },
-          "encoding": { "type": "string", "minLength": 1 },
+          "encoding": {
+            "description": "The audio encoding, e.g. PCM_S16LE or MP3. This value decides whether the checker's size arithmetic applies: for the raw PCM encodings it knows, duration_ms x sample_rate_hz x channels x bytes-per-sample must agree with the audio artifact's byte_length. For compressed or containerised encodings no such relation exists and it is deliberately not invented, so those samples are reported in the result's `audio_size_arithmetic_not_applicable` and in the rendered report as a named non-application. Free text is accepted so that a legitimate encoding is never rejected for its spelling, but an encoding the checker has no arithmetic for is never silently treated as checked.",
+            "type": "string",
+            "minLength": 1
+          },
           "language": { "type": ["string", "null"] },
           "authorization": {
             "type": "object",
