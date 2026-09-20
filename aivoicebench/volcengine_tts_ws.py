@@ -19,8 +19,10 @@ record, an API response or the browser.
 Wire contract
 -------------
 The frame layout below is the documented V3 "event" envelope, re-verified
-against the live official pages on 2026-09-18 (page ids in
-``docs/26-active-tts.md``)::
+against the live official pages on 2026-09-18. The stable page ids are
+``6561/2628951`` ("WebSocket 单向流式-V3") and ``6561/1329505``
+("WebSocket 双向流式-V3"); the boundary, the capability matrix and the
+unverified list live in ``docs/28-active-tts.md``::
 
     header          4 B : (version<<4|header_size), (msg_type<<4|flags),
                           (serialization<<4|compression), reserved
@@ -89,7 +91,7 @@ VERIFIED_REQUEST_FIELDS = ('user.uid', 'event', 'namespace', 'req_params.text',
 VERIFIED_RESPONSE_FIELDS = ('event', 'session_id', 'payload')
 
 # Documented protocol capability. Pitch adjustment is not implemented here because
-# the unidirectional page still marks it unsupported (see docs/26-active-tts.md);
+# the unidirectional page still marks it unsupported (see docs/28-active-tts.md);
 # declaring it would advertise a capability the protocol does not have.
 CAPABILITY_MATRIX = {
     TRANSPORT_UNIDIRECTIONAL: {
@@ -110,7 +112,7 @@ CAPABILITY_MATRIX = {
 
 INTERFACE_CONTRACT = {
     'verified_at': '2026-09-18',
-    'source': 'docs.volcengine.com live pages (see docs/26-active-tts.md)',
+    'source': 'docs.volcengine.com live pages (see docs/28-active-tts.md)',
     'endpoints': {'unidirectional': ENDPOINT_UNIDIRECTIONAL,
                   'bidirectional': ENDPOINT_BIDIRECTIONAL},
     'auth_scheme': 'new_console_api_key',
@@ -158,7 +160,7 @@ EVENT_TTS_RESPONSE = 352
 
 NAMESPACE_BIDIRECTIONAL_TTS = 'BidirectionalTTS'
 
-# Documented V3 TTS application error codes (see docs/26-active-tts.md §6).
+# Documented V3 TTS application error codes (see docs/28-active-tts.md §7).
 CODE_SUCCESS = 0
 CODE_INVALID_REQUEST = 45000001
 CODE_QUOTA_EXCEEDED = 45000002
