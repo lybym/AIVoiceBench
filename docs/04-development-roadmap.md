@@ -23,14 +23,14 @@ AIVoiceBench 同时推进两条一级正式测量链：
 
 ## 2. 当前基线
 
-代码实现基线更新为 `v0.6.0-rc.1@a13d4e4`（**候选版**，目标稳定版 `v0.6.0` 尚未发布；`v0.5.0` 仍是当前正式稳定版）；`main` 已合入 #93/#94/#95/#84/#22/#23/#24/#25/#10/#11/#27 与 #85 的验收证据契约（均 software_verified），真实验收状态不因候选版构建或稳定版本发布自动升级。
+代码实现基线更新为 `v0.6.0-rc.2@8dd2e49`（**候选版**，目标稳定版 `v0.6.0` 尚未发布；`v0.5.0` 仍是当前正式稳定版）；`main` 已合入 #93/#94/#95/#84/#22/#23/#24/#25/#10/#11/#27 与 #85 的验收证据契约，以及 #98 的 provider 侧 V3 WebSocket TTS 协议切片（PR #109）（均 software_verified），真实验收状态不因候选版构建或稳定版本发布自动升级。
 
 | 范围 | 当前事实 | 明确缺口 |
 | --- | --- | --- |
 | Recording Analysis | 导入、标准化、云 File ASR、聚类/归属、融合、声学↔ASR speaker span 对齐、人工角色确认 Gate、Judge/Findings、wavesurfer Evidence Workbench 与 run 投影主链已有 | #87 外置配置 + inline/TOS transport 已由 #90 实现（software_verified）；#22 File ASR mode 契约加固、#23 Silero VAD server baseline、#24 归属证据 grounding、#25 指标口径、#10 Judge/Findings、#11 Evidence Workbench、#27 run 投影与 gate 原因均已合入 `main`（software_verified）。**明确缺口**：真实云 File ASR 与真实 TOS 路径、完整报告与真实录音验收（#85）未闭环——#85 的证据契约与 Gate 检查器（`AcceptanceRecord 1.0.0` + `aivoicebench acceptance init|check`）已实现（software_verified），但它不产生任何真实录音证据，M1 仍未通过 |
 | Browser Station implementation | 手写源码为 `web/src/{app,models,voice_test,pcm_capture_worklet}.ts` + `audioworklet-globals.d.ts`；`aivoicebench/static/*.js` 为编译产物，仍由 FastAPI/Docker 直接交付 | 等价迁移与 deterministic typecheck/build 已完成（#84）；远端 Chrome 与容器内行为回归继续由既有 browser/container 测试与发布流程证明 |
-| Fixed Voice Test | 浏览器播放、麦克风、Control RMS VAD、WebSocket 控制、Turn ID、超时、停止和迟到事件防护已有；当前 TTS 仍为 V3 HTTP SSE | #98 的 V3 单向 WS asset synthesis、冻结 Stimulus、TEN VAD Browser Adapter、Frozen Golden Voice、Measurement Audio、条件 Barge-in、设备设置快照和实体设备验收未闭环 |
-| Free Voice Test | AudioWorklet 在设备回答阶段把 PCM 送入 Streaming ASR；partial/final、Agent 下一轮和显式 File ASR fallback 已有；当前仍等待完整 LLM/TTS 音频资产 | #98 的 Streaming LLM → V3 双向 WS TTS → streaming playback 未完成；另有 durable Measurement Audio、真实云/设备、预算、Coverage、Barge-in 缺口 |
+| Fixed Voice Test | 浏览器播放、麦克风、Control RMS VAD、WebSocket 控制、Turn ID、超时、停止和迟到事件防护已有；TTS provider 侧已切到 V3 单向 WS（逐帧 MP3 校验 + 冻结 MP3 Stimulus，software_verified），legacy HTTP SSE profile 仍可加载 | #98 的固定 Stimulus 浏览器播放接线、TEN VAD Browser Adapter、Frozen Golden Voice、Measurement Audio、条件 Barge-in、设备设置快照、真实云合成（`real_cloud_call: not_attempted`）和实体设备验收未闭环 |
+| Free Voice Test | AudioWorklet 在设备回答阶段把 PCM 送入 Streaming ASR；partial/final、Agent 下一轮和显式 File ASR fallback 已有；TTS provider 侧 V3 双向 WS session（open/append_text/audio/finish/cancel，cancel 后丢弃迟到音频）已实现（software_verified） | #98 的浏览器端 MP3 streaming playback、Free TTS audio channel/event 契约、上层 turn 编排调用 `cancel()` 与 LLM streaming token 输出仍未接线（Run snapshot：`streaming_tts_wiring = adapter_ready_no_consumer`）；另有 durable Measurement Audio、真实云/设备、预算、Coverage、Barge-in 缺口 |
 | Canonical metrics | `compute_timeline_metrics(...)` 输出 MetricResult 3.0.0 | 只由 Recording Timeline 调用；Active Measurement 尚无 Canonical Timeline，不得另建平行公式 |
 | Measurement Equivalence | 产品/方法概念已定义 | 没有真实配对实验；保持 validation_pending |
 
