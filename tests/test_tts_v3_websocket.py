@@ -3,7 +3,7 @@
 These are software tests. Nothing here contacts Volcengine: the transport is
 injected and the fake server speaks the documented V3 event envelope, so the
 tests decode exactly the bytes the client puts on the wire. Real-cloud behaviour
-stays ``real_cloud_pending`` (see ``docs/26-active-tts.md``).
+stays ``real_cloud_pending`` (see ``docs/28-active-tts.md``).
 
 Covered, following the Issue's "Tests and audit" section:
 
@@ -1216,6 +1216,49 @@ class StreamingTTSBoundaryTests(unittest.TestCase):
             self.assertEqual(
                 boundary.failure_code_for(category),
                 adapter.VolcengineUnidirectionalTTSProvider._failure_code(marked))
+        # The reverse direction matters just as much: a marker naming a category
+        # outside the vocabulary must be refused rather than silently accepted,
+        # otherwise widening the parser would be undetectable by any of the above.
+        # (Surrounding whitespace is tolerated by design; the *name* must match.)
+        for outsider in ('not_a_category', 'PROVIDER_ERROR', 'provider_error_extra'):
+            self.assertIsNone(
+                boundary.failure_category_of(ProviderFailure(f'x ({outsider})')),
+                f'{outsider!r} must not be accepted as a first-class category')
+
+    def test_untagged_errors_keep_their_documented_division_of_labour(self):
+        """Adapter prose rules stay in the adapter; the boundary stays generic."""
+        import aivoicebench.streaming_tts as boundary
+        from aivoicebench import volcengine_tts_ws as adapter
+        mapper = adapter.VolcengineUnidirectionalTTSProvider._failure_code
+        # Provider-specific prose: only the adapter recognises these.
+        self.assertEqual(mapper(ProviderFailure('TTS resource_id missing')),
+                         'configuration_invalid')
+        self.assertEqual(mapper(ProviderFailure('TTS response is not a valid MP3 asset')),
+                         'response_invalid')
+        # Generic prose both sides agree on.
+        for message, category in (('TTS credential missing', 'credential_missing'),
+                                  ('TTS text is empty', 'input_invalid')):
+            self.assertEqual(mapper(ProviderFailure(message)), category)
+            self.assertEqual(boundary.tts_failure_category(ProviderFailure(message)),
+                             category)
+        # Documented boundary behaviour: the generic fallback does not guess at
+        # provider-specific prose, so an untagged provider detail stays generic.
+        self.assertEqual(
+            boundary.tts_failure_category(ProviderFailure('TTS resource_id missing')),
+            boundary.failure_code_for('provider_error'))
+
+    def test_provider_error_text_is_matched_by_whole_code(self):
+        """A substring must not be read as a documented provider code."""
+        from aivoicebench import volcengine_tts_ws as adapter
+        self.assertEqual(adapter.provider_category_from_text('error 45000003 x'),
+                         'resource_mismatch')
+        self.assertEqual(adapter.provider_category_from_text('code 145000003 x'),
+                         'provider_error')
+        self.assertEqual(adapter.provider_category_from_text('code 155000031 x'),
+                         'provider_error')
+        self.assertEqual(adapter.provider_category_from_text('no code here'),
+                         'provider_error')
+        self.assertEqual(adapter.provider_category_from_text(None), 'provider_error')
 
     def test_stale_turn_reason_reports_run_stop(self):
         class Turn:

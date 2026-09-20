@@ -56,6 +56,7 @@ Deliberate limits
 import asyncio
 import io
 import json
+import re
 import struct
 import time
 import uuid
@@ -197,6 +198,26 @@ from .streaming_tts import TTS_ERROR_CATEGORIES  # noqa: F401
 
 class VolcengineTTSProtocolError(RuntimeError):
     """A frame cannot be parsed as the documented V3 TTS protocol."""
+
+
+
+
+def provider_category_from_text(message):
+    """The documented category for a provider failure message.
+
+    The message is external input, so the documented code is read as a whole
+    integer token and compared exactly. A substring test would read
+    ``145000003`` as ``45000003`` and mis-report a quota problem as a resource
+    mismatch.
+    """
+    for token in re.findall(r'\d+', str(message or '')):
+        try:
+            code = int(token)
+        except ValueError:  # pragma: no cover - re guarantees digits
+            continue
+        if code in CODE_ERROR_CATEGORY:
+            return CODE_ERROR_CATEGORY[code]
+    return 'provider_error'
 
 
 # ---------------------------------------------------------------------- codec
@@ -689,7 +710,10 @@ class VolcengineBidirectionalTTSSession:
                 # read on a background task.
                 self._reader = asyncio.create_task(self._read_loop())
         except Exception as error:  # noqa: BLE001
-            category = 'stream_open_failed' if request_sent else 'stream_open_failed'
+            # A handshake or initialise failure is classified the same way any
+            # other open failure is; collapsing auth/rate-limit/timeout into one
+            # category would hide why the session never started.
+            category = _classify_open_failure(error)
             self._failure = category
             self._record('tts_error', error=category,
                          detail={'phase': 'initialise', 'error_type': type(error).__name__})
@@ -910,15 +934,12 @@ class VolcengineBidirectionalTTSSession:
             return
         if event == EVENT_SESSION_FAILED:
             # The provider reports the failure text in the frame's own field.
-            raw = (frame['error_message'] or '').lower()
-            category = 'provider_error'
-            for code, name in CODE_ERROR_CATEGORY.items():
-                if str(code) in raw:
-                    category = name
-                    break
+            detail_text = str(frame['error_message'] or '')
+            category = provider_category_from_text(detail_text)
             self._failure = self._failure or category
             self._record('tts_error', error=category,
-                         detail={'phase': 'session', 'provider_message': raw[:200]})
+                         detail={'phase': 'session',
+                                 'provider_message': detail_text[:200]})
             self._terminated = True
             self._state = SESSION_FAILED
             return
@@ -1410,12 +1431,7 @@ class _UnidirectionalSession:
             self.finished = True
             return True
         if event in (EVENT_SESSION_FAILED, EVENT_CONNECTION_FAILED):
-            raw = (frame['error_message'] or '').lower()
-            category = 'provider_error'
-            for code, name in CODE_ERROR_CATEGORY.items():
-                if str(code) in raw:
-                    category = name
-                    break
+            category = provider_category_from_text(frame['error_message'])
             self.failure = self.failure or category
             return True
         return False

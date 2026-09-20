@@ -624,6 +624,11 @@ def build_run_providers(doc, keys, storage_config=None):
         # not merely in the absence of a legacy profile (Issue #98, section 3).
         from .streaming_tts import fallback_policy_record
         doc['streaming_tts_fallback_policy']=fallback_policy_record()
+        # 'configured' describes the provider route, not a finished capability.
+        # The Free Test Agent still synthesises whole turns through the `tts`
+        # route, so the session contract has no production consumer yet and the
+        # snapshot says so instead of letting readiness imply completion.
+        doc['streaming_tts_wiring']='adapter_ready_no_consumer'
     if doc.get('revision')==0:
         doc['legacy_environment']={'provider':os.environ.get('AIVOICEBENCH_LLM_PROVIDER','none'),
             'model':os.environ.get('AIVOICEBENCH_LLM_MODEL',''),

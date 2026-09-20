@@ -109,6 +109,9 @@ Streaming ASR final Observation
 
 - `pitch` 仅在协议真正支持时接受。2026-09-18 官方单向 V3 页面仍标注音高调节暂不支持，
   因此单向 profile 声明 `pitch` 直接拒绝；声明式接受但运行时忽略等于宣传协议没有的能力。
+  **双向当前等价于固定 `pitch = 0`**：validator 只接受 `0`，且 factory 不传递该值、适配器按能力
+  矩阵发送 `{'pitch': 0}`。也就是说 `pitch` 目前不是真正可调的运营参数；待协议/音色支持并且
+  配置到 factory 的传递链路补齐后，才应把它描述为可配置项。
 - endpoint 必须与所声明的 protocol 一致：单向 protocol 只能指向
   `/api/v3/tts/unidirectional/stream`，双向只能指向 `/api/v3/tts/bidirection`；
   旧 SSE endpoint 对任一 WS protocol 一律拒绝。
@@ -174,10 +177,13 @@ error from server    : [header][event i32][error_code i32][payload_len i32][erro
   Browser 侧 stale-turn 丢弃尚未实现（provider/session 层已实现并验证）。
 - **Free 上层编排**：turn 改变 / run stop / barge-in 触发 `cancel()` 的调用方尚未接线，
   `stale_turn_reason()` 目前无生产调用方。
-- **Fixed 审计 sidecar 的不可变性**：`{stem}-tts-audit.json` 由 `_write_audit` 覆盖写入，
-  不经过 `schemas/provider-invocation.schema.json` 校验，也不具备 `InvocationAudit`
-  的一次尝试一目录语义（该模式继承自旧 SSE 适配器）。它是**独立的 TTS sidecar 审计**，
-  不是 `provider-invocation` 契约的一部分。
+- **Fixed 审计 sidecar 是覆盖式的（last-write-wins）。** `{stem}-tts-audit.json` 由 `_write_audit`
+  以 `write_text` **覆盖**写入，不经过 `schemas/provider-invocation.schema.json` 校验，也不具备
+  `InvocationAudit` 的一次尝试一目录语义（该模式继承自旧 SSE 适配器）。它是**独立的 TTS sidecar
+  审计**，不是 `provider-invocation` 契约的一部分。对同一资产再次合成会无痕覆盖上一次记录；因此
+  「冻结资产不被重新合成」这条约束的可审计性依赖 Frozen Asset 自身的 SHA-256 与 session 记录，
+  而不是这份 sidecar 的历史。**Stimulus Artifact 本身的不可变性**（§3）与这份 sidecar 的
+  覆盖式保留策略是两件事，不要互相引用。
 - **实体设备 / 真实扬声器 / 真实麦克风**验收未进行。
 - 这些结论只覆盖软件与受控输入验证（`software_verified`）。真实录音、人工复核与浏览器回放由
   [#85](https://github.com/lybym/AIVoiceBench/issues/85) 承担。
