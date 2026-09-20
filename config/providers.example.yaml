@@ -53,11 +53,15 @@ profiles:
       end_window_size: 800
       force_to_speech_time: 1000
 
+  # Active TTS — Fixed Case Runner asset synthesis (PRD-F020, Issue #98).
+  # Complete fixed text in, MP3 audio out over the official V3 unidirectional
+  # WebSocket protocol. The result is frozen as an immutable MP3 Stimulus
+  # Artifact before a formal Run plays it.
   - id: volc-tts
-    name: Volcengine TTS
+    name: Volcengine V3 TTS (unidirectional WebSocket)
     provider: volcengine
-    protocol: volcengine_tts
-    base_url: https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse
+    protocol: volcengine_tts_ws
+    base_url: wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream
     model: "<model-label-for-audit>"
     credential_env: VOLCENGINE_TTS_API_KEY
     enabled: true
@@ -65,16 +69,48 @@ profiles:
     parameters:
       resource_id: "<resource-id>"
       voice: "<voice-id>"
-      format: wav
-      sample_rate: 16000
+      sample_rate: 24000
       speed: 0
       volume: 0
-      pitch: 0
-      timeout_seconds: 30
+      timeout_seconds: 60
+
+  # Active TTS — Free Test Agent streaming session (PRD-F021, Issue #98).
+  # Streamed speakable text in, streamed MP3 audio out over the official V3
+  # bidirectional WebSocket protocol, so playback can start before the LLM has
+  # finished answering.
+  - id: volc-streaming-tts
+    name: Volcengine V3 TTS (bidirectional WebSocket)
+    provider: volcengine
+    protocol: volcengine_tts_ws_bidirectional
+    base_url: wss://openspeech.bytedance.com/api/v3/tts/bidirection
+    model: "<model-label-for-audit>"
+    credential_env: VOLCENGINE_TTS_API_KEY
+    enabled: true
+    capabilities: [streaming_tts]
+    parameters:
+      resource_id: "<resource-id>"
+      voice: "<voice-id>"
+      sample_rate: 24000
+      speed: 0
+      volume: 0
+      timeout_seconds: 60
 
 routes:
   tts: volc-tts
+  streaming_tts: volc-streaming-tts
   asr: volc-file-asr
   streaming_asr: volc-streaming-asr
   diarization: volc-file-asr
   judge: judge-doubao
+
+# Notes
+# -----
+# * TTS media format is fixed to `mp3` and is intentionally NOT configurable.
+#   There is no `format:`/`encoding:` key; a leftover `format: wav` from the
+#   retired HTTP SSE era is refused at load time instead of being ignored.
+# * `pitch` is accepted only where the selected protocol documents support for
+#   it. The V3 unidirectional page still marks pitch adjustment unsupported, so
+#   the Fixed profile above must not declare it.
+# * `streaming_tts` is a separate route on purpose: a single `volcengine_tts`
+#   profile must never make the runtime guess unidirectional vs bidirectional.
+

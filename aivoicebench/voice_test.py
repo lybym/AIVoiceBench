@@ -55,6 +55,42 @@ from .streaming_asr import (EVENT_ERROR, EVENT_FINAL, EVENT_PARTIAL,
 
 CONTROL_RECORD_VERSION = '1.1.0'
 
+# TTS stimulus container. Active TTS is fixed to MP3 (Issue #98 / PRD-F020/F021),
+# while the retired V3 HTTP SSE profile still produces WAV during the migration
+# period. The extension and the Content-Type a browser receives must describe the
+# bytes that are really on disk, so both are derived from the transport's
+# reported media format instead of being hard-coded per call site.
+TTS_STIMULUS_MEDIA_TYPES = {'mp3': 'audio/mpeg', 'wav': 'audio/wav'}
+# The product decision is that Active TTS is MP3 (Issue #98). Declaring it once,
+# here, keeps a silent magic-string fallback from becoming the de-facto contract
+# for a future adapter that forgets to publish its format.
+DEFAULT_TTS_STIMULUS_FORMAT = 'mp3'
+assert DEFAULT_TTS_STIMULUS_FORMAT in TTS_STIMULUS_MEDIA_TYPES
+# Probe order for reading back an existing stimulus. MP3 first: it is the fixed
+# target, so only the legacy SSE route ever produces WAV.
+TTS_STIMULUS_EXTENSIONS = ('.mp3', '.wav')
+
+
+def tts_stimulus_extension(provider, format_name=None):
+    """The file extension for the media format this ``provider`` really emits."""
+    resolved = format_name
+    if not resolved:
+        resolved = getattr(provider, 'audio_format', None)
+    if not resolved:
+        # The product-fixed default, declared above rather than inlined here.
+        resolved = DEFAULT_TTS_STIMULUS_FORMAT
+    resolved = str(resolved).lower()
+    if resolved not in TTS_STIMULUS_MEDIA_TYPES:
+        raise ProviderFailure(f'Unsupported TTS media format: {resolved}')
+    return f'.{resolved}'
+
+
+def tts_media_type_for_path(path):
+    """The Content-Type for a stimulus path, from its real extension."""
+    extension = str(path).lower().rsplit('.', 1)[-1] if '.' in str(path) else ''
+    return TTS_STIMULUS_MEDIA_TYPES.get(extension, 'application/octet-stream')
+
+
 # How the device's answer becomes text during a free-mode turn (PRD-F021).
 CAPTURE_MODE_STREAMING = 'streaming'
 CAPTURE_MODE_TURN_FILE = 'turn_file'
@@ -688,9 +724,14 @@ class VoiceTestManager:
             if not phrase.get('audio_path'):
                 return None
             return self.output_root / phrase['audio_path']
-        # Free mode: look for free-turn files
-        audio_path = session.directory / f'free-turn-{phrase_index:04d}.wav'
-        return audio_path if audio_path.is_file() else None
+        # Free mode: look for free-turn files. The stimulus extension follows the
+        # TTS transport (MP3 for the V3 WebSocket routes; WAV only for the retired
+        # SSE route), so both are probed rather than assuming one.
+        for extension in TTS_STIMULUS_EXTENSIONS:
+            audio_path = session.directory / f'free-turn-{phrase_index:04d}{extension}'
+            if audio_path.is_file():
+                return audio_path
+        return None
 
     # ------------------------------------------------------------- synthesis
 
@@ -708,13 +749,19 @@ class VoiceTestManager:
         providers = session.config_providers or self.get_providers()
         tts = providers.tts(session.directory) if providers and providers.tts else None
         if tts is None:
-            raise ProviderFailure('No TTS provider configured; add a volcengine_tts profile')
+            raise ProviderFailure(
+                'No TTS provider configured; add a tts route in providers.yaml')
 
-        audio_path = session.directory / f'phrase-{phrase_index:04d}.wav'
+        # The extension follows the transport's real media format. Active TTS is
+        # fixed to MP3 (Issue #98), so naming the frozen stimulus `.wav` while it
+        # holds MP3 bytes — and serving it as ``audio/wav`` — would make the
+        # artifact's provenance contradict its container.
+        audio_path = session.directory / f'phrase-{phrase_index:04d}{tts_stimulus_extension(tts)}'
         self.note_provider_call(session, 'tts')
         result = tts.synthesize(phrase['text'], audio_path)
         phrase['audio_path'] = str(audio_path.relative_to(self.output_root))
         phrase['audio_sha256'] = result.get('sha256')
+        phrase['audio_format'] = result.get('format')
         phrase['status'] = 'ready'
         return phrase
 
@@ -745,11 +792,13 @@ class VoiceTestManager:
             raise ProviderFailure('No TTS provider configured')
         if turn_index is None:
             turn_index = len(session.turns)
-        audio_path = session.directory / f'free-turn-{turn_index:04d}.wav'
+        audio_path = session.directory / (
+            f'free-turn-{turn_index:04d}{tts_stimulus_extension(tts)}')
         self.note_provider_call(session, 'tts')
         result = tts.synthesize(text, audio_path)
         rel_path = str(audio_path.relative_to(self.output_root))
-        return {'path': rel_path, 'sha256': result.get('sha256'), 'text': text}
+        return {'path': rel_path, 'sha256': result.get('sha256'), 'text': text,
+                'format': result.get('format')}
 
     # --------------------------------------------------------- control trace
 

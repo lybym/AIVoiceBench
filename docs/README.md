@@ -21,6 +21,7 @@
 - [声学分段](17-acoustic-segmentation.md)：Acoustic Boundary Provider、Silero/TEN/RMS 的职责边界。
 - [Streaming ASR 边界](24-streaming-asr.md)：Active Voice Test 的实时识别边界、事件模型、二进制音频通道与火山契约；Recording Analysis 的 File ASR 见 [时间戳 ASR](11-timestamped-asr.md)。
 - [Active Measurement](25-active-measurement.md)：持续 Measurement Audio、sample clock、Stimulus Reference、在线声学处理、Canonical Timeline 和统一指标边界，以及 Browser Station TypeScript 迁移的非行为变更约束。
+- [Active TTS 传输契约](28-active-tts.md)：Fixed `tts`（V3 单向 WebSocket → 冻结 MP3 Stimulus）与 Free `streaming_tts`（V3 双向 WebSocket → 流式 MP3）的 route 分离、MP3 固定格式、protocol capability 校验、二进制 event 信封与 stale-audio 丢弃规则。
 - [Recording Backbone](23-recording-backbone.md)：火山 File ASR、ASR-native speaker labels、Attribution/Fusion 主链与审计边界。
 - [真实录音诊断记录](27-real-recording-diagnostic.md)：2026-09-18 实测问题、已修复候选、空白指标根因、Issue 与验收边界。
 - [验收与状态](prd/acceptance-status.md)：M1 真实录音门槛、状态语言与 `AcceptanceRecord 1.0.0` 验收证据契约（`python -m aivoicebench acceptance init|check`）；该契约不降低门槛，也不表示 M1 已通过。
