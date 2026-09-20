@@ -31,7 +31,6 @@ from aivoicebench.voice_test import (DEFAULT_TTS_STIMULUS_FORMAT, TTS_STIMULUS_E
                                      tts_stimulus_extension)
 from aivoicebench.volcengine_tts_ws import (AUDIT_ENDPOINT_UNIDIRECTIONAL,
                                            ENDPOINT_UNIDIRECTIONAL,
-                                           EVENT_FINISH_SESSION,
                                            EVENT_SESSION_FINISHED,
                                            VolcengineUnidirectionalTTSProvider)
 
@@ -46,7 +45,7 @@ def mp3_stream(frames=2):
 def mp3_tts_provider(stream):
     """A real V3 unidirectional provider whose transport is scripted."""
     server = FakeServer(script_for_event={
-        EVENT_FINISH_SESSION: lambda frame: [
+        0: lambda frame: [
             audio_frame(stream[:max(len(stream) // 2, 1)]),
             audio_frame(stream[max(len(stream) // 2, 1):]),
             server_frame(EVENT_SESSION_FINISHED)]})
@@ -118,7 +117,7 @@ class FixedStimulusFreezeServeTests(unittest.TestCase):
         # The bytes really are the provider's MP3, not a re-encoded copy.
         self.assertEqual(frozen.read_bytes(), self.stream)
         self.assertEqual(frozen.read_bytes()[:2], b'\xff\xfb')
-        self.assertEqual(len(server.frames), 3)
+        self.assertEqual(len(server.frames), 1)
 
     def test_get_audio_path_still_finds_a_legacy_wav_stimulus(self):
         """Migration period: a WAV asset frozen by the SSE route must still play."""
