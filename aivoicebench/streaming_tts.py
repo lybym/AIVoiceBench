@@ -241,18 +241,66 @@ def stale_turn_reason(session, turn):
     return None
 
 
-def tts_failure_category(error):
-    """Map a raised error to one first-class category (never a raw message).
+# How a first-class failure category is recorded in the provider-invocation
+# audit. The category vocabulary and this mapping live here so there is exactly
+# one classification; a second copy in an adapter would drift, and the drift
+# would be invisible until two records disagreed about one incident.
+FAILURE_CODE_BY_CATEGORY = {
+    'provider_auth_failed': 'provider_error',
+    'provider_rate_limited': 'provider_error',
+    'provider_quota_exceeded': 'provider_error',
+    'stream_open_failed': 'provider_error',
+    'stream_disconnected': 'provider_error',
+    'provider_error': 'provider_error',
+    'session_cancelled': 'provider_error',
+    'turn_not_current': 'provider_error',
+    # The shared provider-invocation vocabulary uses the bare ``timeout`` code.
+    'stream_timeout': 'timeout',
+    'provider_no_audio': 'response_invalid',
+    'response_invalid': 'response_invalid',
+    'invalid_request': 'configuration_invalid',
+    'resource_mismatch': 'configuration_invalid',
+    'unsupported_parameter': 'configuration_invalid',
+    'credential_missing': 'credential_missing',
+    'configuration_invalid': 'configuration_invalid',
+    'input_invalid': 'input_invalid',
+}
 
-    The adapter's session already decided the category and carries it in a
-    trailing ``(category)`` marker, so this delegates to the adapter's mapper
-    instead of re-deriving the answer from message text. Two parallel
-    classifications of the same failure would drift, and the drift would be
-    invisible until the two reported different reasons for one incident.
+
+def failure_category_of(error):
+    """The first-class category an adapter already decided, when it recorded one.
+
+    Adapters carry the decided category in a trailing ``(category)`` marker so a
+    consumer reads the real decision instead of guessing again from prose.
     """
+    message = str(error)
+    marker = message.rsplit('(', 1)
+    if len(marker) == 2 and marker[1].endswith(')'):
+        candidate = marker[1][:-1].strip()
+        if candidate in TTS_ERROR_CATEGORIES:
+            return candidate
+    return None
+
+
+def failure_code_for(category):
+    """The audit failure code for a first-class category."""
+    return FAILURE_CODE_BY_CATEGORY.get(category, 'provider_error')
+
+
+def tts_failure_category(error):
+    """Map a raised error to one first-class category (never a raw message)."""
     if isinstance(error, StreamingTTSUnavailable):
         return 'stream_open_failed'
-    from .volcengine_tts_ws import VolcengineUnidirectionalTTSProvider
     if isinstance(error, ProviderFailure):
-        return VolcengineUnidirectionalTTSProvider._failure_code(error)
+        decided = failure_category_of(error)
+        if decided is not None:
+            return decided
+        message = str(error).lower()
+        if 'credential' in message:
+            return 'credential_missing'
+        if 'timeout' in message:
+            return 'stream_timeout'
+        if 'empty' in message:
+            return 'input_invalid'
+        return 'provider_error'
     return 'provider_error'

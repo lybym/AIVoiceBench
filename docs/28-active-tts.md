@@ -90,6 +90,10 @@ Streaming ASR final Observation
   与 session `summary()['fallback_policy']`（`forbidden_transports` 由适配器模块声明）真正把该决定
   落盘，而不是靠「没有配置旧 profile」隐含表达；若未来需要 fallback，必须由产品显式定义、
   UI 标注并写入 Run。
+- **失败分类只有一份实现。** `streaming_tts.py` 拥有类别词表（`TTS_ERROR_CATEGORIES`）、
+  `(category)` 标记格式（`failure_category_of`）与类别→审计码映射（`FAILURE_CODE_BY_CATEGORY` /
+  `failure_code_for`）；适配器只消费它，不保留第二份映射。因此**供应商无关的边界模块不 import
+  任何 Provider 模块**，新增 Provider 时也不需要反向修改它。
 - LLM partial、TTS audio chunk、browser playback callback 均为 Control/Provider diagnostics，
   不构成正式 Measurement acoustic boundary。
 

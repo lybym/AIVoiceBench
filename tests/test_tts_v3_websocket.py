@@ -963,6 +963,53 @@ class BidirectionalSessionTests(unittest.TestCase):
         self.assertEqual(fallback_policy_record()['forbidden_transports'],
                          list(forbidden_fallbacks()))
 
+    def test_neutral_boundary_does_not_import_a_vendor(self):
+        """Round-2 finding: the boundary must not depend on any provider module."""
+        import aivoicebench.streaming_tts as boundary
+        source = Path(boundary.__file__).read_text('utf-8')
+        self.assertNotIn('volcengine', source)
+        self.assertNotIn('from .volcengine', source)
+        # And importing it must not pull a provider module into sys.modules.
+        import subprocess
+        import sys
+        program = ('import sys; import aivoicebench.streaming_tts; '
+                   "print(any('volcengine' in name for name in sys.modules))")
+        result = subprocess.run([sys.executable, '-c', program],
+                                capture_output=True, text=True, cwd=str(
+                                    Path(__file__).resolve().parents[1]))
+        self.assertEqual(result.stdout.strip(), 'False', result.stderr)
+
+    def test_failure_classification_has_one_source_of_truth(self):
+        """The category vocabulary and mapping live only in the neutral module."""
+        import aivoicebench.streaming_tts as boundary
+        from aivoicebench import volcengine_tts_ws as adapter
+        adapter_source = Path(adapter.__file__).read_text('utf-8')
+        # The adapter may name categories as provider error-code values, but its
+        # failure-code mapping must not keep a second category -> audit-code table.
+        method = adapter_source.split('def _failure_code(error):', 1)[1]
+        method = method.split('def _write_audit', 1)[0]
+        for category in ('provider_auth_failed', 'provider_rate_limited',
+                         'provider_quota_exceeded', 'stream_open_failed',
+                         'stream_disconnected'):
+            self.assertNotIn(f"'{category}':", method,
+                             f'{category} mapping must live in streaming_tts only')
+        self.assertIn('failure_code_for', method,
+                      'the adapter must consume the shared mapping')
+        # Both paths agree on the code for the same category.
+        for category, code in boundary.FAILURE_CODE_BY_CATEGORY.items():
+            self.assertEqual(boundary.failure_code_for(category), code)
+            self.assertEqual(
+                adapter.VolcengineUnidirectionalTTSProvider._failure_code(
+                    ProviderFailure(f'x ({category})')), code)
+
+    def test_tts_failure_category_reads_the_recorded_decision(self):
+        self.assertEqual(tts_failure_category(ProviderFailure('x (resource_mismatch)')),
+                         'resource_mismatch')
+        self.assertEqual(tts_failure_category(StreamingTTSUnavailable('nope')),
+                         'stream_open_failed')
+        self.assertEqual(tts_failure_category(ProviderFailure('TTS credential missing')),
+                         'credential_missing')
+
     def test_event_source_is_supplied_by_the_caller(self):
         """A vendor-neutral event must not default to one provider's name."""
         import inspect

@@ -63,7 +63,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .providers import InvocationAudit, ProviderFailure, ProviderIdentity, immutable_json
-from .streaming_tts import fallback_policy_record, register_forbidden_fallback
+from .streaming_tts import (failure_category_of, failure_code_for,
+                              fallback_policy_record,
+                              register_forbidden_fallback)
 
 # The retired/alternate Active TTS transports this adapter must never be reached
 # through implicitly. Declared here — where the transports actually live — so the
@@ -1259,31 +1261,16 @@ class VolcengineUnidirectionalTTSProvider:
     def _failure_code(error):
         """Map a raised error to the recorded first-class failure code.
 
-        The synthesis session already decided the category, and carries it in a
-        trailing ``(category)`` marker. Reading it back keeps the audit honest:
-        the recorded code is the one the transport really produced instead of a
-        second guess from the message text.
+        The synthesis session already decided the category and carries it in a
+        trailing ``(category)`` marker, so the recorded code is the one the
+        transport really produced rather than a second guess from prose. The
+        marker format and the category-to-code mapping live in
+        :mod:`aivoicebench.streaming_tts` so no second copy can drift from it.
         """
         message = str(error)
-        marker = message.rsplit('(', 1)
-        if len(marker) == 2 and marker[1].endswith(')'):
-            category = marker[1][:-1].strip()
-            if category in TTS_ERROR_CATEGORIES:
-                return {
-                    'provider_auth_failed': 'provider_error',
-                    'provider_rate_limited': 'provider_error',
-                    'stream_open_failed': 'provider_error',
-                    'stream_disconnected': 'provider_error',
-                    # The shared provider-invocation vocabulary uses the bare
-                    # ``timeout`` code (same as the Streaming ASR adapter).
-                    'stream_timeout': 'timeout',
-                    'provider_no_audio': 'response_invalid',
-                    'response_invalid': 'response_invalid',
-                    'provider_quota_exceeded': 'provider_error',
-                    'invalid_request': 'configuration_invalid',
-                    'resource_mismatch': 'configuration_invalid',
-                    'unsupported_parameter': 'configuration_invalid',
-                }.get(category, 'provider_error')
+        decided = failure_category_of(error)
+        if decided is not None:
+            return failure_code_for(decided)
         if 'credential' in message:
             return 'credential_missing'
         if 'resource_id' in message or 'voice missing' in message or 'format=' in message:
@@ -1293,9 +1280,7 @@ class VolcengineUnidirectionalTTSProvider:
         if 'MP3' in message or 'audio data' in message or 'no audio' in message:
             return 'response_invalid'
         if 'timeout' in message:
-            return 'stream_timeout'
-        if 'open' in message or 'connect' in message:
-            return 'stream_open_failed'
+            return failure_code_for('stream_timeout')
         return 'provider_error'
 
     def _write_audit(self, destination, request_id, started_at, start_time, config, text,
