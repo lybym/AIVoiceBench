@@ -474,11 +474,17 @@ async def synthesize_voice_test(session_id: str):
 
 @app.get('/api/voice-test/sessions/{session_id}/audio/{phrase_index}')
 def get_voice_test_audio(session_id: str, phrase_index: int):
-    """Serve generated TTS audio for playback in the browser."""
+    """Serve generated TTS audio for playback in the browser.
+
+    The Content-Type follows the stored container. Active TTS is fixed to MP3
+    (Issue #98), so advertising ``audio/wav`` for an MP3 stimulus would make a
+    browser that trusts the header pick the wrong decoder.
+    """
     audio_path = _voice_test_manager.get_audio_path(session_id, phrase_index)
     if not audio_path or not audio_path.is_file():
         raise HTTPException(404, 'Audio not found')
-    return FileResponse(str(audio_path), media_type='audio/wav')
+    from .voice_test import tts_media_type_for_path
+    return FileResponse(str(audio_path), media_type=tts_media_type_for_path(audio_path))
 
 
 @app.post('/api/voice-test/sessions/{session_id}/start')
