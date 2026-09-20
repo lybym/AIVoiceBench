@@ -62,12 +62,12 @@ profiles:
     provider: volcengine
     protocol: volcengine_tts_ws
     base_url: wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream
-    model: "<model-label-for-audit>"
+    model: "seed-tts-2.0-standard"
     credential_env: VOLCENGINE_TTS_API_KEY
     enabled: true
     capabilities: [tts]
     parameters:
-      resource_id: "<resource-id>"
+      resource_id: "seed-tts-2.0"
       voice: "<voice-id>"
       sample_rate: 24000
       speed: 0
@@ -83,12 +83,12 @@ profiles:
     provider: volcengine
     protocol: volcengine_tts_ws_bidirectional
     base_url: wss://openspeech.bytedance.com/api/v3/tts/bidirection
-    model: "<model-label-for-audit>"
+    model: "seed-tts-2.0-standard"
     credential_env: VOLCENGINE_TTS_API_KEY
     enabled: true
     capabilities: [streaming_tts]
     parameters:
-      resource_id: "<resource-id>"
+      resource_id: "seed-tts-2.0"
       voice: "<voice-id>"
       sample_rate: 24000
       speed: 0
@@ -113,4 +113,3 @@ routes:
 #   the Fixed profile above must not declare it.
 # * `streaming_tts` is a separate route on purpose: a single `volcengine_tts`
 #   profile must never make the runtime guess unidirectional vs bidirectional.
-

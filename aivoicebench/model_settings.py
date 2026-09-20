@@ -155,6 +155,10 @@ def validate_profile(p):
         missing=[key for key in ('resource_id','voice') if not params.get(key,'').strip()]
         if missing:
             raise SettingsError('火山 V3 WebSocket TTS 必须填写资源 ID 和音色 ID')
+        if params['resource_id'] not in ('seed-tts-2.0', 'seed-icl-2.0'):
+            raise SettingsError(
+                '火山 V3 WebSocket TTS resource_id 必须为 seed-tts-2.0 或 seed-icl-2.0；'
+                'volc.service_type.10029 等旧值不兼容当前 V3 文档')
         # The media format is fixed to MP3 and is not a configuration item
         # (Issue #98). A leftover ``format:`` key from the SSE era is refused with
         # a migration message instead of being silently ignored, so an operator

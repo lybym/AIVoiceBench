@@ -45,8 +45,10 @@ from aivoicebench.volcengine_tts_ws import (AUDIT_ENDPOINT_BIDIRECTIONAL,
                                            ENDPOINT_BIDIRECTIONAL,
                                            ENDPOINT_UNIDIRECTIONAL,
                                            EVENT_CANCEL_SESSION,
+                                           EVENT_CONNECTION_STARTED,
                                            EVENT_CONNECTION_FINISHED,
                                            EVENT_FINISH_SESSION,
+                                           EVENT_START_CONNECTION,
                                            EVENT_SESSION_FAILED,
                                            EVENT_SESSION_FINISHED,
                                            EVENT_START_SESSION,
@@ -70,6 +72,7 @@ from aivoicebench.volcengine_tts_ws import (AUDIT_ENDPOINT_BIDIRECTIONAL,
                                            VolcengineTTSProtocolError,
                                            VolcengineUnidirectionalTTSProvider,
                                            build_event_frame, build_header,
+                                           build_full_client_request,
                                            build_request_payload,
                                            parse_mp3_frame_header, parse_mp3_metadata,
                                            parse_response, read_length_prefixed)
@@ -202,7 +205,11 @@ class FakeServer:
         self.url = None
         self.closed = False
         # Map of client event -> callable returning the server frames to enqueue.
-        self.script_for_event = dict(script_for_event or {})
+        self.script_for_event = {
+            EVENT_START_CONNECTION: lambda _frame: [
+                server_frame(EVENT_CONNECTION_STARTED, session_id='')],
+        }
+        self.script_for_event.update(script_for_event or {})
         self.fail_on_connect = fail_on_connect
         self.fail_on_send = fail_on_send
         self._outbox = asyncio.Queue()
@@ -318,6 +325,13 @@ class ProtocolConformanceTests(unittest.TestCase):
         self.assertIsNone(parsed['session_id'])
         self.assertEqual(parsed['payload'], b'{}')
 
+    def test_connection_started_uses_connect_id_not_session_id(self):
+        frame = server_frame(EVENT_CONNECTION_STARTED, session_id='connection-1',
+                             payload=b'{}')
+        parsed = parse_response(frame)
+        self.assertIsNone(parsed['session_id'])
+        self.assertEqual(parsed['connect_id'], 'connection-1')
+
     def test_length_prefixed_rejects_truncation(self):
         with self.assertRaises(VolcengineTTSProtocolError):
             read_length_prefixed(b'\x00\x00', 0)
@@ -362,7 +376,7 @@ class ProtocolConformanceTests(unittest.TestCase):
         self.assertEqual(INTERFACE_CONTRACT['endpoints']['bidirectional'],
                          ENDPOINT_BIDIRECTIONAL)
         self.assertEqual(INTERFACE_CONTRACT['media_format'], 'mp3')
-        self.assertEqual(INTERFACE_CONTRACT['real_cloud_call'], 'not_attempted')
+        self.assertEqual(INTERFACE_CONTRACT['real_cloud_call'], 'verified_2026-09-20')
 
     def test_capability_matrix_is_protocol_specific(self):
         self.assertFalse(CAPABILITY_MATRIX[TRANSPORT_UNIDIRECTIONAL]['pitch'],
@@ -374,25 +388,21 @@ class ProtocolConformanceTests(unittest.TestCase):
     def test_client_sends_only_whitelisted_request_fields(self):
         stream = mp3_stream(frames=1)
         server = FakeServer(script_for_event={
-            EVENT_FINISH_SESSION: lambda frame: [
+            0: lambda frame: [
                 audio_frame(stream), server_frame(EVENT_SESSION_FINISHED)]})
         with tempfile.TemporaryDirectory() as tmp:
             provider = make_provider(server, tmp)
             provider.synthesize('固定话术', Path(tmp) / 'out.mp3')
         events = [frame['event'] for frame in server.frames]
-        self.assertEqual(events, [EVENT_START_SESSION, EVENT_TASK_REQUEST,
-                                  EVENT_FINISH_SESSION])
-        # StartSession/TaskRequest/FinishSession each carry the documented body;
-        # FinishSession's own payload is the documented empty ``{}``.
-        bodies = [json.loads(frame['payload'].decode('utf-8'))
-                  for frame in server.frames[:2]]
-        for body in bodies:
-            self.assertEqual(set(body), {'user', 'event', 'namespace', 'req_params'})
+        self.assertEqual(events, [0])
+        body = json.loads(server.frames[0]['payload'].decode('utf-8'))
+        self.assertEqual(set(body), {'req_params'})
+        self.assertEqual(body['req_params']['text'], '固定话术')
 
     def test_credential_is_only_in_handshake_headers(self):
         stream = mp3_stream(frames=1)
         server = FakeServer(script_for_event={
-            EVENT_FINISH_SESSION: lambda frame: [
+            0: lambda frame: [
                 audio_frame(stream), server_frame(EVENT_SESSION_FINISHED)]})
         with tempfile.TemporaryDirectory() as tmp:
             provider = make_provider(server, tmp)
@@ -400,7 +410,7 @@ class ProtocolConformanceTests(unittest.TestCase):
         self.assertEqual(server.headers['X-Api-Key'], 'test-key')
         self.assertIn('X-Api-Resource-Id', server.headers)
         self.assertIn('X-Api-Request-Id', server.headers)
-        self.assertIn('X-Api-Connect-Id', server.headers)
+        self.assertNotIn('X-Api-Connect-Id', server.headers)
         # Never in the outgoing body.
         for frame in server.frames:
             self.assertNotIn(b'test-key', frame['payload'] or b'')
@@ -493,11 +503,11 @@ class MP3ValidationTests(unittest.TestCase):
 class UnidirectionalSynthesisTests(unittest.TestCase):
 
     def _server(self, chunks=(b'aaa', b'bbb')):
-        def on_finish(frame):
+        def on_request(frame):
             produced = [audio_frame(chunk) for chunk in chunks]
             produced.append(server_frame(EVENT_SESSION_FINISHED))
             return produced
-        return FakeServer(script_for_event={EVENT_FINISH_SESSION: on_finish})
+        return FakeServer(script_for_event={0: on_request})
 
     def test_happy_path_freezes_a_validated_mp3(self):
         stream = mp3_stream(frames=3)
@@ -543,11 +553,11 @@ class UnidirectionalSynthesisTests(unittest.TestCase):
             self.assertEqual(before, stream)
             self.assertEqual(first['sha256'],
                              __import__('hashlib').sha256(stream).hexdigest())
-        self.assertEqual(calls, [3])
+        self.assertEqual(calls, [1])
 
     def test_provider_error_code_is_classified(self):
         server = FakeServer(script_for_event={
-            EVENT_FINISH_SESSION: lambda frame: [error_frame(CODE_RESOURCE_MISMATCH,
+            0: lambda frame: [error_frame(CODE_RESOURCE_MISMATCH,
                                                              'resource mismatched')]})
         with tempfile.TemporaryDirectory() as tmp:
             provider = make_provider(server, tmp)
@@ -560,7 +570,7 @@ class UnidirectionalSynthesisTests(unittest.TestCase):
 
     def test_server_busy_is_rate_limited(self):
         server = FakeServer(script_for_event={
-            EVENT_FINISH_SESSION: lambda f: [error_frame(CODE_SERVER_BUSY)]})
+            0: lambda f: [error_frame(CODE_SERVER_BUSY)]})
         with tempfile.TemporaryDirectory() as tmp:
             provider = make_provider(server, tmp)
             with self.assertRaises(ProviderFailure):
@@ -570,7 +580,7 @@ class UnidirectionalSynthesisTests(unittest.TestCase):
 
     def test_empty_audio_is_insufficient_not_a_silent_success(self):
         server = FakeServer(script_for_event={
-            EVENT_FINISH_SESSION: lambda f: [server_frame(EVENT_SESSION_FINISHED)]})
+            0: lambda f: [server_frame(EVENT_SESSION_FINISHED)]})
         with tempfile.TemporaryDirectory() as tmp:
             provider = make_provider(server, tmp)
             with self.assertRaises(ProviderFailure):
@@ -591,14 +601,14 @@ class UnidirectionalSynthesisTests(unittest.TestCase):
     def test_abnormal_close_is_a_failure(self):
         def boom(frame):
             raise ConnectionResetError('socket closed')
-        server = FakeServer(script_for_event={EVENT_FINISH_SESSION: boom})
+        server = FakeServer(script_for_event={0: boom})
         with tempfile.TemporaryDirectory() as tmp:
             provider = make_provider(server, tmp)
             with self.assertRaises(ProviderFailure):
                 provider.synthesize('x', Path(tmp) / 'a.mp3')
 
     def test_timeout_is_a_first_class_failure(self):
-        server = FakeServer(script_for_event={EVENT_FINISH_SESSION: lambda f: []})
+        server = FakeServer(script_for_event={0: lambda f: []})
         with tempfile.TemporaryDirectory() as tmp:
             provider = make_provider(server, tmp, timeout=1)
             original = server.next_frame
@@ -693,7 +703,8 @@ class BidirectionalSessionTests(unittest.TestCase):
                 await session.open()
                 await session.close()
         asyncio.run(scenario())
-        frame = server.frames[0]
+        self.assertEqual(server.frames[0]['event'], EVENT_START_CONNECTION)
+        frame = server.frames[1]
         self.assertEqual(frame['event'], EVENT_START_SESSION)
         body = json.loads(frame['payload'].decode('utf-8'))
         self.assertEqual(body['namespace'], 'BidirectionalTTS')
@@ -746,7 +757,7 @@ class BidirectionalSessionTests(unittest.TestCase):
                 await session.open()
                 await session.close()
         asyncio.run(scenario())
-        body = json.loads(server.frames[0]['payload'].decode('utf-8'))
+        body = json.loads(server.frames[1]['payload'].decode('utf-8'))
         additions = json.loads(body['req_params']['additions'])
         self.assertNotIn('post_process', additions,
                          'pitch must not be advertised on a protocol without it')
@@ -1291,7 +1302,7 @@ def _tts_profile(**overrides):
         'credential_env': 'VOLCENGINE_TTS_API_KEY',
         'enabled': True,
         'capabilities': ['tts'],
-        'parameters': {'resource_id': 'volc.service_type.test', 'voice': 'BV700',
+        'parameters': {'resource_id': 'seed-tts-2.0', 'voice': 'BV700',
                        'sample_rate': 48000, 'speed': 0, 'volume': 0,
                        'timeout_seconds': 60},
     }
@@ -1445,14 +1456,14 @@ class ProviderCallAccountingTests(unittest.TestCase):
     def test_fixed_synthesis_makes_exactly_one_session(self):
         stream = mp3_stream(frames=1)
         server = FakeServer(script_for_event={
-            EVENT_FINISH_SESSION: lambda f: [audio_frame(stream),
+            0: lambda f: [audio_frame(stream),
                                              server_frame(EVENT_SESSION_FINISHED)]})
         with tempfile.TemporaryDirectory() as tmp:
             provider = make_provider(server, tmp)
             provider.synthesize('a', Path(tmp) / 'a.mp3')
             provider.synthesize('a', Path(tmp) / 'b.mp3')
-        starts = [f for f in server.frames if f['event'] == EVENT_START_SESSION]
-        self.assertEqual(len(starts), 2, 'one session per explicit synthesis request')
+        requests = [f for f in server.frames if f['event'] == 0]
+        self.assertEqual(len(requests), 2, 'one request per explicit synthesis request')
 
     def test_free_session_uses_one_connection_for_many_chunks(self):
         stream = mp3_stream(frames=1)
