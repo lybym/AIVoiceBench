@@ -31,9 +31,10 @@ unverified list live in ``docs/28-active-tts.md``::
     error from server   : [header][event i32][error_code i32][payload_len i32][payload]
 
 ``message_type`` is ``0b0001`` full client request, ``0b1001`` full server
-response, ``0b1011`` audio-only response (TTS audio), ``0b1111`` error. The
-client sets the "with event" flag ``0b0100`` on request headers because the V3
-TTS protocol is event-driven rather than sequence-driven.
+response, ``0b1011`` audio-only response (TTS audio), ``0b1111`` error.
+Bidirectional requests use the ``with event`` flag ``0b0100``.  The
+unidirectional endpoint is deliberately different: it receives one full client
+request without an event envelope.
 
 Only the documented fields are ever sent; ``VERIFIED_REQUEST_FIELDS`` is
 asserted by tests against the bytes actually put on the wire, so an unverified
@@ -41,9 +42,10 @@ field cannot be added quietly.
 
 Deliberate limits
 -----------------
-* Only the new-console single-key authentication scheme is implemented
-  (``X-Api-Key`` + ``X-Api-Resource-Id`` + ``X-Api-Request-Id`` +
-  ``X-Api-Connect-Id``), matching the already-shipped streaming ASR adapter.
+* Only the new-console single-key authentication scheme is implemented.  The
+  unidirectional endpoint requires ``X-Api-Key``, ``X-Api-Resource-Id`` and
+  ``X-Api-Request-Id``; the bidirectional endpoint requires ``X-Api-Key`` and
+  ``X-Api-Resource-Id`` and accepts ``X-Api-Connect-Id``.
   The legacy dual-credential console needs a second secret slot and is not
   guessed here.
 * The Media format is fixed to **MP3** and is not configurable (Issue #98).
@@ -98,7 +100,7 @@ VERIFIED_REQUEST_FIELDS = ('user.uid', 'event', 'namespace', 'req_params.text',
                            'req_params.audio_params.speech_rate',
                            'req_params.audio_params.loudness_rate',
                            'req_params.additions')
-VERIFIED_RESPONSE_FIELDS = ('event', 'session_id', 'payload')
+VERIFIED_RESPONSE_FIELDS = ('event', 'session_id', 'connect_id', 'payload')
 
 # Documented protocol capability. Pitch adjustment is not implemented here because
 # the unidirectional page still marks it unsupported (see docs/28-active-tts.md);
@@ -121,7 +123,7 @@ CAPABILITY_MATRIX = {
 }
 
 INTERFACE_CONTRACT = {
-    'verified_at': '2026-09-18',
+    'verified_at': '2026-09-20',
     'source': 'docs.volcengine.com live pages (see docs/28-active-tts.md)',
     'endpoints': {'unidirectional': ENDPOINT_UNIDIRECTIONAL,
                   'bidirectional': ENDPOINT_BIDIRECTIONAL},
@@ -130,7 +132,7 @@ INTERFACE_CONTRACT = {
     'request_fields': list(VERIFIED_REQUEST_FIELDS),
     'response_fields': list(VERIFIED_RESPONSE_FIELDS),
     'media_format': TTS_FORMAT,
-    'real_cloud_call': 'not_attempted',
+    'real_cloud_call': 'verified_2026-09-20',
 }
 
 # ------------------------------------------------------------ binary protocol
@@ -247,6 +249,37 @@ def build_event_frame(event, *, session_id=None, payload=b'',
     return bytes(frame)
 
 
+def build_full_client_request(payload):
+    """Build the V3 unidirectional one-shot request frame.
+
+    Unlike bidirectional streaming, this endpoint does not start an event
+    session.  Its documented body is sent as one JSON ``FullClientRequest``.
+    """
+    return (build_header(MSG_FULL_CLIENT_REQUEST, FLAG_NONE,
+                         SERIALIZATION_JSON, COMPRESSION_NONE)
+            + struct.pack('>I', len(payload)) + payload)
+
+
+def build_unidirectional_request_payload(*, text, speaker, audio_params,
+                                         model=None, additions=None):
+    """Documented one-shot body for the V3 unidirectional endpoint."""
+    req_params = {
+        'text': text,
+        'speaker': speaker,
+        'audio_params': dict(audio_params),
+    }
+    # The current documentation requires this only for cloned voices.  Sending
+    # it for ordinary Seed TTS voices would turn a documented default into an
+    # account-specific compatibility assumption.
+    if model:
+        req_params['model'] = model
+    if additions:
+        req_params['additions'] = json.dumps(additions, ensure_ascii=False,
+                                              separators=(',', ':'))
+    return json.dumps({'req_params': req_params}, ensure_ascii=False,
+                      separators=(',', ':')).encode('utf-8')
+
+
 def read_length_prefixed(data, offset):
     """Read one documented ``[i32 length][bytes]`` field."""
     if len(data) < offset + 4:
@@ -286,6 +319,7 @@ def parse_response(data):
         'compression': compression,
         'event': EVENT_NONE,
         'session_id': None,
+        'connect_id': None,
         'payload': b'',
         'error_code': None,
         'error_message': None,
@@ -335,9 +369,10 @@ def parse_response(data):
             frame['payload'] = body
             return frame
         if frame['event'] in (EVENT_CONNECTION_STARTED, EVENT_CONNECTION_FAILED):
-            # [sid_len][sid][payload_len][payload]
+            # Connection events carry a connection id, not a session id:
+            # [connect_id_len][connect_id][payload_len][payload].
             body, offset = read_length_prefixed(data, offset)
-            frame['session_id'] = body.decode('utf-8') if body else None
+            frame['connect_id'] = body.decode('utf-8') if body else None
             body, offset = read_length_prefixed(data, offset)
             if body:
                 frame['error_message'] = body.decode('utf-8', 'replace')
@@ -654,6 +689,7 @@ class VolcengineBidirectionalTTSSession:
         self._finalized = False
         self._audit = None
         self._lock = asyncio.Lock()
+        self._connection_started = False
 
     # ------------------------------------------------------------- lifecycle
 
@@ -679,7 +715,6 @@ class VolcengineBidirectionalTTSSession:
         headers = {
             'X-Api-Key': self.key,
             'X-Api-Resource-Id': self.resource_id,
-            'X-Api-Request-Id': str(uuid.uuid4()),
             'X-Api-Connect-Id': str(uuid.uuid4()),
         }
         try:
@@ -697,6 +732,24 @@ class VolcengineBidirectionalTTSSession:
                                                     'transport': self.transport_name})
         request_sent = False
         try:
+            # The V3 bidirectional endpoint is connection-scoped.  A Session is
+            # invalid until the provider acknowledges StartConnection.
+            await self._connection.send(build_event_frame(
+                EVENT_START_CONNECTION, payload=b'{}'))
+            raw = await asyncio.wait_for(self._connection.recv(), timeout=self.timeout)
+            if isinstance(raw, str):
+                raw = raw.encode('utf-8')
+            frame = parse_response(bytes(raw))
+            if frame['message_type'] == MSG_ERROR:
+                category = CODE_ERROR_CATEGORY.get(frame['error_code'], 'provider_error')
+                raise ProviderFailure(f'TTS connection was rejected ({category})')
+            if frame['event'] == EVENT_CONNECTION_FAILED:
+                raise ProviderFailure('TTS connection was rejected (stream_open_failed)')
+            if frame['event'] != EVENT_CONNECTION_STARTED:
+                raise ProviderFailure('TTS connection did not acknowledge StartConnection')
+            self._connection_started = True
+            self._record('tts_connection_started', detail={
+                'event': frame['event'], 'connect_id': frame.get('connect_id')})
             await self._connection.send(build_event_frame(
                 EVENT_START_SESSION, session_id=self.session_id,
                 payload=build_request_payload(
@@ -1023,6 +1076,9 @@ class VolcengineBidirectionalTTSSession:
                 self._reader = None
             if self._connection is not None:
                 try:
+                    if self._connection_started:
+                        await self._connection.send(build_event_frame(
+                            EVENT_FINISH_CONNECTION, payload=b'{}'))
                     await self._connection.close()
                 except Exception:  # noqa: BLE001
                     pass
@@ -1320,7 +1376,7 @@ class VolcengineUnidirectionalTTSProvider:
 
 
 class _UnidirectionalSession:
-    """One completed synthesis: StartSession -> TaskRequest -> FinishSession."""
+    """One completed V3 unidirectional, complete-text synthesis."""
 
     def __init__(self, *, provider, request_id, text, transport):
         self.provider = provider
@@ -1340,7 +1396,6 @@ class _UnidirectionalSession:
             'X-Api-Key': self.provider.api_key,
             'X-Api-Resource-Id': self.provider.resource_id,
             'X-Api-Request-Id': self.request_id,
-            'X-Api-Connect-Id': str(uuid.uuid4()),
         }
         try:
             self.connection = await asyncio.wait_for(
@@ -1351,20 +1406,13 @@ class _UnidirectionalSession:
         except Exception as error:  # noqa: BLE001
             category = _classify_open_failure(error)
             raise ProviderFailure(f'TTS session could not be opened ({category})') from None
-        audio_params = self.provider._audio_params()
         try:
-            await self.connection.send(build_event_frame(
-                EVENT_START_SESSION, session_id=self.session_id,
-                payload=build_request_payload(
-                    event=EVENT_START_SESSION, uid='aivoicebench', text='',
-                    speaker=self.provider.voice_type, audio_params=audio_params)))
-            await self.connection.send(build_event_frame(
-                EVENT_TASK_REQUEST, session_id=self.session_id,
-                payload=build_request_payload(
-                    event=EVENT_TASK_REQUEST, uid='aivoicebench', text=self.text,
-                    speaker=self.provider.voice_type, audio_params=audio_params)))
-            await self.connection.send(build_event_frame(
-                EVENT_FINISH_SESSION, session_id=self.session_id, payload=b'{}'))
+            cloned_voice = self.provider.resource_id == 'seed-icl-2.0'
+            payload = build_unidirectional_request_payload(
+                text=self.text, speaker=self.provider.voice_type,
+                audio_params=self.provider._audio_params(),
+                model=self.provider.model if cloned_voice else None)
+            await self.connection.send(build_full_client_request(payload))
         except Exception:  # noqa: BLE001
             raise ProviderFailure('TTS request could not be sent') from None
         await self._read_until_finished()

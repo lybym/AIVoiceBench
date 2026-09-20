@@ -16,7 +16,7 @@ PRD refs: PRD-F015 / F016 / F020 / F021；相关 M2、M3、N003。技术契约�
 | 面向 | Fixed Case Runner | Free / Exploratory Test Agent |
 | 输入 | 完整固定话术，一次提交 | LLM 流式输出的有序可朗读 chunk，随时追加 |
 | 输出 | 完整 MP3，落盘冻结 | MP3 chunk 流，边到边播 |
-| 生命周期 | `StartSession → TaskRequest → FinishSession → 收齐音频 → 关闭` | `StartSession → TaskRequest* → (audio chunks) → FinishSession / CancelSession` |
+| 生命周期 | `FullClientRequest(complete text) → 收齐音频 → 关闭` | `StartConnection → ConnectionStarted → StartSession → TaskRequest* → FinishSession → FinishConnection` |
 | 协议 | V3 **单向** WebSocket | V3 **双向** WebSocket |
 | 结算单位 | 冻结的 Stimulus Artifact（SHA-256 + sample metadata） | 与一个 Run/Turn 绑定的 session |
 
@@ -42,6 +42,7 @@ Active TTS 的媒体格式固定为 **MP3**，不是配置项（Issue #98 产品
 complete fixed text
 → backend `tts` route
 → V3 unidirectional WebSocket
+→ one no-event `FullClientRequest`
 → MP3 audio chunks
 → MP3 frame 校验 + sample metadata
 → immutable MP3 Stimulus Artifact
@@ -101,7 +102,7 @@ Streaming ASR final Observation
 
 可配置项只保留当前官方协议支持且确有需要调整的：
 
-- `resource_id`（必填）、`voice`（必填）；
+- `resource_id`（必填：`seed-tts-2.0` 或 `seed-icl-2.0`）、`voice`（必填）；
 - `sample_rate`；`speed`（→ `speech_rate`）；`volume`（→ `loudness_rate`）；
 - `timeout_seconds`；`model`（审计标签）。
 
@@ -131,7 +132,8 @@ Streaming ASR final Observation
 
 | 控制台 | 请求头 |
 | --- | --- |
-| 新版（本适配器采用） | `X-Api-Key`、`X-Api-Resource-Id`、`X-Api-Request-Id`、`X-Api-Connect-Id` |
+| 新版单向（本适配器采用） | `X-Api-Key`、`X-Api-Resource-Id`、`X-Api-Request-Id` |
+| 新版双向（本适配器采用） | `X-Api-Key`、`X-Api-Resource-Id`、`X-Api-Connect-Id` |
 | 旧版 | 需要 APP ID **与** Access Token 两个凭据槽位，本适配器**未实现也不猜测** |
 
 凭据只在 Backend 的 WebSocket 握手使用，读自 server-owned secret/env。Browser 不直连
@@ -140,11 +142,12 @@ Provider 错误文本截断至 200 字符。
 
 ## 7. 二进制信封（V3 event envelope）
 
-4 字节 header，整数**大端**：
+4 字节 header，整数**大端**。双向是事件信封；单向是一个无事件的一次性请求：
 
 ```text
 header               : [version<<4|header_size][msg_type<<4|flags][serialization<<4|compression][reserved]
-client request       : [header][event i32][sid_len i32][sid][payload_len i32][payload]
+unidirectional client: [header][payload_len i32][{"req_params": {...}}]
+bidirectional client : [header][event i32][sid_len i32][sid][payload_len i32][payload]
 server: conn/session : [header][event i32][sid_len i32][sid]（SessionFailed 可再带 [err_len][err]）
 server: tts response : [header][event i32][sid_len i32][sid][payload_len i32][payload]
 audio only response  : [header][event i32][sid_len i32][sid][payload_len i32][audio]
@@ -153,23 +156,23 @@ error from server    : [header][event i32][error_code i32][payload_len i32][erro
 
 - `message_type`：`0b0001` full client request、`0b1001` full server response、
   `0b1011` audio-only response、`0b1111` error。
-- `flags`：`0b0100` with-event（V3 TTS 是事件驱动，不是序号驱动）。
+- `flags`：双向使用 `0b0100` with-event；单向一次性请求使用 `0b0000`。
 - 序列化 `0b0001` JSON；压缩 `0b0000` none。
 - 事件号：连接 `1/2/50/51/52`；会话 `100/101/102/150/151/152/153`；
   任务与音频 `200/350/351/352`。
-- 请求体 `namespace` 固定为 `BidirectionalTTS`；只有
-  `VERIFIED_REQUEST_FIELDS` 白名单字段会被发送，测试直接断言实际写出的字节。
+- 双向请求体 `namespace` 固定为 `BidirectionalTTS`；单向请求体仅为官方
+  `req_params{text, speaker, audio_params, [model]}`。测试直接断言实际写出的字节。
 
 ## 8. 未验证（不得声称已通过）
 
-- **真实云调用**：本仓库实现未做任何真实 `/api/v3/tts/*` 调用；未计费。
-  `interface_contract.real_cloud_call` 记录为 `not_attempted`。
+- **真实云调用**：2026-09-20 已用私密的服务器端凭据验证单向与双向 V3：两条握手均成功；
+  单向的无事件一次性请求、双向的完整连接/会话序列均成功返回 MP3。该证据只证明
+  provider integration，不代表浏览器播放、实体设备或 Measurement 验收。
 - **真实云参数**：`sample_rate` / `speech_rate` / `loudness_rate` 的实际音色支持矩阵未在真实
   服务上观察；服务端仍是最终权威。
-- **单向请求时序假设**：`_UnidirectionalSession` 连续发送 `StartSession(100) → TaskRequest(200)
-  → FinishSession(102)`，**不等待 `SessionStarted(150)`**。这是基于 V3 事件信封与仓库既有
-  流式识别实践的工程推断，**未在真实服务上验证**；若官方要求等待 `150` 再发 `TaskRequest`，
-  首次真实云验收会暴露该问题。因此该时序必须计入 Issue #98 AC #10 / #85 的真实云验收项。
+- **已修正的单向时序**：旧实现把单向接口错误地当作双向会话，先发送空文本
+  `StartSession`；真实服务返回 `45002001 / No readable text!`。当前实现改为官方的单个
+  无事件 `FullClientRequest`，真实云端已验证返回 MP3。
 - **audio-only 帧的"with-event + session 字段"假设**：解析器按
   `[header][event][sid_len][sid][payload_len][audio]` 处理，并由与实现无关的 golden hex fixture
   固定（`tests/test_tts_v3_websocket.py::GoldenFrameTests`）；该布局仍未经真实服务确认。
