@@ -355,19 +355,30 @@ class BrowserStationDeliveryContractTests(unittest.TestCase):
         """Speaker segments and speaker clusters are different facts (Issue #113).
 
         Reporting the diarization document's entry count as the cluster count made a
-        5-cluster recording display 65 clusters. Both the source and the delivered
-        artifact must derive the statistic from distinct ``speaker_id`` values.
+        5-cluster recording display 65 clusters. The delivered artifact must derive
+        the statistic from distinct ``speaker_id`` values. The behaviour itself is
+        pinned by ``scripts/smoke-web-station.mjs`` (``countClusters()``), so this
+        check stays on the artifact and its negative shape — a source-text assertion
+        would fail on unrelated refactors without adding evidence (PR #114 review).
         """
-        source = (REPO_ROOT / 'web' / 'src' / 'app.ts').read_text(encoding='utf-8')
         script = self.client.get('/static/app.js').text
-        for text in (source, script):
-            self.assertIn('distinctClusterIds', text)
-            self.assertIn('countClusters(data.speaker_segments)', text)
+        self.assertIn('distinctClusterIds', script)
+        self.assertIn('countClusters(data.speaker_segments)', script)
         # The defect's shape must not come back: the segment list's length is not a
         # cluster count anywhere in the analysis view.
-        for text in (source, script):
-            self.assertNotIn("['说话人聚类', (data.speaker_segments || []).length]", text)
-            self.assertNotIn('聚类数 \' + (data.speaker_segments', text)
+        self.assertNotIn("['说话人聚类', (data.speaker_segments || []).length]", script)
+        self.assertNotIn('聚类数 \' + (data.speaker_segments', script)
+
+    def test_a_stalled_rebuild_reports_the_authorized_recovery_action(self):
+        """A stalled operation must not leave the page with no way forward.
+
+        The server retires a stalled rebuild as ``interrupted`` only when an operator
+        explicitly resubmits, so the page has to say that instead of merely polling
+        until its own 20-minute bound (PR #114 review).
+        """
+        script = self.client.get('/static/app.js').text
+        self.assertIn('重新提交同一份角色决定', script)
+        self.assertIn('interrupted', script)
 
     def test_async_role_rebuild_contract_survives_compilation(self):
         """The page tracks the accepted operation instead of blocking on the save."""

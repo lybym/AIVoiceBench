@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import json
+import shutil
 
 from .runner import digest, write_json
 from .run_lock import run_lock
@@ -10,6 +11,22 @@ from .asr import transcribe_file
 from .audio_processing import FFmpegAudioProcessor, MAX_RECORDING_MS
 from .import_artifacts import ImportRun, ingest_file, recording_run_errors
 from .import_report import write_import_report
+
+
+class _RebuildEvidenceError(RuntimeError):
+    """A role rebuild failed while producing its own new revision.
+
+    Distinct from ``RoleReviewError`` (a deliberate verdict about the recording's
+    preserved evidence) and from an unknown processor failure: this one says the
+    rebuild could not complete what it started, the previous revision was kept
+    unchanged, and the same save may be resubmitted.
+    """
+
+
+#: Staging checkpoint of an in-flight role rebuild (see ``apply_role_mapping``).
+#: It is replaced by the real ``manifest.json`` on success and removed otherwise,
+#: so it is never Run evidence and must not be catalogued as a retained diagnostic.
+REBUILD_CHECKPOINT_NAME = 'manifest.rebuild.pending.json'
 
 
 def _normalize(run, source, parent, processor):
@@ -602,8 +619,12 @@ def _resolve_unrun_stages(run, normalized_ok):
 def _retain_failures(run):
     """Catalog leftover local diagnostics/partial data without promoting them to successful outputs."""
     known = {item['path'] for item in run.manifest['artifacts']}
+    # The rebuild's staging checkpoint is control-plane state that this Run's own
+    # rollback removes; cataloguing it would register an artifact whose file is then
+    # deleted, and the Run's next integrity check would fail on it.
+    ignored = {'manifest.json', 'manifest.pending.json', REBUILD_CHECKPOINT_NAME}
     for path in sorted(run.directory.rglob('*')):
-        if path.is_file() and path.name not in ('manifest.json', 'manifest.pending.json'):
+        if path.is_file() and path.name not in ignored:
             relative = path.relative_to(run.directory).as_posix()
             if relative not in known:
                 artifact_id = run.register(path, 'retained_diagnostic', processor='failure_retention:1.0.0')
@@ -960,6 +981,34 @@ def _save_configuration(run, snapshot):
         run.register(path, 'model_configuration', processor='model_settings:1.1.0')
         run.checkpoint()
 
+
+def _record_analysis_checkpoint(run, manifest, source_analysis_id, processor):
+    """Preserve the manifest this revision started from, as immutable evidence.
+
+    The snapshot is named after the revision it preserves, so a Run that promotes
+    more than one new revision keeps one checkpoint per revision instead of
+    overwriting (and thereby invalidating) the digest of an already-registered
+    artifact. Returns the artifact id.
+    """
+    checkpoint = (run.directory / 'analysis' / source_analysis_id
+                  / ('manifest-snapshot-' + source_analysis_id + '.json'))
+    if checkpoint.exists():
+        if json.loads(checkpoint.read_text(encoding='utf-8')) != manifest:
+            raise ValueError('Conflicting analysis checkpoint')
+    else:
+        write_json(checkpoint, manifest)
+    return run.register(checkpoint, 'analysis_checkpoint', processor=processor)
+
+
+def rebuild_evidence_error():
+    """The exception type a role rebuild raises when *its own* work failed.
+
+    Exported as a constructor so the API can tell "this rebuild could not finish"
+    apart from a deliberate ``RoleReviewError`` about the recording's evidence and
+    from an unknown processor failure, without importing the private name.
+    """
+    return _RebuildEvidenceError
+
 def resume_recording(directory, *, providers=None, model_snapshot=None):
     """Explicit ASR retry in the same Run; preserve every earlier analysis artifact.
 
@@ -982,13 +1031,8 @@ def resume_recording(directory, *, providers=None, model_snapshot=None):
         raise ValueError('Configure an ASR route before retrying')
     run = ImportRun.__new__(ImportRun)
     run.directory, run.manifest = directory, copy.deepcopy(manifest)
-    old = directory / 'analysis' / manifest['analysis_id'] / 'manifest-snapshot.json'
-    if old.exists():
-        if json.loads(old.read_text(encoding='utf-8')) != manifest:
-            raise ValueError('Conflicting analysis checkpoint')
-    else:
-        write_json(old, manifest)
-    run.register(old, 'analysis_checkpoint', processor='resume:1.0.0')
+    source_analysis_id = manifest['analysis_id']
+    _record_analysis_checkpoint(run, manifest, source_analysis_id, 'resume:1.0.0')
     run.manifest['analysis_id'] = 'ANALYSIS-' + uuid.uuid4().hex
     run.analysis = directory / 'analysis' / run.manifest['analysis_id']
     run.analysis.mkdir()
@@ -1042,8 +1086,12 @@ def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snaps
     (``restore_evidence`` and then each stage name). It is reporting only: it never
     changes what is computed, and a failure inside it is ignored.
 
-    The previous revision's artifacts are never modified. Returns
-    ``(directory, manifest, review_document)``.
+    The previous revision's artifacts are never modified. The Run's own
+    ``manifest.json`` is **not advanced** to the new revision until that revision
+    is complete: while the rebuild runs, the Run's published current revision is
+    still the one it read its evidence from, so a reader never sees a
+    half-written revision and a process that dies mid-rebuild leaves a Run that one
+    explicit resubmit can finish. Returns ``(directory, manifest, review_document)``.
     """
     import copy
     import uuid
@@ -1055,97 +1103,137 @@ def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snaps
     manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
     if recording_run_errors(manifest, directory):
         raise ValueError('Run evidence failed integrity validation')
+    # A staging checkpoint left by a rebuild that died before its rollback says
+    # nothing about the current revision (the promoted manifest never named it), so
+    # it is discarded instead of being catalogued as evidence.
+    try:
+        (directory / REBUILD_CHECKPOINT_NAME).unlink()
+    except OSError:
+        pass
     current = directory / 'analysis' / manifest['analysis_id']
 
-    diarization_envelope = json.loads((current / 'speaker-assignments.json').read_text(encoding='utf-8'))
-    diarization_doc = diarization_envelope.get('data') or {}
-    cluster_ids = list(dict.fromkeys(segment['speaker_id']
-                                     for segment in diarization_doc.get('speaker_segments') or []))
-    if not cluster_ids:
-        raise RoleReviewError('This Run produced no speaker clusters; a role decision cannot be applied')
-    resolved = validate_decisions(decisions, cluster_ids)
+    # Everything from here on is the rebuild's own work: a failure is reported as
+    # `rebuild_failed` (retryable, previous revision untouched), except for a
+    # deliberate `RoleReviewError`, which states that this Run's preserved evidence
+    # cannot carry a role decision at all. `ValueError` may not be used for the
+    # former: the API reports it as "evidence insufficient / not retryable", which
+    # turned an internal failure into a dead end (Issue #113).
+    try:
+        diarization_envelope = json.loads((current / 'speaker-assignments.json').read_text(encoding='utf-8'))
+        diarization_doc = diarization_envelope.get('data') or {}
+        cluster_ids = list(dict.fromkeys(segment['speaker_id']
+                                         for segment in diarization_doc.get('speaker_segments') or []))
+        if not cluster_ids:
+            raise RoleReviewError('This Run produced no speaker clusters; a role decision cannot be applied')
+        resolved = validate_decisions(decisions, cluster_ids)
 
-    asr_stage = manifest['stages']['asr']
-    if asr_stage['status'] not in ('complete', 'partial') or not (current / 'transcript.json').is_file():
-        raise RoleReviewError('A preserved timestamped transcript is required before roles can be applied')
-    transcript_envelope = json.loads((current / 'transcript.json').read_text(encoding='utf-8'))
-    acoustic_envelope = json.loads((current / 'acoustic-segments.json').read_text(encoding='utf-8'))
-    acoustic_doc = acoustic_envelope.get('data') or {}
+        asr_stage = manifest['stages']['asr']
+        if asr_stage['status'] not in ('complete', 'partial') or not (current / 'transcript.json').is_file():
+            raise RoleReviewError('A preserved timestamped transcript is required before roles can be applied')
+        transcript_envelope = json.loads((current / 'transcript.json').read_text(encoding='utf-8'))
+        acoustic_envelope = json.loads((current / 'acoustic-segments.json').read_text(encoding='utf-8'))
+        acoustic_doc = acoustic_envelope.get('data') or {}
 
-    # One immutable revision file per save; the index is derived from what exists.
-    revision_path, revision = save_revision(
-        directory, resolved, reviewer, reason=reason,
-        analysis_id=manifest['analysis_id'],
-        recording_sha256=manifest.get('original_sha256'),
-        diarization_document_id=diarization_doc.get('document_id'),
-        evidence_refs=evidence_refs)
+        # One immutable revision file per save; the index is derived from what exists.
+        revision_path, revision = save_revision(
+            directory, resolved, reviewer, reason=reason,
+            analysis_id=manifest['analysis_id'],
+            recording_sha256=manifest.get('original_sha256'),
+            diarization_document_id=diarization_doc.get('document_id'),
+            evidence_refs=evidence_refs)
+    except RoleReviewError:
+        raise
+    except Exception as error:
+        raise _RebuildEvidenceError(f'{type(error).__name__}: {error}') from error
 
     run = ImportRun.__new__(ImportRun)
     run.directory, run.manifest = directory, copy.deepcopy(manifest)
+    # The evidence this rebuild restores is read from the revision named by the Run
+    # when the rebuild started; that identity has to be captured before the
+    # in-memory manifest is repointed at the new one.
+    source_analysis_id = manifest['analysis_id']
     run.progress_callback = progress
-    checkpoint = current / 'manifest-snapshot.json'
-    if checkpoint.exists():
-        if json.loads(checkpoint.read_text(encoding='utf-8')) != manifest:
-            raise ValueError('Conflicting analysis checkpoint')
-    else:
-        write_json(checkpoint, manifest)
-    run.register(checkpoint, 'analysis_checkpoint', processor='role_review:1.0.0')
+    _record_analysis_checkpoint(run, manifest, source_analysis_id, 'role_review:1.0.0')
     revision_ref = run.register(revision_path, REVISION_KIND, processor=f'role_review:{revision["revision_index"]}')
     run.manifest['analysis_id'] = 'ANALYSIS-' + uuid.uuid4().hex
     run.analysis = directory / 'analysis' / run.manifest['analysis_id']
     run.analysis.mkdir()
-    for name, stage in run.manifest['stages'].items():
-        if name not in ('ingestion', 'normalization', 'audio_qa'):
-            stage.update(status='pending', started_at=None, finished_at=None, latency_ms=None,
-                         input_artifact_ids=[], output_artifact_ids=[], reason='Processor not run in this revision')
-    run.manifest['status'] = 'partial'
-    _save_configuration(run, model_snapshot)
-    run.checkpoint()
+    # From here to the promotion below, no checkpoint reaches `<run>/manifest.json`:
+    # the manifest that is being built still names a revision whose evidence may not
+    # exist yet, so publishing it would point the Run's current revision at a
+    # partial revision (Issue #113). The staging file is the same manifest, kept
+    # beside the real one only long enough to be atomically promoted.
+    run.checkpoint_target = directory / REBUILD_CHECKPOINT_NAME
+    try:
+        for name, stage in run.manifest['stages'].items():
+            if name not in ('ingestion', 'normalization', 'audio_qa'):
+                stage.update(status='pending', started_at=None, finished_at=None, latency_ms=None,
+                             input_artifact_ids=[], output_artifact_ids=[], reason='Processor not run in this revision')
+        run.manifest['status'] = 'partial'
+        _save_configuration(run, model_snapshot)
 
-    def restore(kind, envelope, parents):
-        """Re-publish preserved evidence into this revision without recomputing it.
+        def restore(kind, envelope, parents):
+            """Re-publish preserved evidence into this revision without recomputing it.
 
-        The envelope's own artifact refs are carried over because they are already
-        registered in this Run; `data_artifact_ref` must stay one of them or the
-        canonical document reference would dangle.
-        """
-        refs = [ref for ref in (list(envelope.get('artifact_refs') or []) + list(parents))]
-        item = run.envelope(kind, envelope['status'], envelope['reason'], envelope['data'],
-                            refs, envelope.get('data_artifact_ref'))
-        return [item], envelope.get('data'), None
+            The envelope's own artifact refs are carried over because they are already
+            registered in this Run; `data_artifact_ref` must stay one of them or the
+            canonical document reference would dangle.
+            """
+            refs = [ref for ref in (list(envelope.get('artifact_refs') or []) + list(parents))]
+            item = run.envelope(kind, envelope['status'], envelope['reason'], envelope['data'],
+                                refs, envelope.get('data_artifact_ref'))
+            return [item], envelope.get('data'), None
 
-    preserved_parents = [revision_ref] + _configuration_refs(run)
-    if progress is not None:
+        preserved_parents = [revision_ref] + _configuration_refs(run)
+        if progress is not None:
+            try:
+                progress('restore_evidence')
+            except Exception:  # noqa: BLE001 - a reporter is not evidence
+                pass
+        run.execute('asr', preserved_parents, lambda: restore('transcript', transcript_envelope, preserved_parents))
+        run.manifest['stages']['asr']['processor'] = asr_stage['processor']
+        asr_art_id = run.manifest['stages']['asr']['output_artifact_ids'][-1]
+
+        run.execute('acoustic', [asr_art_id], lambda: restore('acoustic-segments', acoustic_envelope, [asr_art_id]))
+        run.manifest['stages']['acoustic']['processor'] = manifest['stages']['acoustic']['processor']
+        acoustic_art_id = run.manifest['stages']['acoustic']['output_artifact_ids'][-1]
+
+        run.execute('diarization', [acoustic_art_id], lambda: restore('speaker-assignments', diarization_envelope, [acoustic_art_id]))
+        run.manifest['stages']['diarization']['processor'] = manifest['stages']['diarization']['processor']
+        diar_art_id = run.manifest['stages']['diarization']['output_artifact_ids'][-1]
+
+        run._explicit_speaker_mapping = resolved
+        _run_role_dependent_chain(run, acoustic_doc, transcript_envelope.get('data'), diarization_doc,
+                                  acoustic_art_id=acoustic_art_id, diar_art_id=diar_art_id,
+                                  asr_art_id=asr_art_id, norm_art_id=revision_ref,
+                                  explicit_mapping=resolved, providers=providers)
+        _resolve_unrun_stages(run, True)
+        _retain_failures(run)
+        run.execute('report', [a['artifact_id'] for a in run.manifest['artifacts']],
+                    lambda: write_import_report(run))
+        integrity = recording_run_errors(run.manifest, directory)
+        if integrity:
+            # Name the real integrity gaps: "produced invalid Run evidence" alone left
+            # an operator with nothing to act on (Issue #113). The type is the one the
+            # API reports as `rebuild_failed`: it is this rebuild's own fault, not a
+            # verdict about the recording's preserved evidence, and not a crash inside
+            # an unknown processor either.
+            raise _RebuildEvidenceError('Role reanalysis produced invalid Run evidence: '
+                                        + '; '.join(integrity[:3]))
+        # The new revision is complete and self-consistent: publishing it is the one
+        # step that makes it the Run's current revision.
+        run.checkpoint_target = None
+        run.checkpoint()
+    except BaseException:
+        # A failed rebuild must leave the Run exactly as it was found. The revision
+        # directory only ever holds this attempt's own outputs (every artifact was
+        # created inside it), so removing it restores the state the retry will read.
+        run.checkpoint_target = None
+        shutil.rmtree(run.analysis, ignore_errors=True)
+        raise
+    finally:
         try:
-            progress('restore_evidence')
-        except Exception:  # noqa: BLE001 - a reporter is not evidence
+            (directory / REBUILD_CHECKPOINT_NAME).unlink()
+        except OSError:
             pass
-    run.execute('asr', preserved_parents, lambda: restore('transcript', transcript_envelope, preserved_parents))
-    run.manifest['stages']['asr']['processor'] = asr_stage['processor']
-    asr_art_id = run.manifest['stages']['asr']['output_artifact_ids'][-1]
-
-    run.execute('acoustic', [asr_art_id], lambda: restore('acoustic-segments', acoustic_envelope, [asr_art_id]))
-    run.manifest['stages']['acoustic']['processor'] = manifest['stages']['acoustic']['processor']
-    acoustic_art_id = run.manifest['stages']['acoustic']['output_artifact_ids'][-1]
-
-    run.execute('diarization', [acoustic_art_id], lambda: restore('speaker-assignments', diarization_envelope, [acoustic_art_id]))
-    run.manifest['stages']['diarization']['processor'] = manifest['stages']['diarization']['processor']
-    diar_art_id = run.manifest['stages']['diarization']['output_artifact_ids'][-1]
-
-    run._explicit_speaker_mapping = resolved
-    _run_role_dependent_chain(run, acoustic_doc, transcript_envelope.get('data'), diarization_doc,
-                              acoustic_art_id=acoustic_art_id, diar_art_id=diar_art_id,
-                              asr_art_id=asr_art_id, norm_art_id=revision_ref,
-                              explicit_mapping=resolved, providers=providers)
-    _resolve_unrun_stages(run, True)
-    _retain_failures(run)
-    run.execute('report', [a['artifact_id'] for a in run.manifest['artifacts']],
-                lambda: write_import_report(run))
-    run.checkpoint()
-    integrity = recording_run_errors(run.manifest, directory)
-    if integrity:
-        # Name the real integrity gaps: "produced invalid Run evidence" alone left
-        # an operator with nothing to act on (Issue #113).
-        raise ValueError('Role reanalysis produced invalid Run evidence: '
-                         + '; '.join(integrity[:3]))
     return directory, run.manifest, build_role_review(directory)

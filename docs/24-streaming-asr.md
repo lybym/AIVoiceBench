@@ -98,6 +98,11 @@ Browser VAD 与 Streaming ASR **并行存在**，职责不同：
   （`no_response_timeout_ms` + 5 s），并记录 `capture_result_waited`（含 `waited_ms`）。
   超过这个上限才结束：记录 `capture_result_wait_timeout`、以 `capture_finalisation_timeout`
   显式失败并关闭该轮（阶段 `failed`，**不记为回答完成**），绝不无限等待。
+  同一条有界等待也覆盖"控制侧报告了本轮，但音频 socket 从未建立采集"这一半：那里没有
+  finalisation 可等，此前这样的报告会被立即忽略、该轮的状态只能读成"仍在等待设备回答"。
+  上限到达后记录 `capture_result_wait_timeout`（`finalising: false`），并把 `progress` 的
+  `reason_code` 改为 `capture_result_without_capture`（页面报告了本轮，但没有采集被建立；
+  该轮的结局由观察策略自身的上限决定）。
 - **`GET /api/voice-test/sessions/{id}` 的 `progress`** 公开当前阶段与不推进的原因：
   `phase`（`idle`/`play_issued`/`awaiting_device_observation`/`capturing_device_audio`/`capture_finalised`
   或终态）、`reason_code`、`turn_id` 与说明文字。`capture_finalised` +

@@ -79,6 +79,9 @@ ERROR_CODES = {
                               'message': 'A role rebuild for this Run is already accepted or running'},
     'insufficient_evidence': {'http_status': 422, 'retryable': False,
                               'message': 'This Run cannot produce a role decision from its preserved evidence'},
+    'rebuild_failed': {'http_status': 500, 'retryable': True,
+                       'message': ('The rebuild could not finish its own new revision; the previous '
+                                   'revision was kept unchanged and the save can be resubmitted')},
     'internal_error': {'http_status': 500, 'retryable': True,
                        'message': 'The role rebuild failed inside a processor'},
     'interrupted': {'http_status': 503, 'retryable': True,

@@ -1578,13 +1578,11 @@ const VT = (function () {
         updateStatus('检测到疑似回答（浏览器 VAD 提示，未确认说话人）。');
       } else if (msg.type === 'ignored') {
         run.stats.ignored += 1;
-        // A refused observation is control state the operator must see; silently
-        // counting it left the page looking like it had simply stopped
-        // refreshing (Issue #113).
-        if (msg.event === 'capture_result' && msg.reason === 'capture_finalisation_pending') {
-          captureStatus('本轮识别未在控制时限内结束，已按失败处理。');
-          appendFreeLog('系统', '本轮识别未在控制时限内结束（未记为设备回答）。');
-        }
+        // A refused observation is counted, never silently dropped: an ignored
+        // message explains why a round did not advance (Issue #113). A round whose
+        // capture never finalises is *not* reported this way — the server ends it as
+        // an explicit `failed` (capture_finalisation_timeout / capture_missing_timeout),
+        // so there is no separate ignored reason to render here.
       } else if (msg.type === 'no_response') {
         appendFreeLog('系统', '未观察到设备回答（按策略继续）');
       } else if (msg.type === 'complete') {

@@ -460,6 +460,15 @@ async function trackRoleReview(runId, operationId, setProgress) {
         const label = ROLE_PHASE_LABELS[operation.phase] || operation.phase;
         setProgress((operation.stalled ? '进度心跳已停止，仍在查询：' : '正在重建：') +
             label + '（已等待 ' + seconds + ' 秒）');
+        if (operation.stalled) {
+            // A stalled rebuild is a pending state, not a terminal one, and the only
+            // authorized recovery is an explicit resubmit (the server retires it as
+            // `interrupted` at that point). Saying so is what turns a page that looks
+            // frozen into one an operator can act on (Issue #113 review).
+            throw new Error('角色重建的进度心跳已停止（操作 ' + operationId + '）。' +
+                '该操作仍是待决状态：重新提交同一份角色决定即会把它记为 interrupted 并开始新的重建；' +
+                '原 revision 不会被修改。');
+        }
         if (Date.now() - startedAt > ROLE_REVIEW_POLL_LIMIT_MS) {
             throw new Error('角色重建仍在进行（操作 ' + operationId + '），本页已停止跟踪；' +
                 '请稍后刷新该记录查看结果，或继续查询该操作。');

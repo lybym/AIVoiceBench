@@ -168,6 +168,11 @@ PROGRESS_REASON_PLAYBACK = 'awaiting_playback_report'
 PROGRESS_REASON_OBSERVATION = 'awaiting_device_observation'
 PROGRESS_REASON_CAPTURING = 'capture_in_progress'
 PROGRESS_REASON_CAPTURE_FINALISED = 'capture_finalised_awaiting_control_result'
+#: The control socket reported this round's result, but no audio capture was ever
+#: established for it. The round is waiting on the observation policy's own bound,
+#: not on a recogniser whose result is about to arrive — a distinction the generic
+#: ``awaiting_device_observation`` reason could not express (Issue #113 review).
+PROGRESS_REASON_MISSING_CAPTURE = 'capture_result_without_capture'
 PROGRESS_REASON_NOT_RUNNING = 'session_not_running'
 
 
@@ -203,6 +208,14 @@ def control_progress(session):
     if turn is not None and turn.status == 'play_issued':
         return entry(PROGRESS_PHASE_PLAY_ISSUED, PROGRESS_REASON_PLAYBACK,
                      'the browser has not reported playback of this turn', turn_id)
+    if session.capture_result_without_capture_at:
+        # Reported, but nothing was ever captured for it. The observation policy's
+        # own bound is what ends this round; naming that state is what keeps the
+        # operator from reading it as "the recogniser is still working".
+        return entry(PROGRESS_PHASE_AWAITING_OBSERVATION, PROGRESS_REASON_MISSING_CAPTURE,
+                     ('the control socket reported this round, but no device audio capture was '
+                      'ever established for it; the observation bound decides what happens next'),
+                     turn_id)
     return entry(PROGRESS_PHASE_AWAITING_OBSERVATION, PROGRESS_REASON_OBSERVATION,
                  'waiting for the browser to observe and finalise the device answer', turn_id)
 
@@ -474,6 +487,12 @@ class VoiceTestSession:
     # that "the recogniser finished and the round has not advanced" is a visible
     # state (``control_progress``) instead of an invisible wait.
     pending_observation: Optional[dict] = None
+    # When the control socket reported this turn's result while no capture existed
+    # for it at all. The round is then waiting on the observation policy's own
+    # bound rather than on a recogniser, which ``control_progress`` must say out
+    # loud instead of leaving it indistinguishable from "still capturing".
+    # Cleared as soon as a capture for the current turn actually starts.
+    capture_result_without_capture_at: Optional[str] = None
     # Provider events that arrived after their turn had already been closed.
     # They are never folded into that turn's transcript and never written to the
     # execution record (the run's outcome is already fixed); they stay here as a
@@ -1129,6 +1148,9 @@ class VoiceTestManager:
                                    sample_rate=sample_rate, channels=channels, bits=bits,
                                    mode=mode, asr=asr, fallback_reason=fallback_reason)
         session.capture = capture
+        # A capture now exists for this turn: "reported without a capture" is no
+        # longer the state the progress projection should name.
+        session.capture_result_without_capture_at = None
         self.record_event(session, 'capture_started', turn_id=turn_id, detail={
             'mode': mode, 'stream_id': stream_id,
             'evidence_scope': STREAMING_EVIDENCE_SCOPE,
@@ -1234,9 +1256,27 @@ class VoiceTestManager:
         """
         pending = session.pending_observation
         session.pending_observation = None
+        session.capture_result_without_capture_at = None
         if isinstance(pending, dict) and pending.get('turn_id') == turn_id:
             return pending
         return None
+
+    def note_capture_result_without_capture(self, session, turn_id):
+        """Record that this turn's result was reported with no capture behind it.
+
+        The round keeps its own bound (``no_response_timeout_ms`` and the browser's
+        observation timeout); what this adds is the reason, so the session snapshot
+        stops presenting the wait as "device audio is being recognised" when no
+        recogniser was ever started for it (Issue #113 review).
+        """
+        if session.capture_result_without_capture_at:
+            return None
+        session.capture_result_without_capture_at = utc_now()
+        return self.record_event(
+            session, 'capture_result_without_capture', turn_id=turn_id,
+            detail={'note': ('the control socket reported this round, but no audio capture '
+                             'exists for it; the observation bound decides the outcome'),
+                    'evidence_scope': STREAMING_EVIDENCE_SCOPE})
 
     def open_turn(self, session, *, text, audio_path=None, audio_url=None,
                   role='platform', audio_sha256=None):

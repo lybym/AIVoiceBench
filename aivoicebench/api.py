@@ -325,7 +325,7 @@ def _role_review_rebuild(directory, operation_id, mapping, reviewer, reason,
     (file I/O plus a possible Judge provider call) and must not be tied to the
     lifetime of the request that accepted it.
     """
-    from .import_pipeline import apply_role_mapping
+    from .import_pipeline import apply_role_mapping, rebuild_evidence_error
     from .role_review import RoleReviewError
     from .role_review_operations import (REBUILD_PHASES, update_operation, utc_now)
     from .run_lock import RunLocked, run_lock
@@ -363,8 +363,13 @@ def _role_review_rebuild(directory, operation_id, mapping, reviewer, reason,
         code, message = 'insufficient_evidence', str(error)
     except RunLocked:
         code, message = 'run_locked', None
-    except ValueError as error:
-        code, message = 'insufficient_evidence', str(error)
+    except rebuild_evidence_error() as error:
+        # This rebuild could not complete its own evidence. It is not a verdict about
+        # the recording's preserved evidence — the decision this operation applies was
+        # validated before it was accepted — and it is not "a processor crashed".
+        # Deferring the Run's checkpoint means the previous revision is untouched, so
+        # the same save is genuinely resubmittable (Issue #113).
+        code, message = 'rebuild_failed', str(error)
     except Exception as error:  # noqa: BLE001 - one classified terminal state
         # Unknown processor failures keep only their type: provider exceptions can
         # embed request secrets and must never reach a log or an API body.
@@ -454,7 +459,7 @@ async def save_role_review(run_id: str, request: Request):
     from .role_review_operations import (active_operation,
                                          active_operation_is_stalled,
                                          mark_interrupted, start_operation, view)
-    from .run_lock import RunLocked, run_lock
+    from .run_lock import RunLocked, control_lock, run_lock
 
     origin = request.headers.get('origin')
     if origin and (urlsplit(origin).netloc != request.url.netloc
@@ -493,33 +498,46 @@ async def save_role_review(run_id: str, request: Request):
     # One rebuild per Run. A retry reports the operation that already exists rather
     # than quietly queueing a second rerun; a *stalled* one is explicitly retired
     # first, because an operator resubmitting is the authorized recovery action.
-    existing = active_operation(directory)
-    if existing is not None:
-        if active_operation_is_stalled(existing, _role_review_stale_after_ms()):
-            mark_interrupted(directory, existing['operation_id'],
-                             'the worker stopped without recording a terminal result')
-            _log_role_review('role_review_rebuild_retired', run_id=run_id,
-                             operation_id=existing['operation_id'], code='interrupted',
-                             detail='stalled rebuild retired by an explicit resubmit')
-        else:
-            raise _role_review_http(
-                'operation_in_progress',
-                '该记录的角色重建仍在进行中，请继续查看该操作进度',
-                extra={'operation_id': existing['operation_id'],
-                       'operation': view(existing, stale_after_ms=_role_review_stale_after_ms())})
-
-    # Fast, distinguishable answer for "another analysis is writing this Run",
-    # instead of a generic conflict discovered after a long wait.
+    #
+    # The check and the record are written under one control-plane lock: two truly
+    # concurrent saves would otherwise both find no active operation, both be
+    # accepted, and produce two revisions for one Run (Issue #113).
     try:
-        with run_lock(directory):
-            pass
-    except RunLocked:
-        raise _role_review_http('run_locked') from None
+        with control_lock(directory):
+            existing = active_operation(directory)
+            if existing is not None:
+                if active_operation_is_stalled(existing, _role_review_stale_after_ms()):
+                    mark_interrupted(directory, existing['operation_id'],
+                                     'the worker stopped without recording a terminal result')
+                    _log_role_review('role_review_rebuild_retired', run_id=run_id,
+                                     operation_id=existing['operation_id'], code='interrupted',
+                                     detail='stalled rebuild retired by an explicit resubmit')
+                else:
+                    raise _role_review_http(
+                        'operation_in_progress',
+                        '该记录的角色重建仍在进行中，请继续查看该操作进度',
+                        extra={'operation_id': existing['operation_id'],
+                               'operation': view(existing, stale_after_ms=_role_review_stale_after_ms())})
 
-    snapshot, providers = _model_settings().capture()
-    record = start_operation(directory, mapping=resolved, reviewer=reviewer.strip(),
-                             reason=reason, source_analysis_id=_load_run(directory).get('analysis_id'),
-                             cluster_ids=cluster_ids)
+            # Fast, distinguishable answer for "another analysis is writing this Run",
+            # instead of a generic conflict discovered after a long wait.
+            try:
+                with run_lock(directory):
+                    pass
+            except RunLocked:
+                raise _role_review_http('run_locked') from None
+
+            snapshot, providers = _model_settings().capture()
+            record = start_operation(
+                directory, mapping=resolved, reviewer=reviewer.strip(),
+                reason=reason, source_analysis_id=_load_run(directory).get('analysis_id'),
+                cluster_ids=cluster_ids)
+    except RunLocked:
+        # Another save is being recorded for this Run right now, so this request is a
+        # retry of that one rather than a second rebuild.
+        raise _role_review_http(
+            'operation_in_progress',
+            '该记录的角色重建请求正在被记录，请稍后重试') from None
     view_payload = view(record, stale_after_ms=_role_review_stale_after_ms())
     _schedule_role_review(directory, record['operation_id'], resolved, reviewer.strip(),
                           reason, snapshot, providers)
@@ -1000,8 +1018,8 @@ async def voice_test_websocket(websocket: WebSocket, session_id: str):
                 awaiting = session.awaiting_turn_id
                 result = session.last_capture_result or {}
                 if not result or result.get('turn_id') != awaiting:
-                    result, timed_out = await _await_capture_result(session, awaiting)
-                    if timed_out:
+                    result, outcome = await _await_capture_result(session, awaiting)
+                    if outcome == 'timeout':
                         # An explicit, distinguishable failure state instead of a
                         # round that waits forever: the recogniser never published
                         # a result for this turn.
@@ -1020,6 +1038,15 @@ async def voice_test_websocket(websocket: WebSocket, session_id: str):
                             'note': ('本轮识别在控制时限内未发布结果；已按失败结束，'
                                      '不记为设备回答')})
                         break
+                    if outcome == 'no_capture':
+                        # No capture exists for this reported round, so there is
+                        # nothing to consume and nothing that can still arrive. The
+                        # round keeps its own recovery path — the observation policy's
+                        # bound ends it — but the state stops being indistinguishable
+                        # from "device audio is being recognised": it is recorded and
+                        # published through `progress` (Issue #113 review).
+                        _voice_test_manager.note_capture_result_without_capture(
+                            session, awaiting)
                 if not result:
                     # "Nothing was published" and "the turn moved while we waited"
                     # are different control outcomes.
@@ -1565,21 +1592,24 @@ async def _await_capture_result(session, turn_id):
     finalising the recogniser. Treating that as "no capture" is what made a round
     stall with no visible reason (Issue #113).
 
-    Returns ``(result, timed_out)``:
+    The wait covers both halves of that race: a capture that *is* finalising, and a
+    report for which the audio socket has not even created its capture yet (the page
+    sends ``capture_result`` whether or not its own audio socket opened). Waiting
+    only for the first left the second unbounded — the round simply stopped advancing
+    (Issue #113 review).
 
-    * ``(result, False)`` — a published result for ``turn_id``;
-    * ``({}, False)`` — nothing is being finalised for this turn, so the caller
-      reports its own state;
-    * ``({}, True)`` — a finalisation for this turn was still running after the
+    Returns ``(result, outcome)``:
+
+    * ``(result, 'published')`` — a published result for ``turn_id``;
+    * ``({}, 'no_capture')`` — nothing is being captured for this turn and none ever
+      started within the bound, so the caller reports its own state;
+    * ``({}, 'timeout')`` — a finalisation for this turn was still running after the
       bound. The caller must publish an explicit failure state.
 
     It never reads the browser's payload and never invents a transcript.
     """
     if turn_id is None:
-        return {}, False
-    capture = session.capture
-    if capture is None or capture.turn_id != turn_id:
-        return {}, False
+        return {}, 'no_capture'
     start = time.monotonic()
     deadline = start + (session.no_response_timeout_ms + CAPTURE_FINALISATION_MARGIN_MS) / 1000
     waited = False
@@ -1593,19 +1623,36 @@ async def _await_capture_result(session, turn_id):
                                      'audio socket had published its result'),
                             'waited_ms': round((time.monotonic() - start) * 1000, 3),
                             'evidence_scope': 'control_evidence'})
-            return result, False
+            return result, 'published'
         if session.status != 'running' or session.awaiting_turn_id != turn_id:
-            return {}, False
+            return {}, 'no_capture'
         if time.monotonic() >= deadline:
+            # Bounded either way. Whether a finalisation was still in flight or no
+            # capture ever existed decides which control outcome the caller reports;
+            # the wait itself must not be unbounded just because there is nothing to
+            # wait for.
+            finalising = _capture_is_finalising(session, turn_id)
             _voice_test_manager.record_event(
                 session, 'capture_result_wait_timeout', turn_id=turn_id,
-                detail={'note': ('no capture result was published for this round before '
-                                 'the control bound'),
+                detail={'note': ('the audio socket was still finalising this round when the '
+                                 'control bound expired' if finalising else
+                                 'no capture was ever started for this round before the '
+                                 'control bound'),
+                        'finalising': finalising,
                         'waited_ms': round((time.monotonic() - start) * 1000, 3),
                         'evidence_scope': 'control_evidence'})
-            return {}, True
+            return {}, 'timeout' if finalising else 'no_capture'
         waited = True
         await asyncio.sleep(0.05)
+
+
+def _capture_is_finalising(session, turn_id):
+    """Whether a capture for this turn exists and has not published yet."""
+    capture = session.capture
+    if capture is not None and capture.turn_id == turn_id:
+        return True
+    pending = session.pending_observation
+    return isinstance(pending, dict) and pending.get('turn_id') == turn_id
 
 
 async def _consume_device_observation(websocket, session, result):

@@ -1426,6 +1426,76 @@ class FreeModeRoundAdvanceTests(FreeModeHarness, unittest.TestCase):
         self.assertNotIn('device_observation', kinds)
         self.assertEqual(record['stop_reason'], 'capture_finalisation_timeout')
 
+    def test_a_round_reported_with_no_capture_at_all_is_bounded_and_explained(self):
+        """The control socket may report a round the audio socket never captured.
+
+        ``finishFreeTurn`` reports the round regardless of what its own capture did,
+        so a page whose audio socket never opened reports a round with no capture
+        behind it. It must not wait forever on a recogniser that does not exist, and
+        the session snapshot must name that state instead of presenting it as
+        "device audio is being recognised" (Issue #113 review).
+        """
+        session_id = self.create_free_session(max_turns=2, on_no_response='continue',
+                                              no_response_timeout_ms=1000)
+        with self.start_control(session_id) as control:
+            control.send_json({'type': 'start'})
+            control.receive_json()  # capture_mode
+            play = control.receive_json()
+            # Report playback exactly as the page does, so the round reaches the
+            # observation phase instead of still waiting for a playback report.
+            control.send_json({'type': 'playback_started', 'turn_id': play['turn_id']})
+            control.send_json({'type': 'playback_ended', 'turn_id': play['turn_id']})
+            # No audio socket is opened at all for this turn.
+            control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+            # The bounded wait for a capture that never arrives is what makes this
+            # answerable at all; before, it returned immediately and unconditionally.
+            ignored = control.receive_json()
+
+            self.assertEqual(ignored['type'], 'ignored', ignored)
+            session = self.manager.get_session(session_id)
+            record = self.record(session_id)
+            self.assertIn('capture_result_without_capture',
+                          [event['kind'] for event in record['events']])
+            progress = self.control.get(
+                f'/api/voice-test/sessions/{session_id}').json()['progress']
+            self.assertEqual(progress['reason_code'], 'capture_result_without_capture')
+            self.assertEqual(progress['turn_id'], play['turn_id'])
+            # The round still has its own bound and still records no answer.
+            self.assertIsNotNone(session.awaiting_turn_id)
+            self.assertNotIn('device_observation',
+                             [event['kind'] for event in record['events']])
+
+            # And a capture that does start later clears that state again.
+            result = self.send_capture(session_id, play['turn_id'])
+            self.assertEqual(result['type'], 'capture_result', result)
+            progress = self.control.get(
+                f'/api/voice-test/sessions/{session_id}').json()['progress']
+            self.assertEqual(progress['reason_code'],
+                             'capture_finalised_awaiting_control_result')
+
+    def test_an_already_published_capture_still_advances_without_waiting(self):
+        """A published result is consumed directly; the bound is not a delay.
+
+        The waiting branch must not turn a normal round into a timeout: when the
+        audio socket has already published, the control socket advances immediately.
+        """
+        session_id = self.create_free_session(max_turns=2)
+        with self.start_control(session_id) as control:
+            control.send_json({'type': 'start'})
+            control.receive_json()  # capture_mode
+            play = control.receive_json()
+            result = self.send_capture(session_id, play['turn_id'])
+            self.assertEqual(result['type'], 'capture_result', result)
+            control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+            nxt = control.receive_json()
+
+        self.assertEqual(nxt['type'], 'play', nxt)
+        record = self.record(session_id)
+        kinds = [event['kind'] for event in record['events']]
+        self.assertIn('device_observation', kinds)
+        self.assertNotIn('capture_result_waited', kinds)
+        self.assertNotIn('capture_result_without_capture', kinds)
+
 
 if __name__ == '__main__':
     unittest.main()
