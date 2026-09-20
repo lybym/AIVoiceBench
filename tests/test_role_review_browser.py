@@ -222,13 +222,27 @@ class RoleReviewBrowserTests(unittest.TestCase):
         self.page.wait_for_function(
             "document.body.innerText.includes('人工角色决策已完成')", timeout=120000)
 
+        # The saved revision drove a new AnalysisRevision in which role-dependent
+        # stages really ran. The revision records the base revision it was applied to.
+        with urllib.request.urlopen(
+                f'{self.base}/api/runs/{self.run_id}', timeout=30) as response:
+            view = json.loads(response.read().decode())
+
         detail = self.page.inner_text('#detail')
         self.assertIn('人工角色决策已完成', detail)
         self.assertIn('复核人 zhang', detail)
         self.assertIn('当前修订 REV-1', detail)
-        # "The human decision is complete" is not presented as a promise that
-        # metrics will be generated: the downstream outcome is stated separately.
-        self.assertIn('人工决策与下游指标是两件事', detail)
+        # The displayed cluster statistic is the distinct cluster count, never the
+        # number of diarization entries (Issue #113).
+        served_clusters = {segment['speaker_id'] for segment in view['speaker_segments']}
+        self.assertIn(f'聚类数 {len(served_clusters)}', detail)
+        # "The human decision is complete" must never read as a promise that metrics
+        # were generated: when the served ledger says the metric stage did not
+        # complete, the page has to state the abstention as its own state.
+        observed = [metric for metric in view['metrics']
+                    if metric['status'] == 'observed' and metric['value'] is not None]
+        if view['stages']['metrics']['status'] != 'complete' or not observed:
+            self.assertIn('人工决策与下游指标是两件事', detail)
 
         after = self.review_document()
         self.assertEqual(after['status'], 'complete_review')
@@ -236,6 +250,12 @@ class RoleReviewBrowserTests(unittest.TestCase):
         self.assertEqual(after['revision']['reviewer'], 'zhang')
         self.assertEqual(after['revision']['decisions'],
                          {clusters[0]: 'tester', clusters[1]: 'device'})
+        self.assertEqual(after['revision']['analysis_id'], before['analysis_id'])
+        self.assertNotEqual(view['analysis_id'], before['analysis_id'])
+        roles = {segment['speaker_role'] for segment in view['fused_segments']}
+        self.assertIn('tester', roles)
+        self.assertIn('device', roles)
+        self.assertNotEqual(view['stages']['turns']['status'], 'pending')
 
         # The accepted operation is durable and queryable through the API.
         with urllib.request.urlopen(
@@ -245,18 +265,6 @@ class RoleReviewBrowserTests(unittest.TestCase):
         self.assertEqual(operations['operations'][0]['result']['gate_status'],
                          'complete_review')
         self.assertIsNone(operations['active'])
-
-        # The saved revision drove a new AnalysisRevision in which role-dependent
-        # stages really ran. The revision records the base revision it was applied to.
-        with urllib.request.urlopen(
-                f'{self.base}/api/runs/{self.run_id}', timeout=30) as response:
-            view = json.loads(response.read().decode())
-        self.assertEqual(after['revision']['analysis_id'], before['analysis_id'])
-        self.assertNotEqual(view['analysis_id'], before['analysis_id'])
-        roles = {segment['speaker_role'] for segment in view['fused_segments']}
-        self.assertIn('tester', roles)
-        self.assertIn('device', roles)
-        self.assertNotEqual(view['stages']['turns']['status'], 'pending')
 
 
 if __name__ == '__main__':

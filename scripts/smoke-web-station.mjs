@@ -173,6 +173,38 @@ for (const name of expectedGlobals) {
   if (!present) errors.push(`global ${name} is missing after loading the compiled scripts`);
 }
 
+// Issue #113's two analysis-view corrections, checked as *behaviour* of the
+// compiled artifact rather than as source text: the cluster statistic must count
+// clusters (not diarization entries), and a completed human review must not read
+// as a promise that metrics were generated.
+try {
+  const counted = vm.runInContext(
+    "countClusters([{speaker_id:'speaker_0'},{speaker_id:'speaker_0'},{speaker_id:'speaker_1'}])",
+    sandbox);
+  if (counted !== 2) {
+    errors.push(`countClusters() reported ${counted} for 3 segments over 2 clusters`);
+  }
+  const empty = vm.runInContext('countClusters([]) === 0 && countClusters(undefined) === 0', sandbox);
+  if (empty !== true) {
+    errors.push('countClusters() must report 0 for an empty or absent segment list');
+  }
+  const abstained = vm.runInContext(
+    "downstreamAbstentionNote({metrics:[], stages:{metrics:{status:'insufficient_evidence',"
+    + "reason:'roles_not_confirmed'}}, metrics_gap:{reasons:[{code:'roles_not_confirmed',"
+    + "count:84,detail:'unmatched acoustic segments'}]}}, true)", sandbox);
+  if (!String(abstained).includes('指标已弃权')) {
+    errors.push('a completed human review with no metrics must state the downstream abstention');
+  }
+  const settled = vm.runInContext(
+    "downstreamAbstentionNote({metrics:[{status:'observed',value:12}],"
+    + "stages:{metrics:{status:'complete'}}, metrics_gap:{}}, true)", sandbox);
+  if (settled !== '') {
+    errors.push('a settled revision must not report an abstention');
+  }
+} catch (error) {
+  errors.push(`the analysis-view statistics contract is not usable: ${error.message}`);
+}
+
 // `window.VT` is the published control layer; the browser tests call into it.
 try {
   const surface = vm.runInContext('Object.keys(window.VT || {}).sort().join(",")', sandbox);
