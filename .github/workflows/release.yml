@@ -188,6 +188,11 @@ jobs:
           VT_BROWSER_BASE_URL: http://127.0.0.1:8099
         run: |
           set -euo pipefail
+          # The mandatory web-build gate below imports the application's own
+          # TestClient, so the app's declared dependencies must be installed on the
+          # runner; this step previously installed only Playwright, which made
+          # `tests.test_web_station_build` fail to import (PR #100 / Issue #84).
+          python -m pip install --quiet -r requirements-api.txt
           python -m pip install --quiet playwright
           python -m playwright install --with-deps chromium
           python -m unittest tests.test_voice_browser -v
