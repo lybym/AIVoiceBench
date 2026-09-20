@@ -620,6 +620,10 @@ def build_run_providers(doc, keys, storage_config=None):
                 audit_root=Path(root))
         doc['streaming_tts_transport']='volcengine_tts_ws_bidirectional'
         doc['streaming_tts_format']=TTS_FIXED_FORMAT
+        # The no-silent-fallback decision belongs in the immutable Run snapshot,
+        # not merely in the absence of a legacy profile (Issue #98, section 3).
+        from .streaming_tts import fallback_policy_record
+        doc['streaming_tts_fallback_policy']=fallback_policy_record()
     if doc.get('revision')==0:
         doc['legacy_environment']={'provider':os.environ.get('AIVOICEBENCH_LLM_PROVIDER','none'),
             'model':os.environ.get('AIVOICEBENCH_LLM_MODEL',''),

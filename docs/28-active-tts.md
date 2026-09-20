@@ -53,6 +53,11 @@ complete fixed text
 - 重新执行同一 Case **不得**因为启动 Run 而静默重新合成或替换该资产。
 - 音频不是"看起来像 MP3"就被接受：解析器逐帧扫描，拒绝非 MP3、中途采样率/声道变化、
   空帧，并在至少一个有效帧之后于首个非帧字节处停止计数。校验失败即失败，不写入资产。
+- **冻结产物的命名与交付 Content-Type 必须与容器一致**。`voice_test.py` 依据 provider 返回的
+  `format` 决定扩展名（MP3 → `.mp3`，遗留 SSE 迁移期可仍为 `.wav`），
+  `GET /api/voice-test/sessions/{id}/audio/{i}` 依据实际扩展名返回 `audio/mpeg` / `audio/wav`。
+  之前固定写 `.wav` 并以 `audio/wav` 交付 MP3 字节会让 artifact 的 provenance 与真实容器矛盾，
+  也会让按 Content-Type 选择解码器的浏览器拿到错误格式。
 - Provider timing（延迟、chunk 到达时间）是诊断，不是正式 acoustic truth。
 
 ## 4. Free：双向流式会话
@@ -71,12 +76,19 @@ Streaming ASR final Observation
 - 文本 chunk 顺序**原样保持**：`split_speakable_chunks()` 只在句末标点或硬上限处切分，
   从不重排、去重或丢弃。
 - TTS session 与 Active Turn 绑定（`context.session_id / turn_id / run_index`）。
-- **Stale ownership 在传输层强制**：`cancel()` 之后（用户 Stop、turn 改变、run stop、
-  provider failure、未来 Barge-in）所有后续音频帧被丢弃并计为 `tts_stale_audio`，
-  **永不写入该 turn 的音频字节**。这正是阻止迟到音频串入下一轮的机制，不依赖调用方记得处理。
-- 取消后的 session 拒绝新的 `append_text`。
-- 流式链路失败**不得**静默切回旧 SSE 或单向 WS。`FORBIDDEN_FALLBACKS` 与 Run snapshot 的
-  `streaming_tts_transport` 字段把该决定显式记录；若未来需要 fallback，必须由产品显式定义、
+- **Stale ownership 由传输层强制执行**：**调用方调用 `cancel()` 之后**（用户 Stop、turn 改变、
+  run stop、provider failure、未来 Barge-in 各自触发一次 `cancel()`），所有后续音频帧被丢弃并计为
+  `tts_stale_audio`，**永不写入该 turn 的音频字节**。这是阻止迟到音频串入下一轮的机制。
+  需要明确的是：**传输层不自行检测 turn 是否过期**——「turn 改变 / run stop / barge-in 应当触发
+  `cancel()`」的上层编排属于尚未实现的 Free 接线（§8），`stale_turn_reason()` 目前也还没有生产调用方。
+- 取消后的 session 拒绝新的 `append_text`；session 一旦进入终态（finished/cancelled/failed），
+  再次 `close()`/`cancel()` 不会改写已记录的证据，也不会复活音频。
+- 被取消或失败的 session 音频落盘为 `{stream_id}.partial.mp3`，与完成态的 `{stream_id}.mp3`
+  可区分；`_write_audio_file()` 写失败时结果降级为 `failed` 并在 events 中记录，不会把只存在于
+  内存的字节上报为完成的合成。
+- 流式链路失败**不得**静默切回旧 SSE 或单向 WS。Run snapshot 的 `streaming_tts_fallback_policy`
+  与 session `summary()['fallback_policy']`（`forbidden_transports` 由适配器模块声明）真正把该决定
+  落盘，而不是靠「没有配置旧 profile」隐含表达；若未来需要 fallback，必须由产品显式定义、
   UI 标注并写入 Run。
 - LLM partial、TTS audio chunk、browser playback callback 均为 Control/Provider diagnostics，
   不构成正式 Measurement acoustic boundary。
@@ -147,8 +159,21 @@ error from server    : [header][event i32][error_code i32][payload_len i32][erro
   `interface_contract.real_cloud_call` 记录为 `not_attempted`。
 - **真实云参数**：`sample_rate` / `speech_rate` / `loudness_rate` 的实际音色支持矩阵未在真实
   服务上观察；服务端仍是最终权威。
+- **单向请求时序假设**：`_UnidirectionalSession` 连续发送 `StartSession(100) → TaskRequest(200)
+  → FinishSession(102)`，**不等待 `SessionStarted(150)`**。这是基于 V3 事件信封与仓库既有
+  流式识别实践的工程推断，**未在真实服务上验证**；若官方要求等待 `150` 再发 `TaskRequest`，
+  首次真实云验收会暴露该问题。因此该时序必须计入 Issue #98 AC #10 / #85 的真实云验收项。
+- **audio-only 帧的"with-event + session 字段"假设**：解析器按
+  `[header][event][sid_len][sid][payload_len][audio]` 处理，并由与实现无关的 golden hex fixture
+  固定（`tests/test_tts_v3_websocket.py::GoldenFrameTests`）；该布局仍未经真实服务确认。
 - **浏览器端流式播放**：Free 的 MP3 streaming playback、TTS audio channel/event contract 与
   Browser 侧 stale-turn 丢弃尚未实现（provider/session 层已实现并验证）。
+- **Free 上层编排**：turn 改变 / run stop / barge-in 触发 `cancel()` 的调用方尚未接线，
+  `stale_turn_reason()` 目前无生产调用方。
+- **Fixed 审计 sidecar 的不可变性**：`{stem}-tts-audit.json` 由 `_write_audit` 覆盖写入，
+  不经过 `schemas/provider-invocation.schema.json` 校验，也不具备 `InvocationAudit`
+  的一次尝试一目录语义（该模式继承自旧 SSE 适配器）。它是**独立的 TTS sidecar 审计**，
+  不是 `provider-invocation` 契约的一部分。
 - **实体设备 / 真实扬声器 / 真实麦克风**验收未进行。
 - 这些结论只覆盖软件与受控输入验证（`software_verified`）。真实录音、人工复核与浏览器回放由
   [#85](https://github.com/lybym/AIVoiceBench/issues/85) 承担。

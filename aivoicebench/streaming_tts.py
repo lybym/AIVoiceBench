@@ -87,10 +87,46 @@ TTS_ERROR_CATEGORIES = (
     'turn_not_current',
 )
 
-# The explicit statement that a streaming failure is not allowed to fall back.
-# Recorded in the session summary and the Run snapshot so the decision is visible
-# rather than implied by the absence of an SSE profile.
-FORBIDDEN_FALLBACKS = ('volcengine_tts_sse', 'volcengine_tts_ws_unidirectional')
+# The explicit statement that a streaming failure is not allowed to fall back to
+# another TTS transport. Issue #98 §3 requires that if a fallback is ever wanted,
+# the product must define it explicitly, label it in the UI and **record it on the
+# Run** — so the decision itself is persisted (``TTS_FALLBACK_POLICY``) rather than
+# being implied by the absence of a legacy profile.
+#
+# The forbidden transports are named by the *adapter* that owns them, so this
+# module stays vendor-neutral: a second TTS provider declares its own retired
+# transports through ``register_forbidden_fallback`` instead of editing a vendor
+# list here.
+TTS_FALLBACK_POLICY = 'explicit_no_silent_fallback'
+TTS_FALLBACK_POLICY_NOTE = (
+    'A streaming TTS failure must be reported as a failure of this transport; '
+    'silently switching to another TTS transport is forbidden. A future fallback '
+    'must be defined by the product, labelled in the UI and recorded on the Run.')
+
+# Retired/alternate transports that must never be reached implicitly.
+_FORBIDDEN_FALLBACKS = set()
+
+
+def register_forbidden_fallback(transport_name):
+    """Declare a transport this process must never fall back to implicitly."""
+    _FORBIDDEN_FALLBACKS.add(transport_name)
+    return transport_name
+
+
+def forbidden_fallbacks():
+    """The transports currently declared as forbidden fallbacks."""
+    return tuple(sorted(_FORBIDDEN_FALLBACKS))
+
+
+def fallback_policy_record():
+    """The persisted form of the no-silent-fallback decision (Issue #98 §3)."""
+    return {
+        'policy': TTS_FALLBACK_POLICY,
+        'forbidden_transports': list(forbidden_fallbacks()),
+        'silent_fallback': False,
+        'note': TTS_FALLBACK_POLICY_NOTE,
+    }
+
 
 STREAMING_TTS_EVIDENCE_SCOPE = 'control_evidence'
 
@@ -109,11 +145,17 @@ def new_tts_stream_id():
 
 @dataclass
 class StreamingTTSEvent:
-    """One provider/control-observable event in a TTS session."""
+    """One provider/control-observable event in a TTS session.
+
+    ``source`` is supplied by the adapter that produced the event, so this
+    vendor-neutral module never names a provider itself. ``SOURCE_UNKNOWN`` is
+    the explicit "no adapter claimed this event" value rather than a provider
+    name, so a missing source stays visible instead of masquerading as one.
+    """
 
     kind: str
+    source: str
     at: str = field(default_factory=utc_now)
-    source: str = 'volcengine_streaming_tts'
     text: Optional[str] = None
     sequence: Optional[int] = None
     basis: Optional[str] = None
@@ -200,20 +242,17 @@ def stale_turn_reason(session, turn):
 
 
 def tts_failure_category(error):
-    """Map a raised error to one first-class category (never a raw message)."""
+    """Map a raised error to one first-class category (never a raw message).
+
+    The adapter's session already decided the category and carries it in a
+    trailing ``(category)`` marker, so this delegates to the adapter's mapper
+    instead of re-deriving the answer from message text. Two parallel
+    classifications of the same failure would drift, and the drift would be
+    invisible until the two reported different reasons for one incident.
+    """
     if isinstance(error, StreamingTTSUnavailable):
         return 'stream_open_failed'
+    from .volcengine_tts_ws import VolcengineUnidirectionalTTSProvider
     if isinstance(error, ProviderFailure):
-        text = str(error).lower()
-        if 'credential' in text:
-            return 'credential_missing'
-        if 'resource' in text or 'voice' in text or 'format' in text:
-            return 'configuration_invalid'
-        if 'empty' in text:
-            return 'input_invalid'
-        if 'timeout' in text:
-            return 'stream_timeout'
-        if 'mp3' in text or 'audio' in text:
-            return 'provider_no_audio'
-        return 'provider_error'
+        return VolcengineUnidirectionalTTSProvider._failure_code(error)
     return 'provider_error'

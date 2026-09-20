@@ -29,15 +29,17 @@ from aivoicebench.config_loaders import load_providers_config
 from aivoicebench.model_settings import (TTS_FIXED_FORMAT, SettingsError,
                                          build_run_providers, validate_profile)
 from aivoicebench.providers import ProviderFailure
-from aivoicebench.streaming_tts import (FORBIDDEN_FALLBACKS,
-                                        STREAMING_TTS_EVIDENCE_SCOPE,
-                                        StreamingTTSUnavailable,
+from aivoicebench.streaming_tts import (STREAMING_TTS_EVIDENCE_SCOPE,
+                                        StreamingTTSEvent, StreamingTTSUnavailable,
+                                        TTS_FALLBACK_POLICY,
                                         UnavailableStreamingTTSProvider,
+                                        fallback_policy_record, forbidden_fallbacks,
                                         new_tts_stream_id, split_speakable_chunks,
                                         stale_turn_reason, tts_failure_category)
 from aivoicebench.volcengine_tts_ws import (AUDIT_ENDPOINT_BIDIRECTIONAL,
                                            AUDIT_ENDPOINT_UNIDIRECTIONAL,
-                                           CAPABILITY_MATRIX, CODE_INVALID_REQUEST,
+                                           CAPABILITY_MATRIX, CODE_ERROR_CATEGORY,
+                                           CODE_INVALID_REQUEST,
                                            CODE_RESOURCE_MISMATCH, CODE_SERVER_BUSY,
                                            CODE_SUCCESS, CODE_TTS_NO_AUDIO,
                                            ENDPOINT_BIDIRECTIONAL,
@@ -51,7 +53,10 @@ from aivoicebench.volcengine_tts_ws import (AUDIT_ENDPOINT_BIDIRECTIONAL,
                                            EVENT_TASK_REQUEST,
                                            EVENT_TTSSentence_END,
                                            EVENT_TTSSentence_START,
-                                           EVENT_TTS_RESPONSE, FLAG_WITH_EVENT,
+                                           EVENT_TTS_RESPONSE,
+                                           FALLBACK_TRANSPORT_SSE,
+                                           FALLBACK_TRANSPORT_UNIDIRECTIONAL,
+                                           FLAG_WITH_EVENT,
                                            INTERFACE_CONTRACT,
                                            MSG_AUDIO_ONLY_RESPONSE,
                                            MSG_FULL_CLIENT_REQUEST, MSG_FULL_SERVER_RESPONSE,
@@ -72,6 +77,26 @@ from aivoicebench.volcengine_tts_ws import (AUDIT_ENDPOINT_BIDIRECTIONAL,
 
 
 # --------------------------------------------------------------- MP3 fixtures
+
+class FakeTTSLegacyProvider:
+    """A minimal ``TTSProvider`` that declares the media format it emits.
+
+    Stands in for the retired V3 HTTP SSE adapter during the migration period so
+    the runner's format-driven naming can be tested for both containers without
+    a network call.
+    """
+
+    def __init__(self, audio_format='mp3'):
+        self.audio_format = audio_format
+
+    def synthesize(self, text, destination):
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        payload = (mp3_stream(frames=1) if self.audio_format == 'mp3'
+                   else b'RIFF0000WAVEfmt ')
+        destination.write_bytes(payload)
+        return {'path': str(destination), 'sha256': 'deadbeef', 'format': self.audio_format}
+
 
 def mp3_frame(sample_rate_index=1, bitrate_index=9, padding=0, mpeg1=True):
     """One valid MPEG-1 Layer III frame at the requested rate/bitrate.
@@ -124,6 +149,48 @@ def error_frame(code, message='provider detail'):
     body = message.encode('utf-8')
     import struct
     return header + struct.pack('>ii', code, len(body)) + body
+
+
+# ------------------------------------------------- golden byte-level fixtures
+#
+# Independent of the implementation under test: these are literal hex strings
+# transcribed from the documented V3 envelope layout, so a wrong assumption about
+# the frame layout fails here instead of being reproduced by the parser that
+# shares the same assumption. Frames built by the module's own helpers cannot
+# catch a shared mistake, which is exactly the gap these fixtures close.
+#
+# Layout recap (big-endian integers):
+#   audio only response : [header][event i32][sid_len i32][sid][payload_len i32][audio]
+#   error from server   : [header][event i32][error_code i32][payload_len i32][message]
+GOLDEN_AUDIO_ONLY_FRAME_HEX = (
+    # header 11 b4 10 00 -> v1/4B, msg_type 0b1011, flags 0b0100 (with event),
+    #                       serialization JSON, no compression
+    '11b41000'
+    # event 352 (0x00000160)
+    '00000160'
+    # session id length 4, session id 'sess' (0x73657373)
+    '0000000473657373'
+    # payload length 6, audio bytes 0x010203040506
+    '00000006010203040506'
+)
+GOLDEN_ERROR_FRAME_HEX = (
+    # header 11 f0 00 00 -> v1/4B, msg_type 0b1111 (error), flags 0, no serialization
+    '11f00000'
+    # error code 45000100 (0x02AEA5A4, documented "TTS returned no audio")
+    '02aea5a4'
+    # payload length 5, message 'oops!' (0x6f6f707321)
+    '000000056f6f707321'
+)
+GOLDEN_START_SESSION_FRAME_HEX = (
+    # header 11 14 10 00 -> full client request, with event, JSON, no compression
+    '11141000'
+    # event 100 (0x00000064)
+    '00000064'
+    # session id length 2, session id 'ab' (0x6162)
+    '000000026162'
+    # payload length 2, payload '{}' (0x7b7d)
+    '000000027b7d'
+)
 
 
 class FakeServer:
@@ -340,7 +407,54 @@ class ProtocolConformanceTests(unittest.TestCase):
             self.assertNotIn(b'test-key', frame['payload'] or b'')
 
 
+# ------------------------------------------- 1b. golden byte-level frames
+
+class GoldenFrameTests(unittest.TestCase):
+    """Frames transcribed from the documented layout, independent of the codec."""
+
+    def test_golden_audio_only_frame_parses(self):
+        frame = parse_response(bytes.fromhex(GOLDEN_AUDIO_ONLY_FRAME_HEX))
+        self.assertEqual(frame['message_type'], MSG_AUDIO_ONLY_RESPONSE)
+        self.assertEqual(frame['flags'] & FLAG_WITH_EVENT, FLAG_WITH_EVENT)
+        self.assertEqual(frame['event'], EVENT_TTS_RESPONSE)
+        self.assertEqual(frame['session_id'], 'sess')
+        self.assertEqual(frame['payload'], b'\x01\x02\x03\x04\x05\x06')
+
+    def test_golden_error_frame_parses(self):
+        frame = parse_response(bytes.fromhex(GOLDEN_ERROR_FRAME_HEX))
+        self.assertEqual(frame['message_type'], 0b1111)
+        self.assertEqual(frame['error_code'], CODE_TTS_NO_AUDIO)
+        self.assertEqual(frame['error_message'], 'oops!')
+        self.assertEqual(CODE_ERROR_CATEGORY[CODE_TTS_NO_AUDIO], 'provider_no_audio')
+
+    def test_golden_start_session_frame_shape(self):
+        frame = parse_response(bytes.fromhex(GOLDEN_START_SESSION_FRAME_HEX))
+        self.assertEqual(frame['message_type'], MSG_FULL_CLIENT_REQUEST)
+        self.assertEqual(frame['event'], EVENT_START_SESSION)
+        self.assertEqual(frame['session_id'], 'ab')
+        self.assertEqual(frame['payload'], b'{}')
+        # The client must produce exactly this shape for the same inputs.
+        self.assertEqual(
+            build_event_frame(EVENT_START_SESSION, session_id='ab', payload=b'{}').hex(),
+            GOLDEN_START_SESSION_FRAME_HEX)
+
+    def test_golden_audio_frame_matches_the_client_encoder(self):
+        """The server-side audio layout and the client encoder must agree."""
+        self.assertEqual(
+            build_event_frame(EVENT_TTS_RESPONSE, session_id='sess',
+                              payload=b'\x01\x02\x03\x04\x05\x06',
+                              message_type=MSG_AUDIO_ONLY_RESPONSE,
+                              flags=FLAG_WITH_EVENT,
+                              serialization=SERIALIZATION_JSON).hex(),
+            GOLDEN_AUDIO_ONLY_FRAME_HEX)
+
+    def test_golden_error_frame_matches_the_client_encoder(self):
+        self.assertEqual(
+            error_frame(CODE_TTS_NO_AUDIO, 'oops!').hex(), GOLDEN_ERROR_FRAME_HEX)
+
+
 # ------------------------------------------------------- 2. MP3 validation
+
 
 class MP3ValidationTests(unittest.TestCase):
 
@@ -810,7 +924,8 @@ class BidirectionalSessionTests(unittest.TestCase):
         self.assertNotIn('test-key', calls[0])
         self.assertEqual(events['summary']['transport'], TRANSPORT_BIDIRECTIONAL)
 
-    def test_summary_exposes_the_forbidden_fallback_decision(self):
+    def test_summary_records_the_no_silent_fallback_decision(self):
+        """P1-2: the decision is really persisted, not merely implied."""
         server = FakeServer(script_for_event={
             EVENT_START_SESSION: lambda f: [server_frame(EVENT_SESSION_FINISHED)]})
 
@@ -819,13 +934,171 @@ class BidirectionalSessionTests(unittest.TestCase):
                 session = self._session(server, tmp)
                 await session.open()
                 await session.close()
-                return session
-        session = asyncio.run(scenario())
+                events_raw = Path(session.events_path).read_text('utf-8')
+                return session, events_raw
+        session, events_raw = asyncio.run(scenario())
         summary = session.summary()
         self.assertEqual(summary['transport'], TRANSPORT_BIDIRECTIONAL)
         self.assertEqual(summary['format'], 'mp3')
         self.assertEqual(summary['evidence_scope'], STREAMING_TTS_EVIDENCE_SCOPE)
-        self.assertIn('volcengine_tts_sse', FORBIDDEN_FALLBACKS)
+        # The policy object is in the persisted summary, not just a module constant.
+        policy = summary['fallback_policy']
+        self.assertEqual(policy['policy'], TTS_FALLBACK_POLICY)
+        self.assertIs(policy['silent_fallback'], False)
+        self.assertIn(FALLBACK_TRANSPORT_SSE, policy['forbidden_transports'])
+        self.assertIn(FALLBACK_TRANSPORT_UNIDIRECTIONAL, policy['forbidden_transports'])
+        self.assertIn(TTS_FALLBACK_POLICY, events_raw)
+
+    def test_forbidden_fallbacks_are_declared_by_the_adapter(self):
+        """The vendor-neutral module must not name a vendor itself."""
+        import aivoicebench.streaming_tts as boundary
+        source = Path(boundary.__file__).read_text('utf-8')
+        for vendor_token in ('volcengine_tts_sse', 'volcengine_tts_ws_unidirectional',
+                             'volcengine_streaming_tts'):
+            self.assertNotIn(vendor_token, source,
+                             f'{vendor_token} must be declared by the adapter')
+        # The adapter declares them, and the shared view sees them.
+        self.assertIn(FALLBACK_TRANSPORT_SSE, forbidden_fallbacks())
+        self.assertIn(FALLBACK_TRANSPORT_UNIDIRECTIONAL, forbidden_fallbacks())
+        self.assertEqual(fallback_policy_record()['forbidden_transports'],
+                         list(forbidden_fallbacks()))
+
+    def test_event_source_is_supplied_by_the_caller(self):
+        """A vendor-neutral event must not default to one provider's name."""
+        import inspect
+        signature = inspect.signature(StreamingTTSEvent)
+        self.assertNotIn('volcengine', str(signature))
+        event = StreamingTTSEvent(kind='tts_audio_chunk', source='some_adapter')
+        self.assertEqual(event.to_dict()['source'], 'some_adapter')
+
+
+    def test_cancelled_or_failed_audio_is_named_as_partial(self):
+        """P2-3: a truncated capture must not look like a completed turn asset."""
+        stream = mp3_stream(frames=1)
+        server = FakeServer(script_for_event={
+            EVENT_START_SESSION: lambda f: [server_frame(150)],
+            EVENT_TASK_REQUEST: lambda f: [audio_frame(stream)]})
+
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                session = self._session(server, tmp)
+                await session.open()
+                await session.append_text('一句要被取消的话。')
+                await server.settle(session)
+                await session.cancel(reason='user_stop')
+                # The temporary directory is removed with the context, so the
+                # file listing is captured inside it.
+                return session, sorted(path.name for path in Path(tmp).glob('*.mp3'))
+        session, names = asyncio.run(scenario())
+        self.assertTrue(any(name.endswith('.partial.mp3') for name in names),
+                        f'truncated audio must be distinguishable: {names}')
+        self.assertNotIn(f'{session.stream_id}.mp3', names)
+        self.assertTrue(session.summary()['audio_file'].endswith('.partial.mp3'))
+
+    def test_completed_session_audio_uses_the_final_name(self):
+        stream = mp3_stream(frames=1)
+        server = FakeServer(script_for_event={
+            EVENT_START_SESSION: lambda f: [audio_frame(stream),
+                                            server_frame(EVENT_SESSION_FINISHED)]})
+
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                session = self._session(server, tmp)
+                await session.open()
+                await server.settle(session)
+                await session.close()
+                return session, sorted(path.name for path in Path(tmp).glob('*.mp3'))
+        session, names = asyncio.run(scenario())
+        self.assertIn(f'{session.stream_id}.mp3', names)
+        self.assertEqual(session.summary()['audio_file'], f'{session.stream_id}.mp3')
+
+    def test_audio_write_failure_is_not_reported_as_complete(self):
+        """P2-3: bytes only in memory must not produce a completed synthesis."""
+        stream = mp3_stream(frames=1)
+        server = FakeServer(script_for_event={
+            EVENT_START_SESSION: lambda f: [audio_frame(stream),
+                                            server_frame(EVENT_SESSION_FINISHED)]})
+
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                session = self._session(server, tmp)
+                await session.open()
+                await server.settle(session)
+                # Simulate an unwritable destination.
+                session.audio_path = Path(tmp) / 'no-such-dir' / 'x.mp3'
+                original = Path.write_bytes
+
+                def deny(self, data):
+                    raise OSError('disk full')
+                Path.write_bytes = deny
+                try:
+                    await session.close()
+                finally:
+                    Path.write_bytes = original
+                events_raw = Path(session.events_path).read_text('utf-8')
+                return session, events_raw
+        session, events_raw = asyncio.run(scenario())
+        self.assertIn('tts_error', [e['kind'] for e in session.history()])
+        self.assertNotEqual(session.failure, None)
+        # The recorded evidence must not describe a completed call for audio that
+        # never reached disk.
+        self.assertIn('response_invalid', events_raw)
+        audit = json.loads(events_raw)
+        self.assertEqual(audit['summary']['failure'], 'response_invalid')
+
+    def test_close_is_idempotent(self):
+        server = FakeServer(script_for_event={
+            EVENT_START_SESSION: lambda f: [server_frame(EVENT_SESSION_FINISHED)]})
+
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                session = self._session(server, tmp)
+                await session.open()
+                await session.close()
+                closed_once = Path(session.events_path).read_text('utf-8')
+                await session.close()
+                await session.close()
+                return session, closed_once, Path(session.events_path).read_text('utf-8')
+        session, closed_once, after = asyncio.run(scenario())
+        # A second close must not rewrite the terminal evidence.
+        self.assertEqual(after, closed_once)
+        self.assertEqual(session.state, 'finished')
+
+    def test_cancel_after_close_does_not_resurrect_audio(self):
+        stream = mp3_stream(frames=1)
+        server = FakeServer(script_for_event={
+            EVENT_START_SESSION: lambda f: [audio_frame(stream),
+                                            server_frame(EVENT_SESSION_FINISHED)]})
+
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                session = self._session(server, tmp)
+                await session.open()
+                await server.settle(session)
+                await session.close()
+                before = session.audio_bytes
+                await session.cancel(reason='late_cancel')
+                return session, before
+        session, before = asyncio.run(scenario())
+        self.assertEqual(session.audio_bytes, before)
+        self.assertEqual(session.state, 'finished',
+                         'a cancel after a completed session must not relabel it')
+
+    def test_close_after_cancel_keeps_the_cancelled_evidence(self):
+        server = FakeServer(script_for_event={
+            EVENT_START_SESSION: lambda f: [server_frame(150)]})
+
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                session = self._session(server, tmp)
+                await session.open()
+                await session.cancel(reason='stale_turn')
+                cancelled_events = Path(session.events_path).read_text('utf-8')
+                await session.close()
+                return session, cancelled_events, Path(session.events_path).read_text('utf-8')
+        session, cancelled_events, after_close = asyncio.run(scenario())
+        self.assertEqual(session.state, 'cancelled')
+        self.assertEqual(after_close, cancelled_events)
 
 
 # ------------------------------------- 5. streaming_tts boundary (vendor-neutral)

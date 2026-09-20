@@ -63,6 +63,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .providers import InvocationAudit, ProviderFailure, ProviderIdentity, immutable_json
+from .streaming_tts import fallback_policy_record, register_forbidden_fallback
+
+# The retired/alternate Active TTS transports this adapter must never be reached
+# through implicitly. Declared here — where the transports actually live — so the
+# shared boundary module stays vendor-neutral (Issue #98 §3, PRD-F020/F021).
+FALLBACK_TRANSPORT_SSE = register_forbidden_fallback('volcengine_tts_sse')
+FALLBACK_TRANSPORT_UNIDIRECTIONAL = register_forbidden_fallback('volcengine_tts_ws_unidirectional')
 
 # ------------------------------------------------------------------ endpoints
 
@@ -637,6 +644,7 @@ class VolcengineBidirectionalTTSSession:
         self._stale_bytes = 0
         self._cancel_reason = None
         self._close_code = None
+        self._finalized = False
         self._audit = None
         self._lock = asyncio.Lock()
 
@@ -857,6 +865,10 @@ class VolcengineBidirectionalTTSSession:
             'terminated': self._terminated,
             'close_code': self._close_code,
             'evidence_scope': 'control_evidence',
+            # Persisted, not merely implied: a streaming failure must be reported
+            # as a failure of this transport (Issue #98 §3).
+            'fallback_policy': fallback_policy_record(),
+            'audio_file': self.audio_artifact_name(),
         }
 
     # --------------------------------------------------------------- protocol
@@ -981,11 +993,13 @@ class VolcengineBidirectionalTTSSession:
         await self._shutdown(reason, cancelled=False)
 
     async def _shutdown(self, reason, *, cancelled):
-        if self._state == SESSION_CANCELLED:
-            # A cancelled session is already terminal: cancelling twice must not
-            # rewrite its evidence or resurrect its audio.
+        if self._finalized:
+            # The session already reached a terminal state. Neither a repeated
+            # cancel nor a later close may relabel the evidence or resurrect the
+            # audio: the first terminal outcome is the recorded one.
             return
         async with self._lock:
+            self._finalized = True
             if cancelled:
                 self._state = SESSION_CANCELLED
                 self._cancel_reason = reason
@@ -1010,18 +1024,39 @@ class VolcengineBidirectionalTTSSession:
                 'audio_bytes': self._audio_bytes, 'failure': self._failure,
                 'stale_audio_chunks': self._stale_chunks})
             status, failure_code = self._terminal_status(cancelled)
-            self._write_audio_file()
+            if self._write_audio_file() is False:
+                # The bytes exist only in memory. Reporting a completed synthesis
+                # whose audio never reached disk would fabricate an artifact, so
+                # the outcome is demoted and the reason is recorded.
+                self._failure = self._failure or 'response_invalid'
+                self._record('tts_error', error='response_invalid',
+                             detail={'phase': 'audio_write',
+                                     'note': 'session audio could not be written to disk'})
+                status, failure_code = 'failed', 'response_invalid'
             self._finish_audit(status, failure_code=failure_code)
 
+    def audio_artifact_name(self):
+        """The file name the session audio was (or would be) written to."""
+        return self.audio_path.name
+
     def _write_audio_file(self):
-        """Materialise the audio this session really owns (never stale frames)."""
+        """Materialise the audio this session really owns (never stale frames).
+
+        Returns ``True`` when audio was written, ``False`` when audio existed but
+        could not be written, and ``None`` when there was nothing to write. A
+        cancelled or failed session writes to a ``.partial`` name so a truncated
+        capture can never be mistaken for a completed turn asset.
+        """
         if not self._audio_chunks:
             return None
+        complete = self._state == SESSION_FINISHED and self._failure is None
+        if not complete:
+            self.audio_path = self.audio_path.with_suffix('.partial.mp3')
         try:
             self.audio_path.write_bytes(b''.join(self._audio_chunks))
         except OSError:
-            return None
-        return self.audio_path
+            return False
+        return True
 
     def _terminal_status(self, cancelled):
         if cancelled and self._failure is None:
@@ -1055,6 +1090,8 @@ class VolcengineBidirectionalTTSSession:
             'schema_version': '1.0.0', 'stream_id': self.stream_id,
             'summary': self.summary(), 'events': list(self._history)})
         outputs = [self.events_path]
+        # A partial/failed capture is recorded as an output artifact under its own
+        # distinguishable name (``.partial.mp3``), never as the turn's final asset.
         if self.audio_path.is_file() and self.audio_path.stat().st_size:
             outputs.append(self.audio_path)
         try:
