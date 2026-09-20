@@ -62,7 +62,6 @@ from aivoicebench.volcengine_tts_ws import (AUDIT_ENDPOINT_BIDIRECTIONAL,
                                            MSG_FULL_CLIENT_REQUEST, MSG_FULL_SERVER_RESPONSE,
                                            MP3ValidationError,
                                            SERIALIZATION_JSON, TTS_FORMAT,
-                                           TTS_ERROR_CATEGORIES,
                                            TRANSPORT_BIDIRECTIONAL,
                                            TRANSPORT_UNIDIRECTIONAL,
                                            UnavailableTTSProvider,
@@ -1183,13 +1182,40 @@ class StreamingTTSBoundaryTests(unittest.TestCase):
         self.assertIn('streaming_tts', str(caught.exception))
 
     def test_error_categories_are_first_class(self):
-        self.assertIn('session_cancelled', TTS_ERROR_CATEGORIES)
-        self.assertIn('provider_no_audio', TTS_ERROR_CATEGORIES)
-        self.assertIn('turn_not_current', TTS_ERROR_CATEGORIES)
+        # Read the vocabulary from its single owner, not from an adapter re-export
+        # that could silently disagree with the parser reading it.
+        import aivoicebench.streaming_tts as boundary
+        self.assertIs(boundary.TTS_ERROR_CATEGORIES,
+                      __import__('aivoicebench.volcengine_tts_ws',
+                                 fromlist=['TTS_ERROR_CATEGORIES']).TTS_ERROR_CATEGORIES,
+                      'the adapter must re-export the neutral vocabulary, not fork it')
+        self.assertIn('session_cancelled', boundary.TTS_ERROR_CATEGORIES)
+        self.assertIn('provider_no_audio', boundary.TTS_ERROR_CATEGORIES)
+        self.assertIn('turn_not_current', boundary.TTS_ERROR_CATEGORIES)
+        # Every category the parser accepts must have an audit code; a category
+        # that only exists in the vocabulary would silently fall back to
+        # provider_error, so the direction the tests iterate matters.
+        self.assertTrue(
+            set(boundary.TTS_ERROR_CATEGORIES) <= set(boundary.FAILURE_CODE_BY_CATEGORY),
+            'every category must have an audit failure code: %s'
+            % sorted(set(boundary.TTS_ERROR_CATEGORIES)
+                     - set(boundary.FAILURE_CODE_BY_CATEGORY)))
         self.assertEqual(tts_failure_category(StreamingTTSUnavailable('x')),
                          'stream_open_failed')
         self.assertEqual(tts_failure_category(ProviderFailure('TTS credential missing')),
                          'credential_missing')
+
+    def test_every_category_round_trips_through_a_marker(self):
+        """A category the parser accepts must classify back to itself."""
+        import aivoicebench.streaming_tts as boundary
+        from aivoicebench import volcengine_tts_ws as adapter
+        for category in boundary.TTS_ERROR_CATEGORIES:
+            marked = ProviderFailure(f'provider detail ({category})')
+            self.assertEqual(boundary.failure_category_of(marked), category)
+            self.assertEqual(boundary.tts_failure_category(marked), category)
+            self.assertEqual(
+                boundary.failure_code_for(category),
+                adapter.VolcengineUnidirectionalTTSProvider._failure_code(marked))
 
     def test_stale_turn_reason_reports_run_stop(self):
         class Turn:

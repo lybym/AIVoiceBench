@@ -242,9 +242,14 @@ def stale_turn_reason(session, turn):
 
 
 # How a first-class failure category is recorded in the provider-invocation
-# audit. The category vocabulary and this mapping live here so there is exactly
-# one classification; a second copy in an adapter would drift, and the drift
-# would be invisible until two records disagreed about one incident.
+# audit. The category vocabulary and the ``(category)`` marker format live here so
+# the marker parser and this mapping are always read against the same list; a
+# second copy of either in an adapter could drift, and the drift would be
+# invisible until two records disagreed about one incident.
+#
+# Provider-specific prose fallbacks (for example "resource_id missing" meaning a
+# configuration problem) stay in each adapter. This module owns the common
+# classification contract, not every heuristic an adapter may apply.
 FAILURE_CODE_BY_CATEGORY = {
     'provider_auth_failed': 'provider_error',
     'provider_rate_limited': 'provider_error',
@@ -288,7 +293,15 @@ def failure_code_for(category):
 
 
 def tts_failure_category(error):
-    """Map a raised error to one first-class category (never a raw message)."""
+    """Map a raised error to one first-class category (never a raw message).
+
+    When the error carries the ``(category)`` marker an adapter recorded, that
+    decision is returned verbatim. Otherwise this applies a *generic* prose
+    fallback only: adapter-specific prose judgements (for example a missing
+    ``resource_id`` meaning a configuration problem) belong to the adapter, whose
+    own mapper adds them. So a marked error is classified identically everywhere,
+    while an unmarked one may still be classified more precisely by its adapter.
+    """
     if isinstance(error, StreamingTTSUnavailable):
         return 'stream_open_failed'
     if isinstance(error, ProviderFailure):

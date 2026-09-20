@@ -61,6 +61,11 @@ CONTROL_RECORD_VERSION = '1.1.0'
 # bytes that are really on disk, so both are derived from the transport's
 # reported media format instead of being hard-coded per call site.
 TTS_STIMULUS_MEDIA_TYPES = {'mp3': 'audio/mpeg', 'wav': 'audio/wav'}
+# The product decision is that Active TTS is MP3 (Issue #98). Declaring it once,
+# here, keeps a silent magic-string fallback from becoming the de-facto contract
+# for a future adapter that forgets to publish its format.
+DEFAULT_TTS_STIMULUS_FORMAT = 'mp3'
+assert DEFAULT_TTS_STIMULUS_FORMAT in TTS_STIMULUS_MEDIA_TYPES
 # Probe order for reading back an existing stimulus. MP3 first: it is the fixed
 # target, so only the legacy SSE route ever produces WAV.
 TTS_STIMULUS_EXTENSIONS = ('.mp3', '.wav')
@@ -72,7 +77,8 @@ def tts_stimulus_extension(provider, format_name=None):
     if not resolved:
         resolved = getattr(provider, 'audio_format', None)
     if not resolved:
-        resolved = 'mp3'
+        # The product-fixed default, declared above rather than inlined here.
+        resolved = DEFAULT_TTS_STIMULUS_FORMAT
     resolved = str(resolved).lower()
     if resolved not in TTS_STIMULUS_MEDIA_TYPES:
         raise ProviderFailure(f'Unsupported TTS media format: {resolved}')

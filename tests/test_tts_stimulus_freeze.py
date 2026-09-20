@@ -25,7 +25,8 @@ from fastapi.testclient import TestClient
 
 from aivoicebench import api
 from aivoicebench.model_settings import RunProviders
-from aivoicebench.voice_test import (TTS_STIMULUS_EXTENSIONS,
+from aivoicebench.providers import ProviderFailure
+from aivoicebench.voice_test import (DEFAULT_TTS_STIMULUS_FORMAT, TTS_STIMULUS_EXTENSIONS,
                                      VoiceTestManager, tts_media_type_for_path,
                                      tts_stimulus_extension)
 from aivoicebench.volcengine_tts_ws import (AUDIT_ENDPOINT_UNIDIRECTIONAL,
@@ -79,8 +80,17 @@ class FixedStimulusFreezeServeTests(unittest.TestCase):
     def test_extension_follows_the_transport_format(self):
         self.assertEqual(tts_stimulus_extension(FakeTTSLegacyProvider('wav')), '.wav')
         self.assertEqual(tts_stimulus_extension(FakeTTSLegacyProvider('mp3')), '.mp3')
-        # The target is MP3 when the adapter does not declare one.
-        self.assertEqual(tts_stimulus_extension(object()), '.mp3')
+        # A provider that declares nothing resolves to the *declared* product
+        # default (Issue #98: Active TTS is MP3), not to an inlined magic string.
+        self.assertEqual(tts_stimulus_extension(object()),
+                         f'.{DEFAULT_TTS_STIMULUS_FORMAT}')
+        self.assertEqual(DEFAULT_TTS_STIMULUS_FORMAT, 'mp3')
+        # A format that *is* declared but unknown is refused, never guessed: the
+        # naming/MIME must always be traceable to a real container.
+        with self.assertRaises(ProviderFailure):
+            tts_stimulus_extension(FakeTTSLegacyProvider('flac'))
+        with self.assertRaises(ProviderFailure):
+            tts_stimulus_extension(object(), 'ogg')
 
     def test_media_type_follows_the_stored_container(self):
         self.assertEqual(tts_media_type_for_path(self.root / 'a.mp3'), 'audio/mpeg')
@@ -128,6 +138,33 @@ class FixedStimulusFreezeServeTests(unittest.TestCase):
         asset.write_bytes(self.stream)
         self.assertEqual(manager.get_audio_path(session.session_id, 0), asset)
         self.assertIsNone(manager.get_audio_path(session.session_id, 1))
+
+    def test_mixed_container_session_resolves_each_phrase_by_its_own_path(self):
+        """Migration reality: a session may hold a legacy WAV and a new MP3.
+
+        The fixed branch must keep resolving each phrase through its recorded
+        path, so a partially re-synthesised session still plays both containers
+        correctly instead of assuming one extension for the whole session.
+        """
+        manager = self._manager(lambda root: None)
+        session = manager.create_session('fixed', phrases=['legacy', 'current'])
+        legacy = session.directory / 'phrase-0000.wav'
+        current = session.directory / 'phrase-0001.mp3'
+        legacy.write_bytes(b'RIFF0000WAVEfmt ')
+        current.write_bytes(self.stream)
+        session.phrases[0].update({'audio_path': str(legacy.relative_to(self.root)),
+                                   'status': 'ready', 'audio_format': 'wav'})
+        session.phrases[1].update({'audio_path': str(current.relative_to(self.root)),
+                                   'status': 'ready', 'audio_format': 'mp3'})
+        first = manager.get_audio_path(session.session_id, 0)
+        second = manager.get_audio_path(session.session_id, 1)
+        self.assertEqual(first, legacy)
+        self.assertEqual(second, current)
+        # Each is served with the Content-Type of its own container.
+        self.assertEqual(tts_media_type_for_path(first), 'audio/wav')
+        self.assertEqual(tts_media_type_for_path(second), 'audio/mpeg')
+        # And the session is considered playable without any new synthesis.
+        self.assertTrue(manager._fixed_audio_ready(session))
 
     def test_second_synthesis_run_reuses_the_frozen_asset(self):
         """AC #1: a repeat must play the frozen stimulus, not re-synthesise it."""

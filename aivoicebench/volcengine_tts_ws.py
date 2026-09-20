@@ -189,26 +189,10 @@ CODE_ERROR_CATEGORY = {
     CODE_SERVICE_INTERNAL: 'provider_error',
 }
 
-# First-class TTS lifecycle failure categories.
-TTS_ERROR_CATEGORIES = (
-    'credential_missing',
-    'configuration_invalid',
-    'input_invalid',
-    'invalid_request',
-    'unsupported_parameter',
-    'provider_auth_failed',
-    'provider_rate_limited',
-    'provider_quota_exceeded',
-    'provider_no_audio',
-    'resource_mismatch',
-    'provider_error',
-    'stream_open_failed',
-    'stream_timeout',
-    'stream_disconnected',
-    'response_invalid',
-    'session_cancelled',
-    'turn_not_current',
-)
+# First-class TTS lifecycle failure categories. The vocabulary lives in the
+# vendor-neutral boundary so the marker parser and the audit mapping cannot
+# be read against a different list; this name is re-exported for importers.
+from .streaming_tts import TTS_ERROR_CATEGORIES  # noqa: F401
 
 
 class VolcengineTTSProtocolError(RuntimeError):
