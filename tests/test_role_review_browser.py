@@ -1,14 +1,16 @@
 """Browser-layer test for the manual speaker-role gate (PRD-F006/F012-F014).
 
 Drives the **real page** against the **real API** in a real browser: the real
-``app.js`` review panel, the real ``POST /api/runs/{run_id}/role-review`` route and
-the real reanalysis path. The Run comes from ``tests/role_review_fixture.py``, whose
-transcript and speaker clusters are produced by a scripted transport.
+``app.js`` review panel, the real ``POST /api/runs/{run_id}/role-review`` route
+(202 + polled operation), and the real reanalysis path. The Run comes from
+``tests/role_review_fixture.py``, whose transcript and speaker clusters are
+produced by a scripted transport.
 
 What this proves: an anonymous-cluster Run shows the review surface, refuses an
-incomplete submission, and after a complete human decision presents role-dependent
-results in a new revision. What it does **not** prove: real recognition quality,
-real speaker separation, or physical-device behaviour. Those stay with #85.
+incomplete submission, tracks the asynchronous rebuild, and after a complete human
+decision presents role-dependent results in a new revision. What it does **not**
+prove: real recognition quality, real speaker separation, or physical-device
+behaviour. Those stay with #85.
 
 Skipped when Playwright or a Chromium-based browser is missing unless
 ``VT_REQUIRE_BROWSER=1`` is set, matching the existing browser acceptance policy.
@@ -215,13 +217,18 @@ class RoleReviewBrowserTests(unittest.TestCase):
         self.page.fill('#role-reviewer', 'zhang')
         self.page.fill('#role-reason', '听音比对后确认')
         self.page.click('#role-save')
+        # The save is asynchronous: the page shows the accepted operation's phase
+        # progress and re-renders only after the rebuild reaches its terminal state.
         self.page.wait_for_function(
-            "document.body.innerText.includes('角色已确认')", timeout=60000)
+            "document.body.innerText.includes('人工角色决策已完成')", timeout=120000)
 
         detail = self.page.inner_text('#detail')
-        self.assertIn('角色已确认', detail)
+        self.assertIn('人工角色决策已完成', detail)
         self.assertIn('复核人 zhang', detail)
         self.assertIn('当前修订 REV-1', detail)
+        # "The human decision is complete" is not presented as a promise that
+        # metrics will be generated: the downstream outcome is stated separately.
+        self.assertIn('人工决策与下游指标是两件事', detail)
 
         after = self.review_document()
         self.assertEqual(after['status'], 'complete_review')
@@ -229,6 +236,15 @@ class RoleReviewBrowserTests(unittest.TestCase):
         self.assertEqual(after['revision']['reviewer'], 'zhang')
         self.assertEqual(after['revision']['decisions'],
                          {clusters[0]: 'tester', clusters[1]: 'device'})
+
+        # The accepted operation is durable and queryable through the API.
+        with urllib.request.urlopen(
+                f'{self.base}/api/runs/{self.run_id}/role-review/operations', timeout=10) as response:
+            operations = json.loads(response.read().decode())
+        self.assertEqual(operations['operations'][0]['status'], 'succeeded')
+        self.assertEqual(operations['operations'][0]['result']['gate_status'],
+                         'complete_review')
+        self.assertIsNone(operations['active'])
 
         # The saved revision drove a new AnalysisRevision in which role-dependent
         # stages really ran. The revision records the base revision it was applied to.

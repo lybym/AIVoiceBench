@@ -54,6 +54,10 @@ class ImportRun:
         self.directory.mkdir(parents=True, exist_ok=False)
         self.analysis = self.directory / 'analysis' / analysis_id
         self.analysis.mkdir(parents=True)
+        # Optional progress seam for a long-running caller (the asynchronous
+        # role-review rebuild). It receives each stage name as it starts and is
+        # never consulted for a decision, so an unattended run behaves identically.
+        self.progress_callback = None
         self.manifest = {'schema_version': '1.0.0', 'workflow': 'recording_import', 'run_id': run_id,
             'analysis_id': analysis_id, 'created_at': utc_now(), 'status': 'partial',
             'execution_kind': 'synthetic' if synthetic else 'imported', 'profile': profile,
@@ -108,6 +112,12 @@ class ImportRun:
     def execute(self, name, inputs, operation):
         stage = self.manifest['stages'][name]
         stage.update(status='running', started_at=utc_now(), input_artifact_ids=list(inputs), reason=None)
+        if self.progress_callback is not None:
+            # Progress reporting must never be able to fail an analysis stage.
+            try:
+                self.progress_callback(name)
+            except Exception:  # noqa: BLE001 - a reporter is not evidence
+                pass
         self.checkpoint()
         start = time.monotonic()
         try:

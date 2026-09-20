@@ -8,6 +8,7 @@ gate and the surfaces, never real recognition quality.
 import json
 import math
 import sys
+import time
 import wave
 from array import array
 from pathlib import Path
@@ -19,6 +20,45 @@ REPLY = {'result': {'text': '今天天气怎么样 北京今天晴', 'utterances
     {'text': '北京今天晴', 'start_time': 1500, 'end_time': 2000,
      'words': [], 'additions': {'speaker': '2'}},
 ]}}
+
+#: Contract constant: the API accepts a save with 202 and an operation id.
+ROLE_REVIEW_ACCEPTED = 202
+
+
+def wait_for_operation(client, poll_url, *, timeout=60.0, interval=0.05):
+    """Follow one accepted role-review operation until it reaches a terminal state.
+
+    Mirrors what the page does, so the tests exercise the real asynchronous
+    contract instead of a synchronous shortcut that no longer exists (Issue #113).
+    """
+    deadline = time.monotonic() + timeout
+    operation = None
+    while True:
+        response = client.get(poll_url)
+        assert response.status_code == 200, response.text
+        operation = response.json()
+        if operation['status'] in ('succeeded', 'failed'):
+            return operation
+        if time.monotonic() >= deadline:
+            raise AssertionError(f'role rebuild did not finish in {timeout}s: {operation}')
+        time.sleep(interval)
+
+
+def save_role_review(client, run_id, payload, *, timeout=60.0, interval=0.05):
+    """Save one role decision and follow the accepted rebuild to its outcome.
+
+    Returns ``(post_response, operation, run_view)``. A request the API refuses
+    outright returns its own response with ``operation`` and ``run_view`` left as
+    ``None``, so a caller can assert on the refusal code.
+    """
+    post = client.post(f'/api/runs/{run_id}/role-review', json=payload)
+    if post.status_code != ROLE_REVIEW_ACCEPTED:
+        return post, None, None
+    accepted = post.json()
+    operation = wait_for_operation(client, accepted['poll_url'], timeout=timeout,
+                                   interval=interval)
+    view = client.get(f'/api/runs/{run_id}').json()
+    return post, operation, view
 
 
 class ScriptedTransport:

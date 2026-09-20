@@ -74,7 +74,39 @@ Browser VAD 与 Streaming ASR **并行存在**，职责不同：
 
 两者都属于低延迟 Control Plane，不承担正式 acoustic onset/offset。Measurement Plane 使用版本化、streaming-compatible `AcousticBoundaryPolicy`，基于 sample index 形成 confidence/uncertainty 可追溯的 boundaries。现有 Browser RMS 阈值和 `EnergyVadSegmenter` 的 global noise/peak 算法均不能未经验证直接冒充该处理器。
 
-### 4.1 判据是时域 RMS，阈值由噪声底抬高
+### 4.1 采集→观察的推进必须有界且可解释（#113）
+
+真实部署上出现过这样一轮：流式识别正常结束、`capture_finished` 已记录，但会话始终没有进入
+`device_observation`，也没有生成下一轮，只能手动停止。根因是两个 socket 相互独立：
+
+```text
+/audio   ：capture_started → PCM 帧 → capture_stopped → 服务端结束识别 → 该 socket 回 capture_result
+/ws      ：浏览器再发一次 capture_result，控制循环才读取服务端结果并记录 device_observation
+```
+
+浏览器侧的结果等待原先在**采集开始**时就 armed（15 s）。设备思考+播报超过该时限时，这次等待
+已提前以 `null` 结束；随后 VAD 判定讲话结束时 `finishFreeTurn` 不再等待 `/audio` 的结果，而是
+立刻向 `/ws` 发送 `capture_result`。此时服务端仍在 `_finalise_capture` 里 drain 识别器，
+`session.last_capture_result` 还是空的，于是控制循环回 `ignored: no finished capture for this session`
+——一轮就此停住，且没有任何可见原因。
+
+现在两个方向都修好，并且状态本身可查：
+
+- **浏览器**只在发送 `capture_stopped` 之后才 armed 结束等待（服务端 drain 上限 + 15 s 余量），
+  设备回答多久都不会提前作废这次等待。
+- **服务端**在收到 `capture_result` 而结果尚未发布时，**有界等待**在飞的这次 finalisation
+  （`no_response_timeout_ms` + 5 s），并记录 `capture_result_waited`（含 `waited_ms`）。
+  超过这个上限才结束：记录 `capture_result_wait_timeout`、以 `capture_finalisation_timeout`
+  显式失败并关闭该轮（阶段 `failed`，**不记为回答完成**），绝不无限等待。
+- **`GET /api/voice-test/sessions/{id}` 的 `progress`** 公开当前阶段与不推进的原因：
+  `phase`（`idle`/`play_issued`/`awaiting_device_observation`/`capturing_device_audio`/`capture_finalised`
+  或终态）、`reason_code`、`turn_id` 与说明文字。`capture_finalised` +
+  `capture_finalised_awaiting_control_result` 就是此前不可见的那一态：识别已结束、控制循环尚未消费。
+  网页在运行期间轮询该快照，把非等待类的阶段与原因写进自由模式日志。
+
+`progress` 是控制状态，不是测量，也不是设备是否说话的判断。
+
+### 4.2 判据是时域 RMS，阈值由噪声底抬高
 
 VAD 使用 `AnalyserNode.getFloatTimeDomainData` 计算**线性 PCM RMS**（−1..1）。此前的实现
 读取频域 bin 并除以 255：那不是振幅，绝对阈值因此没有意义——非零环境噪声可以让一轮永远
@@ -91,7 +123,7 @@ VAD 使用 `AnalyserNode.getFloatTimeDomainData` 计算**线性 PCM RMS**（−1
   `observation_end_unconfirmed`，**不记为回答完成、不伪造回答结束**。
 - 停止、迟到事件与取消清理行为不变：本地停止即时生效，迟到 `ended` 不恢复监听或推进。
 
-### 4.2 观察方式在启动前由后端强制判定
+### 4.3 观察方式在启动前由后端强制判定
 
 - `GET /api/voice-test/capabilities/{mode}` 返回该模式所需项、缺少项与浏览器需自行检查的
   能力；**默认不发起付费探测**（`connectivity: not_probed`），响应与日志不含凭据、服务地址

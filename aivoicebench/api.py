@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -42,6 +45,21 @@ app.add_middleware(
 
 OUTPUT_ROOT = Path(os.environ.get("AIVOICEBENCH_OUTPUT", "artifacts"))
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Structured role-review rebuild log. Uvicorn does not configure the root logger,
+# so a bare `logger.info` would be dropped in the delivered container; the
+# dedicated logger carries its own handler unless the deployment configures one.
+_role_review_logger = logging.getLogger('aivoicebench.role_review')
+if not _role_review_logger.handlers:
+    _role_review_handler = logging.StreamHandler()
+    _role_review_handler.setFormatter(logging.Formatter('%(message)s'))
+    _role_review_logger.addHandler(_role_review_handler)
+    _role_review_logger.propagate = False
+try:
+    _role_review_logger.setLevel(
+        getattr(logging, os.environ.get('AIVOICEBENCH_ROLE_REVIEW_LOG_LEVEL', 'INFO').upper()))
+except (AttributeError, ValueError, TypeError):
+    _role_review_logger.setLevel(logging.INFO)
 
 # Serve Web UI
 _static_dir = Path(__file__).parent / "static"
@@ -241,58 +259,308 @@ def get_role_review(run_id: str):
     return view
 
 
-@app.post('/api/runs/{run_id}/role-review', response_model=AnalysisResponse)
+class RoleReviewAccepted(BaseModel):
+    """The 202 answer to a role-review save: a trackable, asynchronous rebuild."""
+    operation_id: str
+    run_id: str
+    status: str
+    phase: str
+    phases: list
+    poll_url: str
+    note: str
+
+
+def _role_review_error(code, message=None, detail=None):
+    """One role-review failure as a structured body with a machine-readable code."""
+    from .role_review_operations import error_payload
+    return error_payload(code, message, detail)
+
+
+def _role_review_http(code, message=None, detail=None, *, extra=None):
+    payload = _role_review_error(code, message, detail)
+    if extra:
+        payload.update(extra)
+    return HTTPException(payload['http_status'], detail=payload)
+
+
+def _role_review_stale_after_ms():
+    """How long a rebuild may go without a heartbeat before it is reported stalled.
+
+    A guard for a process that stopped mid-rebuild, not a performance target.
+    """
+    try:
+        return max(1000, int(os.environ.get('AIVOICEBENCH_ROLE_REVIEW_STALE_MS', '120000')))
+    except ValueError:
+        return 120000
+
+
+def _log_role_review(event, *, run_id=None, analysis_id=None, operation_id=None,
+                     phase=None, elapsed_ms=None, code=None, detail=None, level=logging.INFO):
+    """One structured line per rebuild event.
+
+    Deliberately free of credentials and of raw exception text: only the
+    classification a caller already sees, plus the Run/revision/phase it belongs
+    to. Emitted directly because uvicorn does not configure a root handler, so
+    ``logger.info`` alone would be silently dropped in the delivered container.
+    """
+    _role_review_logger.log(level, json.dumps({
+        'event': event,
+        'run_id': run_id,
+        'analysis_id': analysis_id,
+        'operation_id': operation_id,
+        'phase': phase,
+        'elapsed_ms': elapsed_ms,
+        'error_code': code,
+        'detail': detail,
+    }, ensure_ascii=False))
+
+
+def _role_review_rebuild(directory, operation_id, mapping, reviewer, reason,
+                         snapshot, providers):
+    """Run one accepted rebuild to a terminal, recorded outcome.
+
+    Never re-submits anything: the operation record was written before this worker
+    started, so the Run's own history states what was accepted and how it ended even
+    if this process dies. It runs on its own thread because the work is blocking
+    (file I/O plus a possible Judge provider call) and must not be tied to the
+    lifetime of the request that accepted it.
+    """
+    from .import_pipeline import apply_role_mapping
+    from .role_review import RoleReviewError
+    from .role_review_operations import (REBUILD_PHASES, update_operation, utc_now)
+    from .run_lock import RunLocked, run_lock
+
+    run_id = Path(directory).name
+    analysis_id = None
+    try:
+        analysis_id = _load_run(directory).get('analysis_id')
+    except Exception:  # noqa: BLE001 - reporting must not block the rebuild
+        analysis_id = None
+    update_operation(directory, operation_id, status='running', started_at=utc_now(),
+                     phase='lock')
+    _log_role_review('role_review_rebuild_started', run_id=run_id,
+                     analysis_id=analysis_id, operation_id=operation_id, phase='lock',
+                     detail={'reviewer': reviewer, 'clusters': sorted(mapping)})
+
+    def progress(phase):
+        # asr/acoustic/diarization are re-published evidence, not recomputed
+        # stages, so they report as the single restore phase.
+        resolved = phase if phase in REBUILD_PHASES else 'restore_evidence'
+        record = update_operation(directory, operation_id, phase=resolved)
+        _log_role_review('role_review_rebuild_phase', run_id=run_id,
+                         analysis_id=analysis_id, operation_id=operation_id,
+                         phase=resolved, elapsed_ms=record.get('elapsed_ms'))
+
+    code, message, detail = None, None, None
+    outcome = None
+    try:
+        with run_lock(directory):
+            outcome = apply_role_mapping(directory, mapping, reviewer, reason=reason,
+                                         model_snapshot=snapshot, providers=providers,
+                                         progress=progress)
+    except RoleReviewError as error:
+        # A deliberate, user-facing contract from the review layer; no credentials.
+        code, message = 'insufficient_evidence', str(error)
+    except RunLocked:
+        code, message = 'run_locked', None
+    except ValueError as error:
+        code, message = 'insufficient_evidence', str(error)
+    except Exception as error:  # noqa: BLE001 - one classified terminal state
+        # Unknown processor failures keep only their type: provider exceptions can
+        # embed request secrets and must never reach a log or an API body.
+        code, message = 'internal_error', None
+        detail = type(error).__name__
+
+    try:
+        if code is None:
+            directory, manifest, review_document = outcome
+            revision = review_document.get('revision') or {}
+            stages = manifest.get('stages') or {}
+            metrics_stage = stages.get('metrics') or {}
+            record = update_operation(
+                directory, operation_id, status='succeeded', phase='done',
+                error=None,
+                result={
+                    'analysis_id': manifest.get('analysis_id'),
+                    'revision_id': revision.get('revision_id'),
+                    'revision_index': revision.get('revision_index'),
+                    'gate_status': review_document.get('status'),
+                    'unknown_clusters': list(review_document.get('unknown_clusters') or []),
+                    'run_status': manifest.get('status'),
+                    'metrics_status': metrics_stage.get('status'),
+                    'metrics_reason': metrics_stage.get('reason'),
+                })
+            _log_role_review('role_review_rebuild_succeeded', run_id=run_id,
+                             analysis_id=manifest.get('analysis_id'), operation_id=operation_id,
+                             phase='done', elapsed_ms=record.get('elapsed_ms'),
+                             detail={'gate_status': review_document.get('status'),
+                                     'metrics_status': metrics_stage.get('status')})
+        else:
+            record = update_operation(directory, operation_id, status='failed',
+                                      error=_role_review_error(code, message, detail))
+            _log_role_review('role_review_rebuild_failed', run_id=run_id,
+                             analysis_id=analysis_id, operation_id=operation_id,
+                             phase=record.get('phase'), elapsed_ms=record.get('elapsed_ms'),
+                             code=code, detail=detail or message, level=logging.WARNING)
+    except Exception as error:  # noqa: BLE001 - never leave the operation silently active
+        _log_role_review('role_review_rebuild_record_error', run_id=run_id,
+                         operation_id=operation_id, code='internal_error',
+                         detail=type(error).__name__, level=logging.ERROR)
+    return None
+
+
+#: In-flight rebuild workers. The container runs a single uvicorn process, and the
+#: durable operation record is what survives a restart.
+_role_review_workers = set()
+
+
+def _schedule_role_review(directory, operation_id, mapping, reviewer, reason,
+                          snapshot, providers):
+    """Start one rebuild on a daemon thread and return it.
+
+    ``Thread.start`` cannot be awaited into existence: the operation record exists
+    before this call, so the caller never depends on the thread having started.
+    """
+    def run():
+        try:
+            _role_review_rebuild(directory, operation_id, mapping, reviewer, reason,
+                                 snapshot, providers)
+        finally:
+            _role_review_workers.discard(worker)
+
+    worker = threading.Thread(target=run, name=f'role-review-{operation_id}', daemon=True)
+    _role_review_workers.add(worker)
+    worker.start()
+    return worker
+
+
+@app.post('/api/runs/{run_id}/role-review', status_code=202,
+          response_model=RoleReviewAccepted)
 async def save_role_review(run_id: str, request: Request):
-    """Save one explicit human decision per cluster and rerun role-dependent stages.
+    """Accept one explicit human decision per cluster and rebuild asynchronously.
 
     Every cluster must be decided, including a deliberate `unknown`. Saving creates a
     new immutable AnalysisRevision; the previous revision's artifacts are untouched.
+
+    The rebuild takes minutes, so this answers ``202 Accepted`` with a trackable
+    ``operation_id`` instead of holding the request open (Issue #113). Callers poll
+    ``GET /api/runs/{run_id}/role-review/operations/{operation_id}`` for the phase
+    and the terminal outcome. Refusals that are *not* an accepted operation are
+    distinguishable by ``detail.code``: ``run_locked``, ``operation_in_progress``,
+    ``insufficient_evidence``, ``internal_error``.
     """
     from urllib.parse import urlsplit
+    from .role_review import RoleReviewError, current_cluster_ids, validate_decisions
+    from .role_review_operations import (active_operation,
+                                         active_operation_is_stalled,
+                                         mark_interrupted, start_operation, view)
+    from .run_lock import RunLocked, run_lock
+
     origin = request.headers.get('origin')
     if origin and (urlsplit(origin).netloc != request.url.netloc
                    or urlsplit(origin).scheme != request.url.scheme):
-        raise HTTPException(403, '请从当前服务页面提交人工角色确认')
+        raise _role_review_http('forbidden_origin', '请从当前服务页面提交人工角色确认')
     if len(await request.body()) > 64 * 1024:
-        raise HTTPException(413, '角色确认请求过大')
+        raise _role_review_http('payload_too_large', '角色确认请求过大')
     directory = _run_dir(run_id)
     if (directory / 'web-analysis').exists():
-        raise HTTPException(409, '旧版分析请重新导入；原记录保持不变')
+        raise _role_review_http('legacy_analysis', '旧版分析请重新导入；原记录保持不变')
     try:
         payload = await request.json()
     except ValueError:
-        raise HTTPException(400, '请求内容无效') from None
+        raise _role_review_http('invalid_request', '请求内容无效') from None
     if not isinstance(payload, dict):
-        raise HTTPException(400, '请求内容无效')
+        raise _role_review_http('invalid_request', '请求内容无效')
     mapping = payload.get('mapping')
     reviewer = payload.get('reviewer')
     reason = payload.get('reason') or ''
     if not isinstance(mapping, dict) or not mapping:
-        raise HTTPException(400, '请为每个说话人聚类提交明确角色（tester/device/unknown）')
+        raise _role_review_http(
+            'invalid_request', '请为每个说话人聚类提交明确角色（tester/device/unknown）')
     if not isinstance(reviewer, str) or not reviewer.strip():
-        raise HTTPException(400, '请填写复核人身份')
+        raise _role_review_http('invalid_request', '请填写复核人身份')
     if not isinstance(reason, str):
-        raise HTTPException(400, '复核说明必须是文本')
-    snapshot, _providers = _model_settings().capture()
-    from .import_pipeline import apply_role_mapping
-    from .role_review import RoleReviewError
-    from .run_lock import run_lock
+        raise _role_review_http('invalid_request', '复核说明必须是文本')
 
-    def apply():
-        with run_lock(directory):
-            apply_role_mapping(directory, mapping, reviewer, reason=reason,
-                               model_snapshot=snapshot, providers=_providers)
-
+    # Validated here, synchronously: an incomplete or invented mapping is a client
+    # error the caller must be able to fix immediately, not a failed operation.
+    cluster_ids = current_cluster_ids(directory)
     try:
-        await run_in_threadpool(apply)
+        resolved = validate_decisions(mapping, cluster_ids)
     except RoleReviewError as error:
-        # Input problems state the real reason; they never echo credentials.
-        raise HTTPException(400, str(error)) from None
-    except ValueError:
-        raise HTTPException(409, '无法应用角色确认：该记录的可用证据不足，请先完成转写与说话人聚类') from None
-    except Exception:
-        raise HTTPException(409, '无法应用角色确认：请检查证据完整性或是否已有分析正在执行') from None
-    return AnalysisResponse(**_load_run(directory))
+        raise _role_review_http('insufficient_evidence', str(error)) from None
+
+    # One rebuild per Run. A retry reports the operation that already exists rather
+    # than quietly queueing a second rerun; a *stalled* one is explicitly retired
+    # first, because an operator resubmitting is the authorized recovery action.
+    existing = active_operation(directory)
+    if existing is not None:
+        if active_operation_is_stalled(existing, _role_review_stale_after_ms()):
+            mark_interrupted(directory, existing['operation_id'],
+                             'the worker stopped without recording a terminal result')
+            _log_role_review('role_review_rebuild_retired', run_id=run_id,
+                             operation_id=existing['operation_id'], code='interrupted',
+                             detail='stalled rebuild retired by an explicit resubmit')
+        else:
+            raise _role_review_http(
+                'operation_in_progress',
+                '该记录的角色重建仍在进行中，请继续查看该操作进度',
+                extra={'operation_id': existing['operation_id'],
+                       'operation': view(existing, stale_after_ms=_role_review_stale_after_ms())})
+
+    # Fast, distinguishable answer for "another analysis is writing this Run",
+    # instead of a generic conflict discovered after a long wait.
+    try:
+        with run_lock(directory):
+            pass
+    except RunLocked:
+        raise _role_review_http('run_locked') from None
+
+    snapshot, providers = _model_settings().capture()
+    record = start_operation(directory, mapping=resolved, reviewer=reviewer.strip(),
+                             reason=reason, source_analysis_id=_load_run(directory).get('analysis_id'),
+                             cluster_ids=cluster_ids)
+    view_payload = view(record, stale_after_ms=_role_review_stale_after_ms())
+    _schedule_role_review(directory, record['operation_id'], resolved, reviewer.strip(),
+                          reason, snapshot, providers)
+    _log_role_review('role_review_rebuild_accepted', run_id=run_id,
+                     analysis_id=record.get('source_analysis_id'),
+                     operation_id=record['operation_id'], phase='accepted',
+                     detail={'reviewer': reviewer.strip(), 'clusters': sorted(resolved)})
+    return RoleReviewAccepted(
+        operation_id=record['operation_id'], run_id=run_id, status=view_payload['status'],
+        phase=view_payload['phase'], phases=view_payload['phases'],
+        poll_url=f'/api/runs/{run_id}/role-review/operations/{record["operation_id"]}',
+        note=('角色重建已接受并异步执行；请轮询该操作查看阶段进度与最终结果。'
+              '保存会创建新的 AnalysisRevision，不覆盖机器原件或上一次人工决定。'))
+
+
+@app.get('/api/runs/{run_id}/role-review/operations')
+def list_role_review_operations(run_id: str):
+    """Every role-review rebuild for this Run, newest first, plus the active one.
+
+    A caller that lost the operation id (page reload, second operator) recovers it
+    here rather than resubmitting a second rebuild.
+    """
+    from .role_review_operations import ACTIVE_STATUSES, load_operations, view
+    directory = _run_dir(run_id)
+    stale_after = _role_review_stale_after_ms()
+    records = load_operations(directory)
+    operations = [view(record, stale_after_ms=stale_after) for record in records]
+    active = next((operation for operation in operations
+                   if operation['status'] in ACTIVE_STATUSES), None)
+    return {'run_id': run_id, 'operations': operations, 'active': active}
+
+
+@app.get('/api/runs/{run_id}/role-review/operations/{operation_id}')
+def get_role_review_operation(run_id: str, operation_id: str):
+    """Phase progress and terminal outcome of one accepted rebuild."""
+    from .role_review_operations import load_operation, view
+    directory = _run_dir(run_id)
+    record = load_operation(directory, operation_id)
+    if record is None:
+        raise _role_review_http('operation_not_found')
+    return view(record, stale_after_ms=_role_review_stale_after_ms())
 
 
 @app.get('/api/runs/{run_id}/evidence-workbench')
@@ -713,24 +981,55 @@ async def voice_test_websocket(websocket: WebSocket, session_id: str):
                     await _generate_and_send_free_phrase(websocket, session)
 
             elif msg_type == 'capture_result':
-                # The audio socket already finalised the streaming capture; the
+                # The audio socket finalises the streaming capture and the
                 # control loop reads the server-side result, never the browser's
-                # echo of it.
+                # echo of it. The two sockets are independent, so this message
+                # can legitimately arrive while the audio socket is still
+                # finishing the recogniser (the page's own result wait is
+                # bounded). Waiting here for that in-flight finalisation — with
+                # a bound — is what keeps a round from stalling with no visible
+                # reason (Issue #113).
                 if session.mode != 'free':
                     await _send_ignored(websocket, msg_type, turn_id,
                                         'capture results are for free mode only')
                     continue
-                result = session.last_capture_result or {}
-                if not result:
-                    await _send_ignored(websocket, msg_type, turn_id,
-                                        'no finished capture for this session')
-                    continue
-                if result.get('turn_id') != session.awaiting_turn_id:
-                    await _send_ignored(websocket, msg_type, turn_id, 'stale capture result')
-                    continue
                 if session.status != 'running':
                     await _send_ignored(websocket, msg_type, turn_id,
                                         f'session is {session.status}')
+                    continue
+                awaiting = session.awaiting_turn_id
+                result = session.last_capture_result or {}
+                if not result or result.get('turn_id') != awaiting:
+                    result, timed_out = await _await_capture_result(session, awaiting)
+                    if timed_out:
+                        # An explicit, distinguishable failure state instead of a
+                        # round that waits forever: the recogniser never published
+                        # a result for this turn.
+                        turn = _voice_test_manager.turn_by_id(session, awaiting)
+                        if turn is not None and not turn.closed:
+                            _voice_test_manager.close_turn(
+                                session, turn, phase=PHASE_FAILED, status='failed',
+                                closure_reason='capture_finalisation_timeout',
+                                observation=turn.observation,
+                                observation_basis=turn.observation_basis)
+                        _voice_test_manager.fail(session_id,
+                                                 reason='capture_finalisation_timeout')
+                        await websocket.send_json({
+                            'type': 'failed', 'reason': 'capture_finalisation_timeout',
+                            'detail': 'capture_finalisation_timeout', 'turn_id': awaiting,
+                            'note': ('本轮识别在控制时限内未发布结果；已按失败结束，'
+                                     '不记为设备回答')})
+                        break
+                if not result:
+                    # "Nothing was published" and "the turn moved while we waited"
+                    # are different control outcomes.
+                    await _send_ignored(
+                        websocket, msg_type, turn_id,
+                        'stale capture result' if session.awaiting_turn_id != awaiting
+                        else 'no finished capture for this session')
+                    continue
+                if result.get('turn_id') != session.awaiting_turn_id:
+                    await _send_ignored(websocket, msg_type, turn_id, 'stale capture result')
                     continue
                 if await _consume_device_observation(websocket, session, result):
                     break
@@ -1252,6 +1551,63 @@ def _streaming_asr_factory():
     return getattr(providers, 'streaming_asr', None)
 
 
+#: Extra time the control loop grants an audio socket that is already draining
+#: the recogniser, on top of the recogniser's own ``no_response_timeout_ms``
+#: bound. It is a control guard, not a measured latency.
+CAPTURE_FINALISATION_MARGIN_MS = 5000
+
+
+async def _await_capture_result(session, turn_id):
+    """Wait, bounded, for the audio socket to publish this turn's capture result.
+
+    The audio and control sockets are independent connections, so the page's
+    ``capture_result`` notification can arrive while the audio socket is still
+    finalising the recogniser. Treating that as "no capture" is what made a round
+    stall with no visible reason (Issue #113).
+
+    Returns ``(result, timed_out)``:
+
+    * ``(result, False)`` — a published result for ``turn_id``;
+    * ``({}, False)`` — nothing is being finalised for this turn, so the caller
+      reports its own state;
+    * ``({}, True)`` — a finalisation for this turn was still running after the
+      bound. The caller must publish an explicit failure state.
+
+    It never reads the browser's payload and never invents a transcript.
+    """
+    if turn_id is None:
+        return {}, False
+    capture = session.capture
+    if capture is None or capture.turn_id != turn_id:
+        return {}, False
+    start = time.monotonic()
+    deadline = start + (session.no_response_timeout_ms + CAPTURE_FINALISATION_MARGIN_MS) / 1000
+    waited = False
+    while True:
+        result = session.last_capture_result or {}
+        if result and result.get('turn_id') == turn_id:
+            if waited:
+                _voice_test_manager.record_event(
+                    session, 'capture_result_waited', turn_id=turn_id,
+                    detail={'note': ('the control socket asked for this round before the '
+                                     'audio socket had published its result'),
+                            'waited_ms': round((time.monotonic() - start) * 1000, 3),
+                            'evidence_scope': 'control_evidence'})
+            return result, False
+        if session.status != 'running' or session.awaiting_turn_id != turn_id:
+            return {}, False
+        if time.monotonic() >= deadline:
+            _voice_test_manager.record_event(
+                session, 'capture_result_wait_timeout', turn_id=turn_id,
+                detail={'note': ('no capture result was published for this round before '
+                                 'the control bound'),
+                        'waited_ms': round((time.monotonic() - start) * 1000, 3),
+                        'evidence_scope': 'control_evidence'})
+            return {}, True
+        waited = True
+        await asyncio.sleep(0.05)
+
+
 async def _consume_device_observation(websocket, session, result):
     """Turn a finished capture into the next free-mode turn.
 
@@ -1266,6 +1622,9 @@ async def _consume_device_observation(websocket, session, result):
     transcript = (result.get('final_text') or '').strip()
     turn_id = result.get('turn_id')
     failure = result.get('failure')
+    # The round is advancing: the finished capture is no longer pending, so the
+    # session snapshot must stop reporting "capture finalised, not consumed".
+    _voice_test_manager.consume_pending_observation(session, turn_id)
     turn = _voice_test_manager.turn_by_id(session, turn_id)
     _voice_test_manager.record_event(session, 'device_observation', turn_id=turn_id,
                                      detail={'capture_mode': result.get('mode'),

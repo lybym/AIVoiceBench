@@ -21,6 +21,7 @@ Issue 定义工作单元，PR 定义一次可审阅变更，工作日志记录�
 | [#26](https://github.com/lybym/AIVoiceBench/issues/26) | F012、F017、N001/N002/N006 | append-only 人工修订、AnalysisRevision、重算与 revision diff；不覆盖机器原件 |
 | [#11](https://github.com/lybym/AIVoiceBench/issues/11) | F013–F014、N001/N002/N006 | wavesurfer.js Evidence Workbench、Finding/Metric/Event 音频定位与 evidence-linked JSON/Markdown 报告 |
 | [#27](https://github.com/lybym/AIVoiceBench/issues/27) | F004、F013–F017、N001–N006 | Linux Server + Docker + Remote Chrome 下的 M1 分阶段编排、持久化、失败恢复与 Web/API/CLI 一致性 |
+| [#113](https://github.com/lybym/AIVoiceBench/issues/113) | F012–F014、F017、F021、F023、N001/N003/N007 | v0.6.0-rc.3 端到端测试的三项行为修正：人工角色确认保存改为可跟踪的异步操作（202 + `operation_id` + 阶段进度 + 按 `code` 区分的拒绝 + 结构化日志）；Free 模式每轮推进有界且可解释（有界等待在飞的 finalisation、超时显式失败、会话快照公开 `progress`）；分析页聚类统计按 `speaker_id` 去重且 `complete_review` 不再承诺指标生成。软件验收已实现（API/worker 操作契约、Free 模式竞态与超时集成测试、Web 契约测试）；真实录音/实体设备/真实云验收仍属 #85 |
 | [#85](https://github.com/lybym/AIVoiceBench/issues/85) | F001–F017、M001–M010、N001–N007 | M1 最终真实证据 Gate：授权真实录音、真实云调用、人工标注/复核、修订重分析、浏览器证据回放与验收状态记录 |
 
 ### M1 依赖与验收关系

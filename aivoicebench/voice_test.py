@@ -150,6 +150,63 @@ OBSERVATION_SPEECH_START = 'speech_start'
 OBSERVATION_SPEECH_END = 'speech_end'
 OBSERVATION_NO_RESPONSE = 'no_response'
 
+# Run-level progress phases for the session API/UI (Issue #113). A turn's own
+# ``phase`` describes that turn; these describe what the *run* is waiting for
+# right now, so a round that does not advance is explainable from the session
+# snapshot instead of only from the control trace. Control state, not evidence.
+PROGRESS_PHASE_IDLE = 'idle'
+PROGRESS_PHASE_PLAY_ISSUED = 'play_issued'
+PROGRESS_PHASE_AWAITING_OBSERVATION = 'awaiting_device_observation'
+PROGRESS_PHASE_CAPTURING = 'capturing_device_audio'
+PROGRESS_PHASE_CAPTURE_FINALISED = 'capture_finalised'
+
+#: The concrete reasons a free-mode round can be waiting. ``capture_finalised``
+#: is the state that used to be invisible: the recogniser has produced its
+#: result but the control loop has not consumed it yet.
+PROGRESS_REASON_NO_TURN = 'no_turn_awaiting_observation'
+PROGRESS_REASON_PLAYBACK = 'awaiting_playback_report'
+PROGRESS_REASON_OBSERVATION = 'awaiting_device_observation'
+PROGRESS_REASON_CAPTURING = 'capture_in_progress'
+PROGRESS_REASON_CAPTURE_FINALISED = 'capture_finalised_awaiting_control_result'
+PROGRESS_REASON_NOT_RUNNING = 'session_not_running'
+
+
+def control_progress(session):
+    """What this run is doing now, and — when it is not advancing — why.
+
+    Read-only projection of the session's own control state. It never invents a
+    measurement and never claims the device is speaking.
+    """
+    def entry(phase, reason_code, reason, turn_id):
+        return {'phase': phase, 'turn_id': turn_id,
+                'reason_code': reason_code, 'reason': reason}
+
+    if session.status != 'running':
+        detail = f'session is {session.status}'
+        if session.stop_reason:
+            detail += f' ({session.stop_reason})'
+        return entry(session.status, PROGRESS_REASON_NOT_RUNNING, detail, None)
+    turn_id = session.awaiting_turn_id
+    if turn_id is None:
+        return entry(PROGRESS_PHASE_IDLE, PROGRESS_REASON_NO_TURN,
+                     'no turn is awaiting an observation', None)
+    pending = session.pending_observation
+    if isinstance(pending, dict) and pending.get('turn_id') == turn_id:
+        return entry(PROGRESS_PHASE_CAPTURE_FINALISED, PROGRESS_REASON_CAPTURE_FINALISED,
+                     ('the device capture is finalised; the control socket has not consumed it yet'),
+                     turn_id)
+    capture = session.capture
+    if capture is not None and capture.status == 'active' and capture.turn_id == turn_id:
+        return entry(PROGRESS_PHASE_CAPTURING, PROGRESS_REASON_CAPTURING,
+                     'device audio is being captured and recognised', turn_id)
+    turn = next((item for item in session.turns if item.turn_id == turn_id), None)
+    if turn is not None and turn.status == 'play_issued':
+        return entry(PROGRESS_PHASE_PLAY_ISSUED, PROGRESS_REASON_PLAYBACK,
+                     'the browser has not reported playback of this turn', turn_id)
+    return entry(PROGRESS_PHASE_AWAITING_OBSERVATION, PROGRESS_REASON_OBSERVATION,
+                 'waiting for the browser to observe and finalise the device answer', turn_id)
+
+
 # Every VAD-derived observation is suspected, not confirmed.
 VAD_BASIS = 'browser_vad_rms'
 
@@ -412,6 +469,11 @@ class VoiceTestSession:
     # Authoritative copy of the last finished capture, written by the audio
     # socket and read by the control loop. The browser's echo is never trusted.
     last_capture_result: Optional[dict] = None
+    # Marker for a capture that has been finalised for the turn still awaiting an
+    # observation but has not been consumed by the control loop yet. It exists so
+    # that "the recogniser finished and the round has not advanced" is a visible
+    # state (``control_progress``) instead of an invisible wait.
+    pending_observation: Optional[dict] = None
     # Provider events that arrived after their turn had already been closed.
     # They are never folded into that turn's transcript and never written to the
     # execution record (the run's outcome is already fixed); they stay here as a
@@ -470,6 +532,9 @@ class VoiceTestSession:
             'run_index': self.run_index,
             'turns': [t.to_dict() for t in self.turns],
             'stop_reason': self.stop_reason,
+            # What the run is waiting for right now, with the concrete reason when
+            # a round is not advancing. Control state, never a measurement.
+            'progress': control_progress(self),
             'execution_record': {
                 'record_version': CONTROL_RECORD_VERSION,
                 'event_count': len(self.events),
@@ -1143,7 +1208,35 @@ class VoiceTestManager:
                                   'evidence_scope': STREAMING_EVIDENCE_SCOPE})
         if session.capture is capture:
             session.capture = None
+        # The recogniser has produced its result for a turn still awaiting an
+        # observation: publish that as a visible pending state until the control
+        # loop consumes it (Issue #113). A capture aborted after its turn changed
+        # is not a pending observation for this session.
+        if session.status == 'running' and session.awaiting_turn_id == capture.turn_id:
+            session.pending_observation = {
+                'turn_id': capture.turn_id,
+                'status': status,
+                'failure': capture.failure,
+                'final_text': capture.final_text,
+                'final_basis': capture.final_basis,
+                'audio_bytes': capture.audio_bytes,
+                'finalised_at': capture.finished_at,
+                'evidence_scope': STREAMING_EVIDENCE_SCOPE,
+            }
         return capture
+
+    def consume_pending_observation(self, session, turn_id):
+        """Mark the finished capture for ``turn_id`` as consumed by the control loop.
+
+        Returns the marker that was pending, or ``None`` when there was none. The
+        authoritative transcript still comes from ``session.last_capture_result``;
+        this only keeps the observable progress state truthful.
+        """
+        pending = session.pending_observation
+        session.pending_observation = None
+        if isinstance(pending, dict) and pending.get('turn_id') == turn_id:
+            return pending
+        return None
 
     def open_turn(self, session, *, text, audio_path=None, audio_url=None,
                   role='platform', audio_sha256=None):
@@ -1229,6 +1322,11 @@ class VoiceTestManager:
         turn.observation_basis = observation_basis
         if session.awaiting_turn_id == turn.turn_id:
             session.awaiting_turn_id = None
+        if isinstance(session.pending_observation, dict) \
+                and session.pending_observation.get('turn_id') == turn.turn_id:
+            # A closed turn cannot still be pending: the observation was either
+            # consumed or the round ended without it.
+            session.pending_observation = None
         self.record_event(session, 'turn_closed', turn_id=turn.turn_id, detail={
             'phase': phase, 'status': status, 'closure_reason': closure_reason,
             'observation': turn.observation, 'observation_basis': turn.observation_basis,
@@ -1273,6 +1371,7 @@ class VoiceTestManager:
         session.awaiting_turn_id = None
         session.capture = None
         session.last_capture_result = None
+        session.pending_observation = None
         session.streaming_asr_error = None
         session.capability_report = report
         session.config_providers = self.get_providers()

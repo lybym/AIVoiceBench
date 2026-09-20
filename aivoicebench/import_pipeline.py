@@ -1025,7 +1025,7 @@ def resume_recording(directory, *, providers=None, model_snapshot=None):
 
 
 def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snapshot=None,
-                       evidence_refs=(), providers=None):
+                       evidence_refs=(), providers=None, progress=None):
     """Create a new AnalysisRevision from one saved human role decision set.
 
     Caller must hold the Run lock. Recognition and speaker clustering are original
@@ -1037,6 +1037,10 @@ def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snaps
     `providers.judge` is the configured semantic Judge. A revision re-runs the
     semantic stage with the same configuration, so confirming roles cannot
     silently drop the Judge or change which model judged the Run.
+
+    `progress` is an optional callable invoked with each phase name as it starts
+    (``restore_evidence`` and then each stage name). It is reporting only: it never
+    changes what is computed, and a failure inside it is ignored.
 
     The previous revision's artifacts are never modified. Returns
     ``(directory, manifest, review_document)``.
@@ -1078,6 +1082,7 @@ def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snaps
 
     run = ImportRun.__new__(ImportRun)
     run.directory, run.manifest = directory, copy.deepcopy(manifest)
+    run.progress_callback = progress
     checkpoint = current / 'manifest-snapshot.json'
     if checkpoint.exists():
         if json.loads(checkpoint.read_text(encoding='utf-8')) != manifest:
@@ -1110,6 +1115,11 @@ def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snaps
         return [item], envelope.get('data'), None
 
     preserved_parents = [revision_ref] + _configuration_refs(run)
+    if progress is not None:
+        try:
+            progress('restore_evidence')
+        except Exception:  # noqa: BLE001 - a reporter is not evidence
+            pass
     run.execute('asr', preserved_parents, lambda: restore('transcript', transcript_envelope, preserved_parents))
     run.manifest['stages']['asr']['processor'] = asr_stage['processor']
     asr_art_id = run.manifest['stages']['asr']['output_artifact_ids'][-1]
@@ -1132,6 +1142,10 @@ def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snaps
     run.execute('report', [a['artifact_id'] for a in run.manifest['artifacts']],
                 lambda: write_import_report(run))
     run.checkpoint()
-    if recording_run_errors(run.manifest, directory):
-        raise ValueError('Role reanalysis produced invalid Run evidence')
+    integrity = recording_run_errors(run.manifest, directory)
+    if integrity:
+        # Name the real integrity gaps: "produced invalid Run evidence" alone left
+        # an operator with nothing to act on (Issue #113).
+        raise ValueError('Role reanalysis produced invalid Run evidence: '
+                         + '; '.join(integrity[:3]))
     return directory, run.manifest, build_role_review(directory)

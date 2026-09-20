@@ -138,6 +138,24 @@ def latest_revision(directory):
     return revisions[-1] if revisions else None
 
 
+def current_cluster_ids(directory):
+    """This Run's anonymous speaker clusters, in first-seen order.
+
+    Read from the *current* AnalysisRevision's own diarization document: a role
+    decision can only be validated against the clusters that revision actually
+    preserved. Returns ``[]`` when there is no readable document, which the caller
+    reports as insufficient evidence rather than as an empty-but-satisfied review.
+    """
+    manifest_path = Path(directory) / 'manifest.json'
+    if not manifest_path.is_file():
+        return []
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    analysis_root = Path(directory) / 'analysis' / (manifest.get('analysis_id') or '')
+    document = _read_document(analysis_root / 'speaker-assignments.json')
+    return list(dict.fromkeys(segment['speaker_id']
+                              for segment in (document or {}).get('speaker_segments') or []))
+
+
 def validate_decisions(decisions, cluster_ids):
     """Reject an incomplete or invented mapping before it can become evidence.
 

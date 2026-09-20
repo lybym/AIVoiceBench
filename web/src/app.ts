@@ -41,13 +41,34 @@ function notify(message = ''): void {
  * JSON request helper.
  *
  * A non-2xx response becomes an `Error` carrying the server's `detail` when it is
- * a string, so callers only ever have to show one message.
+ * a string, so callers only ever have to show one message. A structured `detail`
+ * (the role-review contract) also carries its `code`, `retryable` flag and any
+ * `operation_id`, so a caller can tell a retryable conflict apart from an evidence
+ * or processor failure instead of showing one generic sentence (Issue #113).
  */
+interface RequestFailure extends Error {
+  code?: string;
+  retryable?: boolean;
+  operationId?: string;
+}
+
 async function request<T = ApiDocument>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
   const data = await response.json() as ApiDocument;
   if (!response.ok) {
-    throw new Error(typeof data.detail === 'string' ? data.detail : '请求失败，请检查输入或稍后重试');
+    const detail = data.detail;
+    if (typeof detail === 'string') throw new Error(detail);
+    if (detail && typeof detail === 'object') {
+      const payload = detail as {
+        message?: string; code?: string; retryable?: boolean; operation_id?: string;
+      };
+      const error = new Error(payload.message || '请求失败，请检查输入或稍后重试') as RequestFailure;
+      error.code = payload.code;
+      error.retryable = payload.retryable;
+      error.operationId = payload.operation_id;
+      throw error;
+    }
+    throw new Error('请求失败，请检查输入或稍后重试');
   }
   return data as unknown as T;
 }
@@ -222,6 +243,26 @@ interface SpeakerCluster {
   native_speaker_id?: string | null;
 }
 
+/**
+ * The distinct anonymous clusters in a diarization document, in first-seen order.
+ *
+ * The document lists one entry per speech *segment*, so a cluster's identity is
+ * `speaker_id`; counting list entries reports segments as clusters (Issue #113).
+ */
+function distinctClusterIds(segments: readonly SpeakerCluster[] | undefined | null): string[] {
+  const seen: string[] = [];
+  for (const segment of segments || []) {
+    const id = String(segment.speaker_id ?? '');
+    if (id && seen.indexOf(id) === -1) seen.push(id);
+  }
+  return seen;
+}
+
+/** How many distinct anonymous clusters this Run preserved. */
+function countClusters(segments: readonly SpeakerCluster[] | undefined | null): number {
+  return distinctClusterIds(segments).length;
+}
+
 /** Recorded role attribution for one speaker cluster. */
 interface RoleAttribution {
   speaker_id: string;
@@ -342,9 +383,13 @@ function render(data: AnalysisDocument): void {
   $('status').innerHTML = badge(data.status);
   ($('audio') as HTMLAudioElement).src = data.audio_url || '/api/runs/' + encodeURIComponent(data.run_id) + '/audio';
   const segmentCount = data.transcript?.segments?.length || data.fused_segments.length || data.acoustic_segments.length;
+  // Speaker *segments* and speaker *clusters* are different facts: one cluster
+  // owns many segments. Reporting the segment count as the cluster count made a
+  // 5-cluster recording look like 65 clusters (Issue #113).
+  const clusterCount = countClusters(data.speaker_segments);
   $('summary').innerHTML = [
     ['语音片段', segmentCount],
-    ['说话人聚类', (data.speaker_segments || []).length],
+    ['说话人聚类', clusterCount],
     ['对话轮次', data.turns.length],
     ['已观测指标', data.metrics.filter(metric => metric.status === 'observed' && metric.value != null).length],
     ['待复核发现', data.findings.length],
@@ -411,10 +456,13 @@ function attributionNote(data: AnalysisDocument): string {
 function diarizationNote(data: AnalysisDocument): string {
   const stage = data.stages?.diarization || {};
   const scope = data.diarization_scope || {};
-  const count = (data.speaker_segments || []).length;
-  if (!count) return '<p>说话人聚类：' + esc(statusLabel(stage.status) || '未运行') + ' · ' + esc(stage.reason || '尚未获得说话人分离证据') + '</p>';
-  const natives = [...new Set((data.speaker_segments || []).map(segment => segment.native_speaker_id || '未知'))];
-  return '<p>说话人聚类：' + esc(statusLabel(stage.status)) + ' · 聚类数 ' + count + ' · 服务原生标签 ' + esc(natives.join('、')) +
+  const segments = data.speaker_segments || [];
+  const clusters = distinctClusterIds(segments);
+  if (!clusters.length) return '<p>说话人聚类：' + esc(statusLabel(stage.status) || '未运行') + ' · ' + esc(stage.reason || '尚未获得说话人分离证据') + '</p>';
+  const natives = [...new Set(segments.map(segment => segment.native_speaker_id || '未知'))];
+  return '<p>说话人聚类：' + esc(statusLabel(stage.status)) + ' · 聚类数 ' + clusters.length +
+    ' · 语音片段 ' + segments.length + ' 段' +
+    ' · 服务原生标签 ' + esc(natives.join('、')) +
     (scope.invocation_id ? ' · 依据调用 ' + esc(scope.invocation_id) : '') +
     '</p><p>聚类只说明“哪些片段属于同一说话人”，不代表已确认谁是测试者、谁是设备。角色需人工复核或显式证据。</p>';
 }
@@ -481,7 +529,7 @@ function roleReviewNote(data: AnalysisDocument): string {
   const statusText = ({
     awaiting_role_review: '等待人工确认角色',
     incomplete_review: '确认未完成',
-    complete_review: '角色已确认',
+    complete_review: '人工角色决策已完成',
   } as Record<string, string>)[review.status || ''] || review.status || '';
   const revision = review.revision;
   const rows = clusters.map(cluster => {
@@ -498,12 +546,125 @@ function roleReviewNote(data: AnalysisDocument): string {
   head += '<p>ASR 只给出匿名聚类；测试者、AI 设备或未知必须由人根据音频与转写证据确认。系统不调用 LLM 判断角色，也不按发言顺序推断。每个聚类都必须明确选择，「未知」是有效决定。</p>';
   if (revision) head += '<p>当前修订 REV-' + esc(revision.revision_index) + ' · 复核人 ' + esc(revision.reviewer) + (revision.reason ? ' · ' + esc(revision.reason) : '') + '</p>';
   if (changed) head += '<p>相对上一修订的变化：' + changed + '</p>';
-  const controls = '<div class="segment"><div><label>复核人<input id="role-reviewer" maxlength="200" placeholder="填写复核人身份"></label><label>说明<input id="role-reason" maxlength="2000" placeholder="可选：本次判断依据"></label><button class="text-button" id="role-save">保存角色并重新分析</button></div></div>';
-  return head + rows + controls + '<p>保存会创建新的 AnalysisRevision，不覆盖机器原件或上一次人工决定；保存后从 Attribution 向下确定性重跑。</p>';
+  // "The human decision is complete" and "the downstream evidence is sufficient"
+  // are two different facts. A completed review must never read as a promise that
+  // metrics will be generated: an `unknown` cluster, unmatched segments or an empty
+  // timeline correctly make the role-dependent stages abstain, and the user has to
+  // see that as its own state (Issue #113).
+  head += downstreamAbstentionNote(data, review.status === 'complete_review');
+  const controls = '<div class="segment"><div><label>复核人<input id="role-reviewer" maxlength="200" placeholder="填写复核人身份"></label><label>说明<input id="role-reason" maxlength="2000" placeholder="可选：本次判断依据"></label><button class="text-button" id="role-save">保存角色并重新分析</button></div><p class="quiet" id="role-save-progress" role="status" aria-live="polite"></p></div></div>';
+  return head + rows + controls + '<p>保存会创建新的 AnalysisRevision，不覆盖机器原件或上一次人工决定；保存后从 Attribution 向下确定性重跑。重建在后台异步执行，页面会显示阶段进度。</p>';
+}
+
+/**
+ * Why role-dependent metrics are absent even though the human decision is saved.
+ *
+ * Reads only the Run's own stage ledger and the recorded metric-gap reasons; it
+ * never infers a measurement and never upgrades an abstention into a result.
+ */
+function downstreamAbstentionNote(data: AnalysisDocument, reviewComplete: boolean): string {
+  const metrics = data.metrics || [];
+  const observed = metrics.filter(metric => metric.status === 'observed' && metric.value != null).length;
+  const metricsStage = data.stages?.metrics;
+  const metricsStatus = metricsStage?.status;
+  const reasons = ((data.metrics_gap || {}).reasons || []).filter(reason => reason && reason.detail);
+  const settled = observed > 0 && metricsStatus === 'complete';
+  if (settled || (!reviewComplete && observed > 0)) return '';
+  const bits: string[] = [];
+  if (metricsStatus && metricsStatus !== 'complete') {
+    bits.push('指标阶段：' + esc(statusLabel(metricsStatus) || metricsStatus) +
+      (metricsStage?.reason ? '（' + esc(metricsStage.reason) + '）' : ''));
+  }
+  reasons.forEach(reason => bits.push(esc(reason.detail) + '（涉及 ' + Number(reason.count) + ' 处证据）'));
+  if (!bits.length && observed === 0) bits.push('本轮没有产生可观测指标。');
+  if (!bits.length) return '';
+  const heading = reviewComplete
+    ? '人工角色决策已完成，但下游证据不足，指标已弃权：'
+    : '本次修订仍缺少可观测指标：';
+  return '<h4>人工决策与下游指标是两件事</h4><p>' + heading + '</p><ul>' +
+    bits.map(bit => '<li>' + bit + '</li>').join('') +
+    '</ul><p>弃权是符合证据优先策略的结果，不代表设备未通过，也不代表指标将会补全。</p>';
 }
 
 /** Analysis tabs the detail panel can show. */
 type AnalysisTab = 'segments' | 'metrics' | 'findings' | 'report';
+
+/** One accepted role-review rebuild, as `GET .../role-review/operations/{id}` returns it. */
+interface RoleReviewOperation {
+  operation_id: string;
+  status: string;
+  phase: string;
+  phase_index: number;
+  phase_count: number;
+  phases: string[];
+  stalled: boolean;
+  elapsed_ms: number | null;
+  error: { code: string; message: string; retryable: boolean } | null;
+  result: {
+    gate_status?: string; metrics_status?: string; revision_index?: number; analysis_id?: string;
+  } | null;
+}
+
+/** Phase names the server reports, in the order it runs them. */
+const ROLE_PHASE_LABELS: Record<string, string> = {
+  accepted: '已接受',
+  lock: '等待运行锁',
+  restore_evidence: '恢复已保存的识别与聚类证据',
+  attribution: '说话人角色归属',
+  fusion: '片段融合',
+  turns: '对话轮次',
+  timeline: '事件时间线',
+  judge: '语义评估',
+  metrics: '指标计算',
+  findings: '发现项',
+  report: '报告生成',
+  done: '已完成',
+};
+
+/** Client-side bound on how long this page keeps polling one operation. */
+const ROLE_REVIEW_POLL_LIMIT_MS = 20 * 60 * 1000;
+const ROLE_REVIEW_POLL_INTERVAL_MS = 1500;
+
+/**
+ * Follow one accepted rebuild to its terminal, recorded outcome.
+ *
+ * Progress comes from the server's operation record only; this page never guesses
+ * a phase. A failure is reported with its distinguishing `code` and whether it can
+ * be resubmitted, instead of one generic sentence.
+ */
+async function trackRoleReview(
+  runId: string,
+  operationId: string,
+  setProgress: (text: string) => void,
+): Promise<void> {
+  const startedAt = Date.now();
+  for (;;) {
+    await new Promise(resolve => setTimeout(resolve, ROLE_REVIEW_POLL_INTERVAL_MS));
+    const operation = await request<RoleReviewOperation>(
+      '/api/runs/' + encodeURIComponent(runId) + '/role-review/operations/' +
+      encodeURIComponent(operationId));
+    const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    if (operation.status === 'succeeded') {
+      const metrics = operation.result?.metrics_status;
+      setProgress('角色重建完成。' + (metrics && metrics !== 'complete'
+        ? '下游证据不足，指标已弃权（' + (statusLabel(metrics) || metrics) + '）。' : ''));
+      return;
+    }
+    if (operation.status === 'failed') {
+      const failure = operation.error;
+      const message = failure?.message || '角色重建失败';
+      throw new Error('角色重建失败：' + message + (failure?.code ? '（' + failure.code + '）' : '') +
+        (failure?.retryable ? '，可重新提交。' : '。'));
+    }
+    const label = ROLE_PHASE_LABELS[operation.phase] || operation.phase;
+    setProgress((operation.stalled ? '进度心跳已停止，仍在查询：' : '正在重建：') +
+      label + '（已等待 ' + seconds + ' 秒）');
+    if (Date.now() - startedAt > ROLE_REVIEW_POLL_LIMIT_MS) {
+      throw new Error('角色重建仍在进行（操作 ' + operationId + '），本页已停止跟踪；' +
+        '请稍后刷新该记录查看结果，或继续查询该操作。');
+    }
+  }
+}
 
 function tab(name: AnalysisTab): void {
   document.querySelectorAll<HTMLElement>('[data-tab]').forEach(button =>
@@ -591,18 +752,41 @@ function tab(name: AnalysisTab): void {
       }
       busy = true;
       ($('role-save') as HTMLButtonElement).disabled = true;
+      const setProgress = (text: string): void => {
+        const node = $('role-save-progress');
+        if (node) node.textContent = text;
+      };
+      setProgress('正在提交人工角色确认…');
+      const reason = (($('role-reason') as HTMLInputElement | null)?.value || '').trim();
       try {
-        render(await request<AnalysisDocument>('/api/runs/' + encodeURIComponent(data.run_id) + '/role-review', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mapping,
-            reviewer,
-            reason: (($('role-reason') as HTMLInputElement | null)?.value || '').trim(),
-          }),
-        }));
+        // The rebuild takes minutes. The server answers 202 with a trackable
+        // operation, and this page polls its phase instead of holding one request
+        // open and showing nothing (Issue #113).
+        let operationId: string | null = null;
+        try {
+          const accepted = await request<{ operation_id: string }>(
+            '/api/runs/' + encodeURIComponent(data.run_id) + '/role-review',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ mapping, reviewer, reason }),
+            });
+          operationId = accepted.operation_id;
+        } catch (error) {
+          const failure = error as RequestFailure;
+          if (failure.code === 'operation_in_progress' && failure.operationId) {
+            // A rebuild is already running: track that one rather than resubmitting.
+            operationId = failure.operationId;
+            setProgress('该记录已有角色重建在进行中，正在跟踪其进度…');
+          } else {
+            throw error;
+          }
+        }
+        await trackRoleReview(data.run_id, operationId as string, setProgress);
+        render(await request<AnalysisDocument>('/api/runs/' + encodeURIComponent(data.run_id)));
       } catch (error) {
         notify((error as Error).message);
+        setProgress('');
       } finally {
         busy = false;
         if ($('role-save')) ($('role-save') as HTMLButtonElement).disabled = false;

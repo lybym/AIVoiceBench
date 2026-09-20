@@ -94,7 +94,14 @@ interface StreamingCapture {
   partials?: number;
   resultPromise?: Promise<CaptureResultMessage | null>;
   resolveResult?: (message: CaptureResultMessage | null) => void;
-  resultTimer?: ReturnType<typeof setTimeout> | null;
+  /**
+   * Bound on the *server's* finalisation of this capture. It is armed when
+   * `capture_stopped` is sent, never when the capture opens: a device that takes
+   * longer than the bound to answer must not pre-resolve the wait, because the
+   * control round then advances on a result the backend has not published yet
+   * (Issue #113).
+   */
+  finaliseTimer?: ReturnType<typeof setTimeout> | null;
 }
 
 /** Labelled-fallback (whole-turn) capture state for one turn. */
@@ -146,6 +153,10 @@ interface VoiceRun {
   vad: ControlVadSnapshot | null;
   /** Control-socket liveness, including a session the backend no longer knows. */
   socketState: ControlSocketState;
+  /** Polls the session snapshot while a run is live, to surface run progress. */
+  progressTimer?: ReturnType<typeof setInterval> | null;
+  /** Last progress reason shown, so the log is not repeated every poll. */
+  progressReason?: string | null;
   integrity: CaptureIntegrity;
   stats: RunStats;
 }
@@ -437,6 +448,7 @@ const VT = (function () {
     if (run.cancelled) return false; // idempotent
     run.cancelled = true;
     run.listening = false;
+    stopProgressPolling(run);
     // Ends the outstanding playback wait as well as the audio itself, so the
     // awaiting flow finishes instead of hanging.
     const hadAudio = cancelAudio(run, reason || 'user_stop');
@@ -461,6 +473,56 @@ const VT = (function () {
       socket.onmessage = null; socket.onclose = null; socket.onerror = null;
       socket.close();
     } catch (_) { /* ignore */ }
+  }
+
+  /* Surface the server's run progress while a free-mode run is live.
+   *
+   * The control socket only speaks when something happens, so a round that is
+   * waiting — or one the server refused to advance — was invisible: the page
+   * looked like it had simply stopped refreshing (Issue #113). This reads the
+   * server's own progress projection and reports the phase plus the concrete
+   * reason. It is control state, never a measurement.
+   */
+  const PROGRESS_POLL_MS = 3000;
+  const PROGRESS_PHASE_LABELS: Record<string, string> = {
+    idle: '空闲（无待观察轮次）',
+    play_issued: '已下发播报，等待播放回报',
+    awaiting_device_observation: '等待设备回答观察',
+    capturing_device_audio: '正在采集并识别设备回答',
+    capture_finalised: '识别已结束，等待本轮推进',
+  };
+  /** Waiting states the operator already sees on screen; not repeated in the log. */
+  const QUIET_PROGRESS_REASONS = ['awaiting_device_observation', 'capture_in_progress'];
+
+  function stopProgressPolling(run: VoiceRun | null): void {
+    if (run && run.progressTimer) clearInterval(run.progressTimer as ReturnType<typeof setInterval>);
+    if (run) run.progressTimer = null;
+  }
+
+  async function pollProgress(run: VoiceRun): Promise<void> {
+    if (!isActive(run) || run.finished) return;
+    let snapshot: VoiceSession | null = null;
+    try {
+      const response = await fetch(`/api/voice-test/sessions/${run.sessionId}`);
+      if (!response.ok) return;
+      snapshot = await response.json() as VoiceSession;
+    } catch (_) {
+      return;
+    }
+    if (!isActive(run) || run.finished) return;
+    const progress = snapshot && snapshot.progress;
+    if (!progress || !progress.reason_code || progress.reason_code === run.progressReason) return;
+    run.progressReason = progress.reason_code;
+    if (QUIET_PROGRESS_REASONS.indexOf(progress.reason_code) !== -1) return;
+    const label = PROGRESS_PHASE_LABELS[progress.phase] || progress.phase;
+    appendFreeLog('系统', `当前阶段：${label}（${progress.reason}）`);
+    captureStatus(`当前阶段：${label}（${progress.reason}）`);
+  }
+
+  function startProgressPolling(run: VoiceRun): void {
+    stopProgressPolling(run);
+    run.progressReason = null;
+    run.progressTimer = setInterval(() => { void pollProgress(run); }, PROGRESS_POLL_MS);
   }
 
   function stopRun(run: VoiceRun | null): void {
@@ -608,7 +670,8 @@ const VT = (function () {
   const CAPTURE_TARGET_RATE = 16000;
   const CAPTURE_FRAME_SAMPLES = 3200; // 200 ms at 16 kHz
   const CAPTURE_BACKPRESSURE_BYTES = 262144;
-  const CAPTURE_RESULT_TIMEOUT_MS = 15000;
+  /** Wait bound for the server to finalise a stopped capture, on top of its own drain bound. */
+  const CAPTURE_FINALISE_MARGIN_MS = 15000;
 
   function captureStatus(text: string): void {
     const el = $('vt-capture-status');
@@ -722,11 +785,9 @@ const VT = (function () {
     };
     run.capture = capture;
     capture.resultPromise = new Promise<CaptureResultMessage | null>(resolve => { capture.resolveResult = resolve; });
-    capture.resultTimer = setTimeout(() => {
-      if (capture.result) return;
-      captureStatus('未在控制时限内收到实时识别结果。');
-      (capture.resolveResult as (message: CaptureResultMessage | null) => void)(null);
-    }, CAPTURE_RESULT_TIMEOUT_MS);
+    // No result timer is armed here: the capture is open for as long as the
+    // device takes to answer. The bound is armed when this round is stopped (see
+    // `stopCapture`), so a slow answer can never pre-resolve the wait.
     try {
       const audioWindow = window as AudioContextWindow;
       const Context = audioWindow.AudioContext || audioWindow.webkitAudioContext;
@@ -788,7 +849,7 @@ const VT = (function () {
         if (message.type === 'capture_result') {
           // The flow still has to finish; only the display is refused.
           capture.result = message;
-          clearTimeout(capture.resultTimer as ReturnType<typeof setTimeout>);
+          clearTimeout(capture.finaliseTimer as ReturnType<typeof setTimeout>);
           (capture.resolveResult as (value: CaptureResultMessage | null) => void)(message);
         }
         return;
@@ -809,23 +870,23 @@ const VT = (function () {
         captureStatus(message.empty_transcript
           ? `本轮未获得设备文本${message.failure ? `（${message.failure}）` : ''}。`
           : '本轮实时识别完成。');
-        clearTimeout(capture.resultTimer as ReturnType<typeof setTimeout>);
+        clearTimeout(capture.finaliseTimer as ReturnType<typeof setTimeout>);
         (capture.resolveResult as (value: CaptureResultMessage | null) => void)(message);
       } else if (message.type === 'capture_error') {
         capture.error = message.error;
-        captureStatus(`实时识别不可用：${message.error}`);        clearTimeout(capture.resultTimer as ReturnType<typeof setTimeout>);
+        captureStatus(`实时识别不可用：${message.error}`);        clearTimeout(capture.finaliseTimer as ReturnType<typeof setTimeout>);
         (capture.resolveResult as (value: CaptureResultMessage | null) => void)(null);
       }
     };
     socket.onerror = () => {
       if (!isActive(run)) return;
       captureStatus('实时识别连接失败。');
-      clearTimeout(capture.resultTimer as ReturnType<typeof setTimeout>);
+      clearTimeout(capture.finaliseTimer as ReturnType<typeof setTimeout>);
       (capture.resolveResult as (value: CaptureResultMessage | null) => void)(null);
     };
     socket.onclose = () => {
       if (capture.result || capture.closed) return;
-      clearTimeout(capture.resultTimer as ReturnType<typeof setTimeout>);
+      clearTimeout(capture.finaliseTimer as ReturnType<typeof setTimeout>);
       (capture.resolveResult as (value: CaptureResultMessage | null) => void)(capture.result || null);
     };
   }
@@ -944,8 +1005,18 @@ const VT = (function () {
     }
     if (capture.ws && capture.ws.readyState === WebSocket.OPEN) {
       capture.ws.send(JSON.stringify({ type: 'capture_stopped', reason: reason || 'speech_end' } satisfies CaptureStoppedMessage));
+      // The server now finalises the recogniser and may drain for up to its own
+      // no-response bound. Grant that bound plus a margin before giving up, so a
+      // normal finalisation is never reported as "no result".
+      const serverDrainMs = Number(run && run.bounds.no_response_timeout_ms) || 30000;
+      if (capture.finaliseTimer) clearTimeout(capture.finaliseTimer as ReturnType<typeof setTimeout>);
+      capture.finaliseTimer = setTimeout(() => {
+        if (capture.result) return;
+        captureStatus('服务端未在控制时限内结束本轮识别。');
+        (capture.resolveResult as (message: CaptureResultMessage | null) => void)(null);
+      }, serverDrainMs + CAPTURE_FINALISE_MARGIN_MS);
     } else {
-      clearTimeout(capture.resultTimer as ReturnType<typeof setTimeout>);
+      clearTimeout(capture.finaliseTimer as ReturnType<typeof setTimeout>);
       if (capture.resolveResult) capture.resolveResult(null);
     }
     return capture.resultPromise || null;
@@ -1469,6 +1540,7 @@ const VT = (function () {
       run.socketState = 'open';
       setRunningButtons('free', true);
       updateStatus('正在生成第一句话术…');
+      startProgressPolling(run);
       wsSend(run, { type: 'start' });
     };
 
@@ -1506,6 +1578,13 @@ const VT = (function () {
         updateStatus('检测到疑似回答（浏览器 VAD 提示，未确认说话人）。');
       } else if (msg.type === 'ignored') {
         run.stats.ignored += 1;
+        // A refused observation is control state the operator must see; silently
+        // counting it left the page looking like it had simply stopped
+        // refreshing (Issue #113).
+        if (msg.event === 'capture_result' && msg.reason === 'capture_finalisation_pending') {
+          captureStatus('本轮识别未在控制时限内结束，已按失败处理。');
+          appendFreeLog('系统', '本轮识别未在控制时限内结束（未记为设备回答）。');
+        }
       } else if (msg.type === 'no_response') {
         appendFreeLog('系统', '未观察到设备回答（按策略继续）');
       } else if (msg.type === 'complete') {

@@ -351,6 +351,35 @@ class BrowserStationDeliveryContractTests(unittest.TestCase):
         self.assertIn('role-save', script)
         self.assertIn('请为每个说话人聚类选择角色（未知也是明确选择）', script)
 
+    def test_speaker_cluster_statistic_counts_clusters_not_segments(self):
+        """Speaker segments and speaker clusters are different facts (Issue #113).
+
+        Reporting the diarization document's entry count as the cluster count made a
+        5-cluster recording display 65 clusters. Both the source and the delivered
+        artifact must derive the statistic from distinct ``speaker_id`` values.
+        """
+        source = (REPO_ROOT / 'web' / 'src' / 'app.ts').read_text(encoding='utf-8')
+        script = self.client.get('/static/app.js').text
+        for text in (source, script):
+            self.assertIn('distinctClusterIds', text)
+            self.assertIn('countClusters(data.speaker_segments)', text)
+        # The defect's shape must not come back: the segment list's length is not a
+        # cluster count anywhere in the analysis view.
+        for text in (source, script):
+            self.assertNotIn("['说话人聚类', (data.speaker_segments || []).length]", text)
+            self.assertNotIn('聚类数 \' + (data.speaker_segments', text)
+
+    def test_async_role_rebuild_contract_survives_compilation(self):
+        """The page tracks the accepted operation instead of blocking on the save."""
+        script = self.client.get('/static/app.js').text
+        for token in ('trackRoleReview', 'role-review/operations', 'operation_id',
+                      'operation_in_progress', 'role-save-progress'):
+            self.assertIn(token, script, f'compiled analysis view lost {token!r}')
+        # A completed human decision is never presented as a promise that metrics
+        # will be generated.
+        self.assertIn('downstreamAbstentionNote', script)
+        self.assertIn('人工决策与下游指标是两件事', script)
+
     def test_workbench_contract_survives_compilation(self):
         """The compiled Evidence Workbench keeps its published surface (PRD-F014).
 

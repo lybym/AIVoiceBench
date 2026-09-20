@@ -1,8 +1,8 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.5.13
+prd_version: 1.5.14
 status: modularized_for_owner_review
-updated: 2026-09-19
+updated: 2026-09-20
 implementation_baseline: v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd
 main_baseline: c43cd367d0fdd5240e06d559b3ff0c416c027747
 ---
@@ -131,6 +131,6 @@ P0/P1 表示开发先后，不表示产品可选性。M1 是 Recording Analysis 
 
 ## 5. 当前审计与历史入口
 
-当前**实现基线**仍是 `v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd`；本次 1.5.5 在既有 V3 WebSocket 协议分工上进一步固定 Active TTS 输出为 MP3，并移除 format/encoding 配置面；PRD 1.5.6 记录 Recording Analysis 的 Seed standard 默认异步处理、partial evidence、acoustic↔ASR 对齐和“角色只由用户人工确认”的产品约束。PRD 1.5.7 落实该对齐约束的确定性实现口径（显式未匹配/冲突状态、覆盖率分母、指标为空原因计数、非 canonical sensitivity 标注）。PRD 1.5.8 落实“角色只由用户人工确认”的 Gate：匿名聚类出现时 Run 停在 `awaiting_role_review`，Web/API 复核面必须逐个聚类明确决定，保存生成不可变 revision 与新 AnalysisRevision 并从 Attribution 向下重跑（识别/聚类证据恢复而非重算）。PRD 1.5.13 落实 #85 的 M1 真实录音验收证据契约：新增 `AcceptanceRecord 1.0.0` 与 `aivoicebench acceptance init|check`，使软件/容器/浏览器/真实云/真实录音五个 gate 必须分别带证据状态化，未授权输入（synthetic fixture、mock、CI、机器标注）不得写成 `real_recording_verified`；该版**不产生任何真实录音证据、不降低门槛**，M1 仍为未通过。以上都不升级代码实现状态，也不把工作树修复候选或单份诊断录音升级为正式实现/真实验收。历史提交、预发布、Issue/PR 和工作日志仍作为审计证据。当前追踪和主要缺口见 [Requirement 追踪与审计结论](prd/traceability.md)，版本演进见 [PRD 变更历史](prd/changelog.md)。
+当前**实现基线**仍是 `v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd`；本次 1.5.5 在既有 V3 WebSocket 协议分工上进一步固定 Active TTS 输出为 MP3，并移除 format/encoding 配置面；PRD 1.5.6 记录 Recording Analysis 的 Seed standard 默认异步处理、partial evidence、acoustic↔ASR 对齐和“角色只由用户人工确认”的产品约束。PRD 1.5.7 落实该对齐约束的确定性实现口径（显式未匹配/冲突状态、覆盖率分母、指标为空原因计数、非 canonical sensitivity 标注）。PRD 1.5.8 落实“角色只由用户人工确认”的 Gate：匿名聚类出现时 Run 停在 `awaiting_role_review`，Web/API 复核面必须逐个聚类明确决定，保存生成不可变 revision 与新 AnalysisRevision 并从 Attribution 向下重跑（识别/聚类证据恢复而非重算）。PRD 1.5.13 落实 #85 的 M1 真实录音验收证据契约：新增 `AcceptanceRecord 1.0.0` 与 `aivoicebench acceptance init|check`，使软件/容器/浏览器/真实云/真实录音五个 gate 必须分别带证据状态化，未授权输入（synthetic fixture、mock、CI、机器标注）不得写成 `real_recording_verified`；该版**不产生任何真实录音证据、不降低门槛**，M1 仍为未通过。PRD 1.5.14 落实 v0.6.0-rc.3 端到端测试（[#113](https://github.com/lybym/AIVoiceBench/issues/113)）的三项产品行为修正，均不改变任何验收门槛：人工角色确认保存改为**可跟踪的异步操作**（202 + `operation_id` + 取自阶段账本的进度；`run_locked`/`operation_in_progress`/`insufficient_evidence`/`internal_error` 按 `code` 区分；操作在任何工作前落盘、可跨重启查询、重试不重复提交）；Free 模式**每轮推进必须有界且可解释**（等待只在发送 `capture_stopped` 后计时、服务端有界等待在飞的 finalisation、超时显式记为失败、会话快照公开 `progress.phase`/`reason_code`）；分析页的**统计口径与完成语义分列**（聚类数按 `speaker_id` 去重，`complete_review` 不等于指标将生成，弃权单独陈述）。以上都不升级代码实现状态，也不把工作树修复候选或单份诊断录音升级为正式实现/真实验收。以上都不升级代码实现状态，也不把工作树修复候选或单份诊断录音升级为正式实现/真实验收。历史提交、预发布、Issue/PR 和工作日志仍作为审计证据。当前追踪和主要缺口见 [Requirement 追踪与审计结论](prd/traceability.md)，版本演进见 [PRD 变更历史](prd/changelog.md)。
 
 技术专题文件不构成平行 PRD：例如 [Active Measurement 设计](25-active-measurement.md) 说明实现边界，[组件策略](26-remote-browser-component-strategy.md) 记录 2026-09-16 的技术决策，[指标定义](03-metric-definition.md) 说明契约与公式，[Roadmap](04-development-roadmap.md) 说明实施顺序。

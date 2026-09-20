@@ -25,6 +25,7 @@
 - File ASR 整轮上传只能作为操作者显式选择且显式标注的 fallback；缺少 Streaming ASR 时 `auto` 不得静默降级。
 - Free 的目标 TTS transport 为火山 **V3 WebSocket 双向流式**，由独立 `streaming_tts` route 配置；LLM text chunk、TTS audio chunk、session/turn identity、finish/cancel/stale lifecycle 必须保持顺序和可追溯。Stop、Turn 切换或未来 Barge-in cancel 后的迟到音频不得串入下一轮；双向链失败不得静默切回旧 SSE 或单向 WS。
 - Free 双向 TTS 同样**固定输出 MP3**，不暴露 format/encoding 配置项。speaker/voice、sample rate、speech rate 以及官方实际支持的 loudness/pitch 等常用参数必须按官方字段与合法值配置；Provider/浏览器时间与 chunk 到达时间属于 Control/Provider Evidence，不直接成为正式 acoustic boundary。
+- **每轮推进必须有界且可解释（#113）。** 一轮的完成链是 `capture_finished → device_observation → 下一轮生成/播报`，其中采集结果由音频 socket 发布、由控制 socket 消费，两者相互独立。因此：(a) 页面不得在采集开始时就作废"等待本轮识别结果"（等待只在发送 `capture_stopped` 后计时）；(b) 服务端在收到控制侧 `capture_result` 而结果尚未发布时，必须有界等待在飞的 finalisation，而不是把它当成"没有采集"忽略；(c) 该等待超时必须把本轮显式记为失败（`capture_finalisation_timeout`），不得无限等待，也不得记为设备回答；(d) 会话快照必须公开当前阶段与不推进的具体原因（`progress.phase` / `progress.reason_code`），使"识别已结束但控制循环尚未消费"这一状态可被查询而不是只能靠手动停止。会话快照是控制状态，不是测量，也不判断设备是否在说话。
 
 当前最小实时链路、后端能力预检、显式降级、时域 RMS VAD 判停和失败状态已有有限验证；真实云调用、真实设备、Coverage 与预算闭环仍待验收。近期控制 VAD 的目标实现改为 TEN VAD Browser/WASM Adapter；RMS 仅保留 fallback/debug，不能因文档选型被写成 implemented。
 
