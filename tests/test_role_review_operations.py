@@ -113,6 +113,18 @@ class RoleReviewOperationTests(unittest.TestCase):
         self.assertTrue(operation['result']['analysis_id'])
         self.assertEqual(operation['result']['revision_index'], 1)
 
+    def test_a_run_built_without_init_still_has_the_progress_seam(self):
+        """`resume_recording`/`apply_role_mapping` build the run with `__new__`.
+
+        The progress seam therefore has to be a class-level default: as an instance
+        attribute it made every resumed Run raise `AttributeError` on its first
+        stage, and `POST /api/runs/{id}/resume` answered 409 (Issue #113, found by
+        the container job's recording-backbone suite).
+        """
+        from aivoicebench.import_artifacts import ImportRun
+        run = ImportRun.__new__(ImportRun)
+        self.assertIsNone(run.progress_callback)
+
     def test_no_operation_endpoint_state_mutates_the_run_before_it_is_asked(self):
         listing = self.client.get(
             f'/api/runs/{self.directory.name}/role-review/operations').json()

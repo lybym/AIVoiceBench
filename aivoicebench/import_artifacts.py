@@ -47,6 +47,16 @@ def validate_profile(profile):
 
 
 class ImportRun:
+    #: Optional progress seam for a long-running caller (the asynchronous
+    #: role-review rebuild). It receives each stage name as it starts and is never
+    #: consulted for a decision, so an unattended run behaves identically.
+    #:
+    #: It is a **class** attribute on purpose: `resume_recording()` and
+    #: `apply_role_mapping()` build their run with `ImportRun.__new__` and never run
+    #: `__init__`, so an instance attribute would make the resume path raise
+    #: `AttributeError` on its first stage (Issue #113).
+    progress_callback = None
+
     def __init__(self, output, profile=None, synthetic=False):
         profile = validate_profile(profile)
         run_id, analysis_id = 'RUN-' + uuid.uuid4().hex, 'ANALYSIS-' + uuid.uuid4().hex
@@ -54,10 +64,6 @@ class ImportRun:
         self.directory.mkdir(parents=True, exist_ok=False)
         self.analysis = self.directory / 'analysis' / analysis_id
         self.analysis.mkdir(parents=True)
-        # Optional progress seam for a long-running caller (the asynchronous
-        # role-review rebuild). It receives each stage name as it starts and is
-        # never consulted for a decision, so an unattended run behaves identically.
-        self.progress_callback = None
         self.manifest = {'schema_version': '1.0.0', 'workflow': 'recording_import', 'run_id': run_id,
             'analysis_id': analysis_id, 'created_at': utc_now(), 'status': 'partial',
             'execution_kind': 'synthetic' if synthetic else 'imported', 'profile': profile,
