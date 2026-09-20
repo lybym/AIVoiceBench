@@ -188,6 +188,9 @@ jobs:
           VT_BROWSER_BASE_URL: http://127.0.0.1:8099
         run: |
           set -euo pipefail
+          # The web-build gate imports FastAPI's TestClient, so the runner needs
+          # the application's declared API dependencies as well as Playwright.
+          python -m pip install --quiet -r requirements-api.txt
           python -m pip install --quiet playwright
           python -m playwright install --with-deps chromium
           python -m unittest tests.test_voice_browser -v
