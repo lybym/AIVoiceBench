@@ -14,19 +14,39 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-CAPABILITIES = {'tts': '语音生成', 'asr': '录音分析语音识别', 'streaming_asr': '主动测试实时语音识别',
+CAPABILITIES = {'tts': '语音生成（Fixed 固定话术资产合成）',
+                'streaming_tts': '流式语音生成（Free 双向流式会话）',
+                'asr': '录音分析语音识别', 'streaming_asr': '主动测试实时语音识别',
                 'diarization': '说话人分析', 'judge': '结果分析'}
 # File ASR and Streaming ASR are separate purposes on purpose: Recording Analysis
 # needs a whole-file recogniser, Active Voice Test needs a session-based one
 # (PRD-F016). A single vague "default_asr" would hide that difference.
+# ``tts`` and ``streaming_tts`` are separated for the same reason (PRD-F020/F021,
+# Issue #98): Fixed freezes a complete-text MP3 asset, Free runs a streaming-text
+# / streaming-audio session. One vague ``volcengine_tts`` profile must never make
+# the runtime silently guess which protocol is intended.
 LEGACY_CAPABILITIES = ('tts', 'asr', 'diarization', 'judge')
-PROTOCOLS = {'openai_chat': {'judge'}, 'volcengine_tts': {'tts'},
+PROTOCOLS = {'openai_chat': {'judge'},
+             'volcengine_tts': {'tts'},
+             'volcengine_tts_ws': {'tts'},
+             'volcengine_tts_ws_bidirectional': {'streaming_tts'},
              'volcengine_asr': {'asr', 'diarization'},
              'volcengine_streaming_asr': {'streaming_asr'},
              'custom_speech': {'tts', 'asr', 'diarization'}}
 PARAMETERS = {'temperature', 'max_tokens', 'timeout_seconds', 'voice', 'speed', 'volume', 'pitch',
               'sample_rate', 'format', 'resource_id', 'end_window_size', 'force_to_speech_time',
               'file_mode', 'audio_transport', 'inline_max_bytes', 'object_storage_ref'}
+# Active TTS media format is fixed by product decision (Issue #98). It is not a
+# configuration knob: ``format``/``encoding`` no longer appears in
+# ``providers.yaml``, and a leftover ``format: wav`` is refused with an explicit
+# migration message rather than silently ignored.
+TTS_FIXED_FORMAT = 'mp3'
+TTS_WS_PROTOCOLS = ('volcengine_tts_ws', 'volcengine_tts_ws_bidirectional')
+TTS_WS_ENDPOINTS = {
+    'volcengine_tts_ws': 'wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream',
+    'volcengine_tts_ws_bidirectional': 'wss://openspeech.bytedance.com/api/v3/tts/bidirection',
+}
+
 # File ASR transport modes (PRD-F005/F016, Issue #87).  inline submits Base64
 # audio.data; object_storage uploads a private TOS object and hands a short-lived
 # Presigned GET URL to the provider; auto selects by file size vs inline_max_bytes.
@@ -40,13 +60,20 @@ class RunProviders:
     diarization: object = field(default=None, repr=False)
     judge: object = field(default=None, repr=False)
     tts: object = field(default=None, repr=False)
+    # Streaming-text/streaming-audio TTS session factory for the Free Test Agent
+    # (PRD-F021, Issue #98). Separate from ``tts`` on purpose: Fixed synthesises a
+    # complete-text asset, Free runs a bidirectional session, and one field could
+    # not describe both without the runtime guessing.
+    streaming_tts: object = field(default=None, repr=False)
 
 
 def adapter_available(profile, role):
     return ((role == 'judge' and profile['protocol'] == 'openai_chat') or
             (role == 'asr' and profile['protocol'] == 'volcengine_asr') or
             (role == 'streaming_asr' and profile['protocol'] == 'volcengine_streaming_asr') or
-            (role == 'tts' and profile['protocol'] == 'volcengine_tts') or
+            (role == 'tts' and profile['protocol'] in ('volcengine_tts', 'volcengine_tts_ws')) or
+            (role == 'streaming_tts'
+             and profile['protocol'] == 'volcengine_tts_ws_bidirectional') or
             (role == 'diarization' and profile['protocol'] == 'volcengine_asr'))
 
 class SettingsError(ValueError):
@@ -78,10 +105,14 @@ def validate_profile(p):
     if not isinstance(url,str) or len(url)>1000:
         raise SettingsError('无效的服务地址')
     parsed=urlsplit(url)
-    allowed_schemes = (('wss',) if p['protocol']=='volcengine_streaming_asr'
+    # TTS over the V3 WebSocket family is a WSS endpoint, exactly like streaming
+    # ASR; an HTTP(S) address here would mean the profile points at the retired
+    # SSE route while claiming the WebSocket protocol (Issue #98).
+    wss_protocols = ('volcengine_streaming_asr',) + TTS_WS_PROTOCOLS
+    allowed_schemes = (('wss',) if p['protocol'] in wss_protocols
                        else ('http','https'))
     if parsed.scheme not in allowed_schemes or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        expected = 'WSS' if p['protocol']=='volcengine_streaming_asr' else 'HTTP(S)'
+        expected = 'WSS' if p['protocol'] in wss_protocols else 'HTTP(S)'
         raise SettingsError(f'服务地址必须为不含密钥、查询参数或账号密码的 {expected} 地址')
     if parsed.scheme=='http' and parsed.hostname not in ('localhost','127.0.0.1','::1','host.docker.internal'):
         raise SettingsError('远程服务必须使用 HTTPS；本地模型可使用 HTTP')
@@ -94,10 +125,12 @@ def validate_profile(p):
     if not isinstance(params,dict) or set(params)-PARAMETERS:
         raise SettingsError('包含不支持的模型参数')
     numeric_limits={'temperature':(0,2),'max_tokens':(1,131072),'timeout_seconds':(1,300),'sample_rate':(8000,96000)}
-    if p['protocol']=='volcengine_tts':
+    if p['protocol'] in TTS_WS_PROTOCOLS or p['protocol']=='volcengine_tts':
         # V3 TTS uses signed integer percentage-like controls.  The service
         # itself remains authoritative for any model-specific restriction.
-        numeric_limits.update({'speed':(-50,100),'volume':(-100,100),'pitch':(-100,100)})
+        numeric_limits.update({'speed':(-50,100),'volume':(-100,100)})
+        if p['protocol']=='volcengine_tts':
+            numeric_limits['pitch']=(-100,100)
     elif p['protocol']=='volcengine_streaming_asr':
         # Documented forced-endpointing bounds (PRD-F016 / docs/24-streaming-asr.md).
         numeric_limits.update({'end_window_size':(300,5000),'force_to_speech_time':(0,10000)})
@@ -118,6 +151,36 @@ def validate_profile(p):
             raise SettingsError('火山 TTS 必须填写资源 ID 和音色 ID')
         if params.get('format','wav').lower()!='wav':
             raise SettingsError('主动语音测试的火山 TTS 格式必须为 wav')
+    if p['protocol'] in TTS_WS_PROTOCOLS:
+        missing=[key for key in ('resource_id','voice') if not params.get(key,'').strip()]
+        if missing:
+            raise SettingsError('火山 V3 WebSocket TTS 必须填写资源 ID 和音色 ID')
+        # The media format is fixed to MP3 and is not a configuration item
+        # (Issue #98). A leftover ``format:`` key from the SSE era is refused with
+        # a migration message instead of being silently ignored, so an operator
+        # cannot believe a WAV/PCM setting still applies.
+        if 'format' in params:
+            raise SettingsError(
+                'Active TTS 媒体格式固定为 mp3，不再提供 format/encoding 配置项；'
+                '请从 providers.yaml 删除该字段（Issue #98）')
+        # Pitch is only accepted where the selected protocol documents support for
+        # it. The unidirectional V3 page still marks pitch adjustment unsupported,
+        # so accepting the value and ignoring it would advertise a capability the
+        # transport does not have.
+        if p['protocol']=='volcengine_tts_ws':
+            if 'pitch' in params:
+                raise SettingsError('V3 单向流式 TTS 当前官方协议不支持 pitch 调节')
+        elif params.get('pitch',0) not in (0,):
+            raise SettingsError('V3 双向流式 TTS 当前仅支持 pitch=0')
+        # The endpoint decides the protocol: a profile that names the
+        # unidirectional protocol but points at the bidirectional path (or the
+        # retired SSE path) would make the runtime speak one protocol while the
+        # configuration claims another. Refused rather than guessed, because
+        # Issue #98 requires the route to be explicit instead of inferred.
+        expected_endpoint=TTS_WS_ENDPOINTS[p['protocol']]
+        if p['base_url']!=expected_endpoint:
+            raise SettingsError(
+                f'{p["protocol"]} 的服务地址必须为官方 V3 {expected_endpoint}')
     if p['protocol']=='volcengine_streaming_asr':
         if not params.get('resource_id','').strip():
             raise SettingsError('火山流式语音识别必须填写资源 ID')
@@ -387,6 +450,7 @@ def build_run_providers(doc, keys, storage_config=None):
     streaming_asr_factory=None
     diarization_factory=None
     tts_factory=None
+    streaming_tts_factory=None
     asr=by_id.get(doc['routes']['asr'])
     if asr and asr['enabled'] and adapter_available(asr, 'asr'):
         from .volcengine_asr import VolcengineASRProvider
@@ -484,11 +548,32 @@ def build_run_providers(doc, keys, storage_config=None):
                 timeout=params.get('timeout_seconds',300),
                 end_window_size=params.get('end_window_size',800),
                 force_to_speech_time=params.get('force_to_speech_time',1000))
-    # TTS V3 SSE for Active Voice Test.  Profile parameters intentionally
-    # carry current account-specific resource/voice identifiers rather than
-    # code defaults; credentials remain in the secret store/environment.
+    # TTS for Active Voice Test.  Two protocols are supported side by side during
+    # the Issue #98 migration:
+    #   ``volcengine_tts``                retire-eligible V3 HTTP SSE one-shot
+    #   ``volcengine_tts_ws``             V3 unidirectional WebSocket (fixed target)
+    # Profile parameters intentionally carry current account-specific
+    # resource/voice identifiers rather than code defaults; credentials remain in
+    # the secret store or environment and never enter this snapshot.
     tts=by_id.get(doc['routes']['tts'])
-    if tts and tts['enabled'] and adapter_available(tts, 'tts'):
+    if tts and tts['enabled'] and tts['protocol']=='volcengine_tts_ws':
+        from .volcengine_tts_ws import VolcengineUnidirectionalTTSProvider, _audit_endpoint_for
+        _tts_profile=tts
+        _tts_key=keys[tts['id']]
+        _tts_audit=_audit_endpoint_for(tts['base_url'])
+        def tts_factory(root, _tp=_tts_profile, _tk=_tts_key, _audit=_tts_audit):
+            params=_tp['parameters']
+            return VolcengineUnidirectionalTTSProvider(root, _tk,
+                endpoint=_tp['base_url'],
+                audit_endpoint=_audit,
+                model=_tp['model'],
+                resource_id=params['resource_id'],
+                voice_type=params['voice'],
+                speech_rate=params.get('speed',0),
+                loudness_rate=params.get('volume',0),
+                sample_rate=params.get('sample_rate',24000),
+                timeout=params.get('timeout_seconds',60))
+    elif tts and tts['enabled'] and adapter_available(tts, 'tts'):
         from .volcengine_tts import VolcengineTTSProvider
         _tts_profile=tts
         _tts_key=keys[tts['id']]
@@ -505,10 +590,42 @@ def build_run_providers(doc, keys, storage_config=None):
                 audio_format=params.get('format','wav'),
                 sample_rate=params.get('sample_rate',16000),
                 timeout=params.get('timeout_seconds',30))
+    # Free-mode streaming TTS session factory (PRD-F021, Issue #98). A profile
+    # whose protocol is the bidirectional V3 WebSocket owns this route; when it is
+    # absent the Free agent reports the capability as missing instead of quietly
+    # reusing the asset-synthesis provider.
+    streaming_tts=by_id.get(doc['routes'].get('streaming_tts'))
+    if (streaming_tts and streaming_tts['enabled']
+            and streaming_tts['protocol']=='volcengine_tts_ws_bidirectional'):
+        from .volcengine_tts_ws import VolcengineBidirectionalTTSSession, _audit_endpoint_for
+        from .streaming_tts import new_tts_stream_id
+        _stt_profile=streaming_tts
+        _stt_key=keys[streaming_tts['id']]
+        _stt_audit=_audit_endpoint_for(streaming_tts['base_url'])
+        def streaming_tts_factory(root, *, session_id, turn_id, run_index, directory=None,
+                                  _sp=_stt_profile, _sk=_stt_key, _audit=_stt_audit):
+            params=_sp['parameters']
+            return VolcengineBidirectionalTTSSession(
+                stream_id=new_tts_stream_id(),
+                root=Path(directory) if directory is not None else Path(root),
+                key=_sk, resource_id=params['resource_id'],
+                request_endpoint=_sp['base_url'], audit_endpoint=_audit,
+                speaker=params['voice'], model=_sp['model'],
+                sample_rate=params.get('sample_rate',24000),
+                speech_rate=params.get('speed',0),
+                loudness_rate=params.get('volume',0),
+                timeout=params.get('timeout_seconds',60),
+                context={'session_id': session_id, 'turn_id': turn_id,
+                         'run_index': run_index},
+                audit_root=Path(root))
+        doc['streaming_tts_transport']='volcengine_tts_ws_bidirectional'
+        doc['streaming_tts_format']=TTS_FIXED_FORMAT
     if doc.get('revision')==0:
         doc['legacy_environment']={'provider':os.environ.get('AIVOICEBENCH_LLM_PROVIDER','none'),
             'model':os.environ.get('AIVOICEBENCH_LLM_MODEL',''),
             'note':'Existing environment configuration applies until settings are first saved'}
         provider=None
     return doc,RunProviders(asr=asr_factory, tts=tts_factory, diarization=diarization_factory,
-                            streaming_asr=streaming_asr_factory, judge=provider)
+                            streaming_asr=streaming_asr_factory, judge=provider,
+                            streaming_tts=streaming_tts_factory)
+
