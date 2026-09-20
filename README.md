@@ -23,7 +23,7 @@ Online Event Producer                 Offline Event Producer
 
 ## 当前实现边界
 
-`v0.5.0` 是当前正式稳定版（在 `v0.4.0` 之上合入 #86 Audio QA 条件、#89 录音 Artifact 链隔离、#90 外置配置 + File ASR transport，均 software_verified）；候选版 `v0.6.0-rc.2`（目标稳定版 `v0.6.0`，**尚未发布**，pre-release 不接管 `Latest`）在 `main` HEAD `8dd2e49` 上收敛已合并工作单元 #93、#94、#95、#84、#22、#23、#24、#25、#10、#11、#27 与 #85 的验收证据契约，以及 #98 的 provider 侧 V3 WebSocket TTS 协议切片（PR #109），均 software_verified，详见[候选版发布说明](docs/releases/0.6.0-rc.2.md)。`v0.6.0-rc.1` 早于 PR #109 合并且不含该切片，已被本候选版取代：
+`v0.5.0` 是当前正式稳定版；候选版 `v0.6.0-rc.3`（目标稳定版 `v0.6.0`，Pre-release 不接管 `Latest`）包含 #98 的 V3 TTS wire-contract Bugfix（PR #111）：单向一次性请求、双向连接前置事件、TTS 2.0 配置校验与真实云端 provider integration 验证。详见[候选版发布说明](docs/releases/0.6.0-rc.3.md)。
 
 - Recording Analysis 已具备录音导入、标准化、部分声学/ASR/归属/融合，以及有足够角色证据时的 Timeline 和 canonical metrics。tester/device 角色只由用户人工确认，不再由 LLM 判断；角色复核面已由 [#95](https://github.com/lybym/AIVoiceBench/issues/95) / PR #99 实现（software_verified）：匿名聚类出现时 Run 停在 `awaiting_role_review`，必须在 Web/API 复核面逐个聚类明确决定并保存为不可变 revision，再从 Attribution 向下重跑。真实录音验收仍未完成。
 - 2026-09-18 的授权诊断录音已验证火山 Seed ASR 2.0 标准版可返回时间戳和匿名 speaker clusters，并暴露出异步任务恢复、部分转写传播与低音量设备声学对齐问题。相关修复已合入 `main`：Seed standard 异步任务可恢复并保留 `partial` 证据（#93），声学边界与 ASR speaker span 做确定性对齐并显式保留未匹配/冲突/未知状态（#94），无法计算的指标带计数与原因说明（#94、#25）。修复候选与证据见 [真实录音诊断记录](docs/27-real-recording-diagnostic.md)；真实录音验收仍未完成，不得据此声明 M1 或真实录音验收完成。

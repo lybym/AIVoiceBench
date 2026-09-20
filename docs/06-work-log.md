@@ -1759,3 +1759,8 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **实现。** 单向 route 改用 `seed-tts-2.0`/`seed-icl-2.0` 的配置校验，发送一个无事件 `FullClientRequest`，负载仅含官方 `req_params{text, speaker, audio_params, [model]}`，并按文档只发送 `X-Api-Key`、`X-Api-Resource-Id`、`X-Api-Request-Id`。双向 route 以 `StartConnection → ConnectionStarted → StartSession` 开始、以 `FinishConnection` 收尾，握手仅使用其官方 Header 集。示例配置默认指向 `seed-tts-2.0` 和 `seed-tts-2.0-standard`；旧资源值显式拒绝而非静默失败。`docs/28-active-tts.md` 同步为实际 wire contract 和已验证边界。
 - **真实云验证（provider integration，仅此范围）。** 单向与双向握手均成功；以 `seed-tts-2.0`、普通官方音色、MP3/24000 合成短文本成功。单向收到 `350,352,352,352,351,152`，双向收到 `50,150,350,352,352,352,351,152,52`，均返回 8,493 bytes MP3。凭据未写入 Git、配置、日志或本记录；这不等同于浏览器、实体设备或正式 Measurement 验收。
 - **验证（实际执行）。** `python -m unittest tests.test_tts_v3_websocket tests.test_tts_stimulus_freeze -v` → **101 tests, OK**。覆盖单向无事件请求及其 Header、冻结资产端到端路径、双向连接前置状态、MP3 多 chunk、错误/timeout、配置拒绝、取消与无凭据审计。后续候选包仍须通过 release workflow 的 Docker、container 和 Browser gates。
+
+## 2026-09-20 — v0.6.0-rc.3 候选发布准备
+
+- 合入 PR #111（Issue #98 V3 TTS wire-contract Bugfix）后，候选版从 rc.2 升至 rc.3；同步应用版本、Docker label、发布 Compose、启动脚本、README 与 release notes。rc.3 是 Pre-release，不接管稳定版 `v0.5.0` 的 Latest 标识。
+- 发布前验证：PR #111 的 Windows、Ubuntu、容器和浏览器门禁均通过；本地 TTS 协议与冻结资产测试 101 项通过。真实 provider integration 仅证明两条 TTS route 可完成最小 MP3 合成，不升级实体设备或 Measurement 验收。
