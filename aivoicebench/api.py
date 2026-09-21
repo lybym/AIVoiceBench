@@ -327,7 +327,8 @@ def _role_review_rebuild(directory, operation_id, mapping, reviewer, reason,
     """
     from .import_pipeline import apply_role_mapping, rebuild_evidence_error
     from .role_review import RoleReviewError
-    from .role_review_operations import (REBUILD_PHASES, update_operation, utc_now)
+    from .role_review_operations import (REBUILD_PHASES, heartbeat_interval_s,
+                                         heartbeat_loop, update_operation, utc_now)
     from .run_lock import RunLocked, run_lock
 
     run_id = Path(directory).name
@@ -338,6 +339,17 @@ def _role_review_rebuild(directory, operation_id, mapping, reviewer, reason,
         analysis_id = None
     update_operation(directory, operation_id, status='running', started_at=utc_now(),
                      phase='lock')
+    # A stage can legitimately run for minutes (the Judge), but the heartbeat only
+    # ticks at phase boundaries — so without its own ticker, a *live* rebuild goes
+    # stale mid-stage and reads as a dead worker. This thread keeps the record's
+    # heartbeat fresh while the worker runs and stops with it (Issue #113 review).
+    stop_heartbeat = threading.Event()
+    heartbeat = threading.Thread(
+        target=heartbeat_loop,
+        args=(directory, operation_id, heartbeat_interval_s(_role_review_stale_after_ms()),
+              stop_heartbeat),
+        name=f'role-review-heartbeat-{operation_id}', daemon=True)
+    heartbeat.start()
     _log_role_review('role_review_rebuild_started', run_id=run_id,
                      analysis_id=analysis_id, operation_id=operation_id, phase='lock',
                      detail={'reviewer': reviewer, 'clusters': sorted(mapping)})
@@ -411,6 +423,10 @@ def _role_review_rebuild(directory, operation_id, mapping, reviewer, reason,
         _log_role_review('role_review_rebuild_record_error', run_id=run_id,
                          operation_id=operation_id, code='internal_error',
                          detail=type(error).__name__, level=logging.ERROR)
+    # Every path above flows through here; once the outcome is recorded the
+    # heartbeat must stop, so a record that keeps heartbeating never outlives its
+    # worker (that is what `stalled` has to mean).
+    stop_heartbeat.set()
     return None
 
 
@@ -499,6 +515,12 @@ async def save_role_review(run_id: str, request: Request):
     # than quietly queueing a second rerun; a *stalled* one is explicitly retired
     # first, because an operator resubmitting is the authorized recovery action.
     #
+    # Retirement first probes the Run lock: a record can look stale while its worker
+    # is still alive (a heartbeat write failure, a pathological stall) and the worker
+    # holds the Run lock for the whole rebuild. Retiring a live worker would let the
+    # same save run twice, so a held lock means this resubmit is refused with the
+    # existing operation to track instead (Issue #113 review).
+    #
     # The check and the record are written under one control-plane lock: two truly
     # concurrent saves would otherwise both find no active operation, both be
     # accepted, and produce two revisions for one Run (Issue #113).
@@ -507,6 +529,16 @@ async def save_role_review(run_id: str, request: Request):
             existing = active_operation(directory)
             if existing is not None:
                 if active_operation_is_stalled(existing, _role_review_stale_after_ms()):
+                    try:
+                        with run_lock(directory):
+                            pass
+                    except RunLocked:
+                        raise _role_review_http(
+                            'operation_in_progress',
+                            '该记录的角色重建仍在写该 Run（进度心跳已停止，但运行锁仍被持有）；'
+                            '请稍后重新提交或继续查看该操作进度',
+                            extra={'operation_id': existing['operation_id'],
+                                   'operation': view(existing, stale_after_ms=_role_review_stale_after_ms())}) from None
                     mark_interrupted(directory, existing['operation_id'],
                                      'the worker stopped without recording a terminal result')
                     _log_role_review('role_review_rebuild_retired', run_id=run_id,

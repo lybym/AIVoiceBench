@@ -1,6 +1,7 @@
 """Cross-process locks released by the OS after a crash; not evidence artifacts."""
 from contextlib import contextmanager
 import sqlite3
+import time
 from pathlib import Path
 
 
@@ -14,6 +15,28 @@ class RunLocked(RuntimeError):
     """
 
 
+def _begin_exclusive(db, attempts=10, pause_s=0.02):
+    """Take the exclusive lock, retrying a transient loss of the race.
+
+    ``timeout=0`` makes a genuinely held lock fail immediately, which is the
+    designed fast answer — but on Windows the *first* contact with a freshly
+    created lock database can also be denied outright while an external scanner
+    holds the new file, and then a two-thread race loses on both sides with nobody
+    holding anything. A short bounded retry (about 0.2 s) re-attempts only that
+    window; a lock that is genuinely held for its whole analysis still answers
+    ``RunLocked`` immediately after the retries.
+    """
+    last_error = None
+    for _ in range(attempts):
+        try:
+            db.execute('BEGIN EXCLUSIVE')
+            return
+        except sqlite3.OperationalError as error:
+            last_error = error
+            time.sleep(pause_s)
+    raise last_error
+
+
 @contextmanager
 def run_lock(directory):
     directory = Path(directory).resolve()
@@ -22,7 +45,7 @@ def run_lock(directory):
     db = sqlite3.connect(locks / (directory.name + '.sqlite3'), timeout=0)
     try:
         try:
-            db.execute('BEGIN EXCLUSIVE')
+            _begin_exclusive(db)
         except sqlite3.OperationalError as error:
             raise RunLocked('Another analysis is already writing this Run') from error
         yield
@@ -49,7 +72,7 @@ def control_lock(directory):
     db = sqlite3.connect(locks / (directory.name + '.control.sqlite3'), timeout=0)
     try:
         try:
-            db.execute('BEGIN EXCLUSIVE')
+            _begin_exclusive(db)
         except sqlite3.OperationalError as error:
             raise RunLocked('Another role-review save is being recorded for this Run') from error
         yield

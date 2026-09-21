@@ -619,12 +619,25 @@ def _resolve_unrun_stages(run, normalized_ok):
 def _retain_failures(run):
     """Catalog leftover local diagnostics/partial data without promoting them to successful outputs."""
     known = {item['path'] for item in run.manifest['artifacts']}
-    # The rebuild's staging checkpoint is control-plane state that this Run's own
-    # rollback removes; cataloguing it would register an artifact whose file is then
-    # deleted, and the Run's next integrity check would fail on it.
-    ignored = {'manifest.json', 'manifest.pending.json', REBUILD_CHECKPOINT_NAME}
+    # Checkpoint bookkeeping is control-plane state, never Run evidence. Cataloguing
+    # one of these files registers an artifact whose file is then overwritten or
+    # renamed away by the very next checkpoint, and the Run's integrity checks fail
+    # on it forever. Two shapes exist:
+    #   * ``.pending`` temporaries — every ``checkpoint()`` writes
+    #     ``<target>.pending`` and then replaces it onto the target, so a process
+    #     that dies mid-write leaves one behind (``manifest.json.pending`` since the
+    #     temp was renamed; ``manifest.rebuild.pending.json.pending`` for a rebuild's
+    #     staging checkpoint). Matched by suffix so the names cannot drift apart
+    #     again (Issue #113 review).
+    #   * fully named files: ``manifest.json`` itself and the pre-rename
+    #     ``manifest.pending.json``/``manifest.rebuild.pending.json`` names, which
+    #     older runs on disk may still hold.
+    def _is_checkpoint_bookkeeping(name):
+        return name == 'manifest.json' or name == 'manifest.pending.json' \
+            or name == REBUILD_CHECKPOINT_NAME or name.endswith('.pending')
+
     for path in sorted(run.directory.rglob('*')):
-        if path.is_file() and path.name not in ignored:
+        if path.is_file() and not _is_checkpoint_bookkeeping(path.name):
             relative = path.relative_to(run.directory).as_posix()
             if relative not in known:
                 artifact_id = run.register(path, 'retained_diagnostic', processor='failure_retention:1.0.0')
@@ -878,7 +891,14 @@ def _publish_role_review(run, diarization_doc, transcript_doc):
     """Register the role-review surface and gate state as chain evidence."""
     from .role_review import REVIEW_KIND, build_role_review
     from .validation import schema_errors
-    document = build_role_review(run.directory, diarization_doc, transcript_doc)
+    # The document names the analysis revision that produced it. During a role
+    # rebuild the on-disk checkpoint deliberately still names the *source* revision
+    # (the new one is promoted only when complete), so the Run's in-memory manifest
+    # is the authoritative identity here; reading ``manifest.json`` recorded the
+    # source revision and contradicted the directory the document lives in
+    # (Issue #113 review).
+    document = build_role_review(run.directory, diarization_doc, transcript_doc,
+                                 manifest=run.manifest)
     errors = schema_errors(document, 'role-review')
     if errors:
         raise ValueError('Invalid role review document: ' + '\n'.join(errors))
@@ -1101,8 +1121,16 @@ def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snaps
 
     directory = Path(directory).resolve()
     manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
-    if recording_run_errors(manifest, directory):
-        raise ValueError('Run evidence failed integrity validation')
+    integrity = recording_run_errors(manifest, directory)
+    if integrity:
+        # This Run's own stored evidence chain is broken, so it cannot carry a role
+        # decision at all — that is the deliberate, non-retryable
+        # `insufficient_evidence` contract, not an internal processor failure:
+        # reporting it as `internal_error`/`retryable` promised callers that
+        # resubmitting the same save would behave differently, which it will not
+        # (Issue #113 review). Name the real gaps so the failure is actionable.
+        raise RoleReviewError('Run evidence failed integrity validation: '
+                              + '; '.join(integrity[:3]))
     # A staging checkpoint left by a rebuild that died before its rollback says
     # nothing about the current revision (the promoted manifest never named it), so
     # it is discarded instead of being catalogued as evidence.

@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,11 +126,45 @@ def _elapsed_ms(started_at, finished_at=None):
 
 
 def _write(path, payload):
-    """Atomically replace one operation record; a reader never sees a partial file."""
+    """Atomically replace one operation record; a reader never sees a partial file.
+
+    The final ``replace`` is retried a bounded number of times: on Windows a
+    replace can transiently collide with a concurrent open of the same path
+    (an antivirus scan, a reader that started mid-rename). The retry only
+    re-attempts the rename of an already complete pending file.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     pending = path.with_name(path.name + '.pending')
     pending.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-    pending.replace(path)
+    last_error = None
+    for _ in range(5):
+        try:
+            pending.replace(path)
+            return
+        except PermissionError as error:  # transient; the pending file is complete
+            last_error = error
+            time.sleep(0.01)
+    raise last_error
+
+
+def _read_record(path):
+    """Read one complete operation record, tolerating a transient rename race.
+
+    ``_write`` replaces the record atomically, so a file that opens is always a
+    full record — but on Windows an open that lands in the rename window can be
+    denied outright (``PermissionError``). A bounded retry keeps every reader
+    (the API, the worker, the heartbeat) on its feet without ever weakening the
+    "an unreadable record is reported" contract: a genuinely corrupt or locked
+    file still raises after the retries.
+    """
+    last_error = None
+    for _ in range(5):
+        try:
+            return json.loads(path.read_text(encoding='utf-8'))
+        except PermissionError as error:  # transient open/rename collision
+            last_error = error
+            time.sleep(0.01)
+    raise last_error
 
 
 def load_operations(directory):
@@ -146,7 +182,7 @@ def load_operations(directory):
             continue
         if path.name.endswith('.pending'):
             continue
-        records.append(json.loads(path.read_text(encoding='utf-8')))
+        records.append(_read_record(path))
     records.sort(key=lambda item: item.get('created_at') or '', reverse=True)
     return records
 
@@ -226,23 +262,85 @@ def start_operation(directory, *, mapping, reviewer, reason, source_analysis_id,
     return payload
 
 
+#: One writer at a time per operation record. The rebuild worker updates phases and
+#: the terminal outcome while its heartbeat thread refreshes ``heartbeat_at``, and
+#: both do read-merge-write on the same file, so without this mutex a heartbeat
+#: could resurrect a stale phase over a fresher one (Issue #113 review).
+_operation_locks = {}
+_operation_locks_guard = threading.Lock()
+
+
+def _operation_lock(directory, operation_id):
+    key = (str(directory), operation_id)
+    with _operation_locks_guard:
+        lock = _operation_locks.get(key)
+        if lock is None:
+            lock = _operation_locks[key] = threading.Lock()
+        return lock
+
+
 def update_operation(directory, operation_id, **fields):
     """Merge and persist one operation's progress. Unknown ids are refused."""
-    path = operations_dir(directory) / (operation_id + '.json')
-    if not path.is_file():
-        raise ValueError(f'Unknown role-review operation {operation_id}')
-    record = json.loads(path.read_text(encoding='utf-8'))
-    record.update(fields)
-    if 'heartbeat_at' not in fields:
-        # A caller that states the heartbeat explicitly (a recovery tool, a test
-        # reproducing a dead worker) must be able to keep it.
+    with _operation_lock(directory, operation_id):
+        path = operations_dir(directory) / (operation_id + '.json')
+        if not path.is_file():
+            raise ValueError(f'Unknown role-review operation {operation_id}')
+        record = _read_record(path)
+        record.update(fields)
+        if 'heartbeat_at' not in fields:
+            # A caller that states the heartbeat explicitly (a recovery tool, a test
+            # reproducing a dead worker) must be able to keep it.
+            record['heartbeat_at'] = utc_now()
+        if record.get('status') in TERMINAL_STATUSES:
+            record['finished_at'] = record.get('finished_at') or utc_now()
+        record['elapsed_ms'] = _elapsed_ms(record.get('started_at') or record.get('created_at'),
+                                           record.get('finished_at'))
+        _write(path, record)
+        return record
+
+
+def touch_operation(directory, operation_id):
+    """Refresh only ``heartbeat_at`` of an active operation, changing nothing else.
+
+    The rebuild's heartbeat thread calls this while a stage runs so a *long* stage
+    (a Judge call can take minutes) is never indistinguishable from a dead worker.
+    A terminal record is never touched: a heartbeat that races the worker's final
+    write must not resurrect or alter a recorded outcome.
+    """
+    with _operation_lock(directory, operation_id):
+        path = operations_dir(directory) / (operation_id + '.json')
+        if not path.is_file():
+            return None
+        record = _read_record(path)
+        if record.get('status') in TERMINAL_STATUSES:
+            return record
         record['heartbeat_at'] = utc_now()
-    if record.get('status') in TERMINAL_STATUSES:
-        record['finished_at'] = record.get('finished_at') or utc_now()
-    record['elapsed_ms'] = _elapsed_ms(record.get('started_at') or record.get('created_at'),
-                                       record.get('finished_at'))
-    _write(path, record)
-    return record
+        _write(path, record)
+        return record
+
+
+def heartbeat_interval_s(stale_after_ms):
+    """How often the rebuild's heartbeat ticks, derived from the stale bound.
+
+    A tick must land well inside the window that decides ``stalled``: a quarter of
+    the bound, clamped to a sane floor so tiny bounds cannot spin and to a ceiling
+    that keeps real deployments quiet.
+    """
+    return min(30.0, max(0.2, stale_after_ms / 4000.0))
+
+
+def heartbeat_loop(directory, operation_id, interval_s, stop_event):
+    """Tick :func:`touch_operation` until ``stop_event`` is set.
+
+    Run on a daemon thread owned by the rebuild worker, so the heartbeat lives and
+    dies with the worker itself: a record that stops heartbeating means the worker
+    (or its process) is gone, which is exactly what ``stalled`` must mean.
+    """
+    while not stop_event.wait(interval_s):
+        try:
+            touch_operation(directory, operation_id)
+        except Exception:  # noqa: BLE001 - a heartbeat must never kill a rebuild
+            continue
 
 
 def error_payload(code, message=None, detail=None):

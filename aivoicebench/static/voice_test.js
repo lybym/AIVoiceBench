@@ -1615,10 +1615,12 @@ const VT = (function () {
             else if (msg.type === 'ignored') {
                 run.stats.ignored += 1;
                 // A refused observation is counted, never silently dropped: an ignored
-                // message explains why a round did not advance (Issue #113). A round whose
-                // capture never finalises is *not* reported this way — the server ends it as
-                // an explicit `failed` (capture_finalisation_timeout / capture_missing_timeout),
-                // so there is no separate ignored reason to render here.
+                // message explains why a round did not advance (Issue #113). Two rounds are
+                // *not* reported this way: one whose finalisation outlived the control bound
+                // ends as an explicit `failed` with `capture_finalisation_timeout`, and one
+                // whose capture never existed at all stays on its observation-policy bound
+                // while the session snapshot names it (`progress.reason_code =
+                // capture_result_without_capture`).
             }
             else if (msg.type === 'no_response') {
                 appendFreeLog('系统', '未观察到设备回答（按策略继续）');

@@ -22,6 +22,7 @@ Real recognition quality and physical-device behaviour stay with #85.
 """
 
 import json
+import os
 import shutil
 import time
 import unittest
@@ -456,6 +457,11 @@ class RoleReviewOperationTests(unittest.TestCase):
         manifest = json.loads((self.directory / 'manifest.json').read_text(encoding='utf-8'))
         self.assertEqual(manifest['analysis_id'], view['analysis_id'])
         self.assertEqual(recording_run_errors(manifest, self.directory), [])
+        # The published review surface describes the revision that produced it: the
+        # document lives in the new revision's own directory, and deferring the Run's
+        # checkpoint (the on-disk manifest still names the source revision while the
+        # rebuild runs) must not change that identity (Issue #113 review).
+        self.assertEqual(view['role_review']['analysis_id'], manifest['analysis_id'])
         for path, sha in before_artifacts.items():
             self.assertEqual(digest(self.directory / path), sha,
                              f'{path} must stay byte-identical in the earlier revision')
@@ -466,6 +472,176 @@ class RoleReviewOperationTests(unittest.TestCase):
         # published separately, so a completed review cannot read as a promise.
         self.assertEqual(view['role_review']['status'], 'complete_review')
         self.assertEqual(operation['result']['metrics_status'], view['stages']['metrics']['status'])
+
+    # ------------------------------------------------- checkpoint temp leftovers
+
+    def test_a_checkpoint_temp_left_by_a_crash_is_never_registered_as_run_evidence(self):
+        """A leftover ``manifest.json.pending`` must not poison the Run it sits in.
+
+        ``checkpoint()`` writes ``<target>.pending`` and then replaces it onto the
+        target, so a process that dies mid-write leaves the temporary behind. From
+        the retention pass it looks like an unknown Run file; registering it made the
+        very next checkpoint overwrite and rename it away, and the Run's integrity
+        checks failed on the dangling artifact forever — the resubmit loop this
+        contract promises must not exist (Issue #113 review, P1-1).
+        """
+        leftover = self.directory / 'manifest.json.pending'
+        leftover.write_text(json.dumps({'leftover': True}, ensure_ascii=False), encoding='utf-8')
+        _accepted, operation, _view = save_role_review(
+            self.client, self.directory.name,
+            {'mapping': {'speaker_0': 'tester', 'speaker_1': 'device'}, 'reviewer': 'zhang'})
+        self.assertEqual(operation['status'], 'succeeded', operation)
+        manifest = json.loads((self.directory / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertNotIn('manifest.json.pending',
+                         [item['path'] for item in manifest['artifacts']])
+        self.assertEqual(recording_run_errors(manifest, self.directory), [])
+        # The promotion replaced the leftover onto the manifest; it is gone, and a
+        # second save still passes every integrity check.
+        self.assertFalse(leftover.exists())
+        _accepted, second, _view = save_role_review(
+            self.client, self.directory.name,
+            {'mapping': {'speaker_0': 'device', 'speaker_1': 'tester'}, 'reviewer': 'li'})
+        self.assertEqual(second['status'], 'succeeded', second)
+        self.assertEqual(recording_run_errors(
+            json.loads((self.directory / 'manifest.json').read_text(encoding='utf-8')),
+            self.directory), [])
+
+    def test_a_broken_evidence_chain_is_insufficient_evidence_not_a_retryable_internal_error(self):
+        """Integrity failure at the entry must not promise a retry that cannot help.
+
+        A Run whose stored artifacts no longer match their digests can never carry a
+        role decision. Reporting that as ``internal_error`` with ``retryable: true``
+        sent operators into a resubmit loop with a message about a processor crash;
+        the deliberate, non-retryable ``insufficient_evidence`` contract with the
+        real gaps named is the honest answer (Issue #113 review, P1-1).
+        """
+        transcript = next(a for a in self.manifest['artifacts'] if a['kind'] == 'transcript')
+        path = self.directory / transcript['path']
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        payload['data'] = {}
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+        accepted, operation, _view = save_role_review(
+            self.client, self.directory.name, {'mapping': self.unknown_mapping(),
+                                               'reviewer': 'zhang'})
+        self.assertEqual(accepted.status_code, 202, accepted.text)
+        self.assertEqual(operation['status'], 'failed', operation)
+        self.assertEqual(operation['error']['code'], 'insufficient_evidence')
+        self.assertFalse(operation['error']['retryable'])
+        self.assertIn('integrity', operation['error']['message'])
+        self.assertIn(transcript['artifact_id'], operation['error']['message'])
+
+    # ------------------------------------------------------------ live heartbeat
+
+    def test_touch_operation_refreshes_only_the_heartbeat_of_an_active_record(self):
+        """The heartbeat must not disturb progress or resurrect a terminal record.
+
+        A rebuild's heartbeat thread shares the record with the worker's phase and
+        terminal writes, so a touch may change nothing but ``heartbeat_at``, and a
+        record whose outcome is already recorded stays exactly as it is
+        (Issue #113 review).
+        """
+        from aivoicebench.role_review_operations import (start_operation,
+                                                         touch_operation,
+                                                         update_operation)
+
+        started = start_operation(self.directory, mapping=self.unknown_mapping(),
+                                  reviewer='zhang', reason='',
+                                  source_analysis_id=self.manifest['analysis_id'],
+                                  cluster_ids=self.clusters())
+        operation_id = started['operation_id']
+        update_operation(self.directory, operation_id, status='running', phase='judge')
+        before = update_operation(self.directory, operation_id, phase='judge')
+        time.sleep(0.02)
+        touched = touch_operation(self.directory, operation_id)
+        self.assertGreater(touched['heartbeat_at'], before['heartbeat_at'])
+        self.assertEqual(touched['phase'], 'judge')
+        self.assertEqual(touched['status'], 'running')
+        self.assertEqual(touched['result'], before['result'])
+        # A terminal record is never resurrected or altered by a late heartbeat.
+        update_operation(self.directory, operation_id, status='succeeded', phase='done')
+        finished = touch_operation(self.directory, operation_id)
+        self.assertEqual(finished['status'], 'succeeded')
+
+    def test_a_long_stage_keeps_heartbeating_instead_of_reading_as_stalled(self):
+        """A live rebuild inside one long stage must not be reported stalled.
+
+        The heartbeat used to tick only at phase boundaries, so any stage longer
+        than the stale bound — a Judge call can take minutes — made a healthy
+        rebuild read as a dead worker and pointed operators at a retirement that
+        would have hit a live process (Issue #113 review).
+        """
+        real_execute = ImportRun.execute
+
+        def slow_attribution(self, name, inputs, operation):
+            if name == 'attribution':
+                time.sleep(2.5)
+            return real_execute(self, name, inputs, operation)
+
+        with patch.dict(os.environ, {'AIVOICEBENCH_ROLE_REVIEW_STALE_MS': '1200'}), \
+                patch.object(ImportRun, 'execute', slow_attribution):
+            accepted = self.client.post(
+                f'/api/runs/{self.directory.name}/role-review',
+                json={'mapping': self.unknown_mapping(), 'reviewer': 'zhang'})
+            self.assertEqual(accepted.status_code, 202, accepted.text)
+            operation_id = accepted.json()['operation_id']
+            poll_url = accepted.json()['poll_url']
+            deadline = time.monotonic() + 20
+            while True:
+                operation = self.client.get(poll_url).json()
+                if operation['phase'] == 'restore_evidence':
+                    break
+                self.assertNotIn(operation['status'], ('succeeded', 'failed'), operation)
+                self.assertLess(time.monotonic(), deadline, operation)
+                time.sleep(0.05)
+            # The slow attribution stage follows the restores and reports no new
+            # phase until it finishes, so deep inside it — well past the stale
+            # bound — the record must still be fresh: the worker's own heartbeat
+            # keeps ticking while the stage runs.
+            time.sleep(1.5)
+            operation = self.client.get(poll_url).json()
+            self.assertEqual(operation['status'], 'running', operation)
+            self.assertFalse(operation['stalled'], operation)
+            self.assertEqual(wait_for_operation(self.client, poll_url)['status'],
+                             'succeeded')
+
+    def test_a_stalled_operation_is_not_retired_while_the_run_lock_is_still_held(self):
+        """Retirement must not land on a worker that still holds the Run lock.
+
+        A record can look stale while its worker is alive (a failed heartbeat
+        write); the worker holds the Run lock for the whole rebuild, so retiring it
+        would let the same decision run twice. The resubmit is then refused with
+        the operation to track, and only a lock-free stall is retired
+        (Issue #113 review).
+        """
+        from aivoicebench.role_review_operations import (load_operation, start_operation,
+                                                         update_operation)
+        from aivoicebench.run_lock import run_lock
+
+        mapping = self.unknown_mapping()
+        active = start_operation(self.directory, mapping=mapping, reviewer='zhang',
+                                 reason='', source_analysis_id=self.manifest['analysis_id'],
+                                 cluster_ids=self.clusters())
+        update_operation(self.directory, active['operation_id'],
+                         status='running', heartbeat_at='2000-01-01T00:00:00+00:00')
+        with run_lock(self.directory):
+            response = self.client.post(
+                f'/api/runs/{self.directory.name}/role-review',
+                json={'mapping': mapping, 'reviewer': 'li'})
+        self.assertEqual(response.status_code, 409, response.text)
+        detail = response.json()['detail']
+        self.assertEqual(detail['code'], 'operation_in_progress')
+        self.assertEqual(detail['operation_id'], active['operation_id'])
+        retired = load_operation(self.directory, active['operation_id'])
+        self.assertEqual(retired['status'], 'running', retired)
+        self.assertIsNone(retired['error'])
+        # With the lock free again, the authorized retirement proceeds unchanged.
+        accepted, _operation, _view = save_role_review(
+            self.client, self.directory.name, {'mapping': mapping, 'reviewer': 'li'})
+        self.assertEqual(accepted.status_code, 202, accepted.text)
+        self.assertNotEqual(accepted.json()['operation_id'], active['operation_id'])
+        retired = load_operation(self.directory, active['operation_id'])
+        self.assertEqual(retired['status'], 'failed', retired)
+        self.assertEqual(retired['error']['code'], 'interrupted')
 
 
 if __name__ == '__main__':

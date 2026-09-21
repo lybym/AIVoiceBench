@@ -111,8 +111,9 @@ Remaining: real ASR/speaker-label verification, real-provider Judge/Findings acc
 - `POST /api/runs/{run_id}/role-review` 校验通过后立即返回 **202** `{operation_id, run_id, status, phase, phases, poll_url}`；重建在后台线程执行，因此不依赖接受它的那个请求还活着。
 - 操作记录在**任何工作开始之前**写入 `<output_root>/.role-review-operations/<run_id>/OP-*.json`，所以重试与被重启的服务都能回答"这次重建是什么、到哪一步、结果如何"，而不会悄悄提交第二次重建。该目录在 Run 之外：Run 树内的文件会被当作不可变保留诊断登记，而操作记录会被持续改写。
 - `GET /api/runs/{run_id}/role-review/operations[/{operation_id}]` 返回 `status`/`phase`/`phases`/`elapsed_ms`/`heartbeat_at`/`stalled`/`error`/`result`。`phases` 是重建真实经过的阶段（`lock`、`restore_evidence`、`attribution`、`fusion`、`turns`、`timeline`、`judge`、`metrics`、`findings`、`report`），进度文案不猜测未运行的阶段。
-- 拒绝可区分：`run_locked`（另有分析正在写该 Run，可重试）、`operation_in_progress`（附在跑的 `operation_id`，可重试）、`insufficient_evidence`（该 Run 的证据无法给出角色决定，不可重试）、`internal_error`（处理器内部失败，可重试），另有 `invalid_request`/`forbidden_origin`/`payload_too_large`/`legacy_analysis`。每个错误都带 `code`、`retryable` 与 `http_status`。
-- 停滞是**待决状态**而非终态：心跳超过 `AIVOICEBENCH_ROLE_REVIEW_STALE_MS`（默认 120000）时操作报告 `stalled: true` 但仍可查询；只有操作者显式重新提交才会把它记为 `interrupted` 并接受新的重建。
+- 拒绝可区分：`run_locked`（另有分析正在写该 Run，可重试）、`operation_in_progress`（附在跑的 `operation_id`，可重试）、`insufficient_evidence`（该 Run 的证据无法给出角色决定，不可重试；包括证据链完整性校验失败——消息给出真实缺口，重试同样的保存不会改变结局）、`internal_error`（处理器内部失败，可重试），另有 `invalid_request`/`forbidden_origin`/`payload_too_large`/`legacy_analysis`。每个错误都带 `code`、`retryable` 与 `http_status`。
+- 心跳在**阶段进行中持续刷新**（间隔为 stale 上限的四分之一，下限 0.2 s、上限 30 s），阶段切换只改变 `phase`：一个持续数分钟的 Judge 阶段不会被误读为死进程。停滞是**待决状态**而非终态：心跳超过 `AIVOICEBENCH_ROLE_REVIEW_STALE_MS`（默认 120000）时操作报告 `stalled: true` 但仍可查询；只有操作者显式重新提交才会把它记为 `interrupted` 并接受新的重建——且退休前会先探测 Run 锁，锁仍被持有（worker 仍活着在写该 Run）时拒绝退休并以 `operation_in_progress` 附在跑的 `operation_id` 回答，防止同一份决定被运行两次。
+- Run 目录内的 checkpoint 簿记临时文件（`<target>.pending` 形态与 `manifest.rebuild.pending.json`）永远不登记为 Run 证据：进程死在 checkpoint 写入中途留下的临时文件会被下一次 checkpoint 覆写或改名走，登记它必然制造悬空 artifact 并使 Run 永久完整性失败。
 - 每次重建按事件写一行结构化日志（`run_id`、`analysis_id`、`operation_id`、`phase`、`elapsed_ms`、`error_code`），只记录分类与标识，从不回显异常原文或凭据。
 
 Web 面板保存后轮询该操作并显示阶段进度；`complete_review` 只表示**人工角色决策完成**，下游指标是否弃权由指标阶段自己发布，面板把两者分开陈述（见下文）。
