@@ -47,6 +47,28 @@ def validate_profile(profile):
 
 
 class ImportRun:
+    #: Optional progress seam for a long-running caller (the asynchronous
+    #: role-review rebuild). It receives each stage name as it starts and is never
+    #: consulted for a decision, so an unattended run behaves identically.
+    #:
+    #: It is a **class** attribute on purpose: `resume_recording()` and
+    #: `apply_role_mapping()` build their run with `ImportRun.__new__` and never run
+    #: `__init__`, so an instance attribute would make the resume path raise
+    #: `AttributeError` on its first stage (Issue #113).
+    progress_callback = None
+
+    #: Where :meth:`checkpoint` commits the mutable ``manifest.json``. ``None``
+    #: means "this Run's own manifest", which is every ordinary path — import and
+    #: resume.
+    #:
+    #: Only a rebuild that must stay atomic until its new AnalysisRevision is
+    #: complete points this at a staging file (``apply_role_mapping``). While it is
+    #: redirected, the Run's published current revision is still the one the
+    #: rebuild started from, so a process that dies mid-rebuild leaves a Run whose
+    #: checkpoint and evidence agree — the failure is then recoverable by an
+    #: explicit resubmit instead of poisoning the Run with a half-written revision.
+    checkpoint_target = None
+
     def __init__(self, output, profile=None, synthetic=False):
         profile = validate_profile(profile)
         run_id, analysis_id = 'RUN-' + uuid.uuid4().hex, 'ANALYSIS-' + uuid.uuid4().hex
@@ -67,9 +89,10 @@ class ImportRun:
         errors = schema_errors(self.manifest, 'recording-run')
         if errors:
             raise ValueError('Invalid import Run manifest: ' + '\n'.join(errors))
-        path = self.directory / 'manifest.pending.json'
-        write_json(path, self.manifest)
-        path.replace(self.directory / 'manifest.json')  # Mutable checkpoint; artifact outputs are immutable.
+        path = self.checkpoint_target or (self.directory / 'manifest.json')
+        pending = path.with_name(path.name + '.pending')
+        write_json(pending, self.manifest)
+        pending.replace(path)  # Mutable checkpoint; artifact outputs are immutable.
 
     def register(self, path, kind, parents=(), processor=None):
         path = Path(path).resolve()
@@ -108,6 +131,12 @@ class ImportRun:
     def execute(self, name, inputs, operation):
         stage = self.manifest['stages'][name]
         stage.update(status='running', started_at=utc_now(), input_artifact_ids=list(inputs), reason=None)
+        if self.progress_callback is not None:
+            # Progress reporting must never be able to fail an analysis stage.
+            try:
+                self.progress_callback(name)
+            except Exception:  # noqa: BLE001 - a reporter is not evidence
+                pass
         self.checkpoint()
         start = time.monotonic()
         try:

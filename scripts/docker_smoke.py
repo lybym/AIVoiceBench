@@ -134,8 +134,20 @@ if '--save-history' in sys.argv:
     confirmed=requests.post(base+'/api/runs/'+run_id+'/role-review',
         json={'mapping':mapping,'reviewer':'container-smoke',
               'reason':'synthetic container restart check'},timeout=60)
-    confirmed.raise_for_status()
-    confirmed=confirmed.json()
+    # Accepted asynchronously: the API answers 202 with a trackable operation and the
+    # rebuild is polled to a terminal state (Issue #113).
+    assert confirmed.status_code==202,confirmed.text
+    accepted=confirmed.json()
+    deadline=time.monotonic()+300
+    while True:
+        operation=requests.get(base+accepted['poll_url'],timeout=10).json()
+        if operation['status'] in ('succeeded','failed'):
+            break
+        assert time.monotonic()<deadline,operation
+        time.sleep(1)
+    assert operation['status']=='succeeded',operation
+    assert (operation.get('result') or {}).get('gate_status')=='complete_review',operation
+    confirmed=requests.get(base+'/api/runs/'+run_id,timeout=5).json()
     assert (confirmed.get('role_review') or {}).get('status')=='complete_review',confirmed.get('role_review')
     runs=requests.get(base+'/api/runs',timeout=5).json()['runs']
     before={'runs':{r['run_id']:requests.get(base+'/api/runs/'+r['run_id'],timeout=5).json() for r in runs},

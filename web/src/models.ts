@@ -414,7 +414,8 @@ type RunStopReason =
 type ControlMessage =
   | PlayMessage
   | { type: 'listening' }
-  | { type: 'ignored' }
+  /** A control event the server refused to apply, with the reason it was refused. */
+  | { type: 'ignored'; event?: string; turn_id?: string | null; reason?: string }
   | { type: 'no_response' }
   | { type: 'blocked'; missing?: string[]; missing_names?: string[] }
   | { type: 'capture_mode'; mode: CaptureMode; fallback_reason?: CaptureFallbackReason | null }
@@ -567,7 +568,21 @@ interface ModelProfile {
 interface VoiceSession {
   session_id: string;
   phrases?: { text?: string; status?: string }[];
+  /**
+   * What the run is waiting for right now, with the concrete reason when a round
+   * is not advancing. Control state published by the server; the page only
+   * displays it and never derives it locally.
+   */
+  progress?: RunProgress | null;
   [key: string]: unknown;
+}
+
+/** Run-level control progress for one voice-test session (Issue #113). */
+interface RunProgress {
+  phase: string;
+  turn_id?: string | null;
+  reason_code: string;
+  reason: string;
 }
 
 // ------------------------------------------------------------ model settings view
