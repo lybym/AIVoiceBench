@@ -5,7 +5,7 @@ FROM python:3.12-slim AS base
 
 LABEL maintainer="AIVoiceBench"
 LABEL description="AI Voice Terminal Evaluation — recording import, evidence ledger, timestamped transcript, deterministic metrics"
-LABEL version="0.6.0-rc.3"
+LABEL version="0.6.0-rc.4"
 
 # The exact source commit this image was built from. Release builds pass it in
 # so a published image is traceable to its release candidate commit.

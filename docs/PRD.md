@@ -4,7 +4,7 @@ prd_version: 1.5.14
 status: modularized_for_owner_review
 updated: 2026-09-20
 implementation_baseline: v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd
-main_baseline: 8dd2e49a12b5022f7b82b7e540bd00c6540a413d
+main_baseline: 75ad82360a46bc90f7ba8156b095bc59ca712001
 ---
 
 # AIVoiceBench 产品需求文档（PRD）
