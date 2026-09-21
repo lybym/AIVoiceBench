@@ -1277,5 +1277,225 @@ class StaleStreamingEventTests(FreeModeHarness, unittest.TestCase):
         self.assertEqual(session.stale_streaming_events[0]['reason'], 'session_stopped')
 
 
+class FreeModeRoundAdvanceTests(FreeModeHarness, unittest.TestCase):
+    """The capture→observation state chain must be observable and must advance.
+
+    Issue #113 recorded a free-mode round that ended with ``capture_finished`` and
+    never reached ``device_observation``: the platform looked frozen and only a
+    manual stop ended it, with no way to ask what it was waiting for. Two defects
+    are pinned here:
+
+    * the audio socket and the control socket are independent, so the page's
+      ``capture_result`` can arrive while the recogniser is still being finalised —
+      that must wait, not be discarded;
+    * a finalisation that never publishes a result must end the round explicitly
+      instead of waiting forever.
+    """
+
+    def test_control_result_arriving_before_the_capture_finishes_still_advances(self):
+        session_id = self.create_free_session(max_turns=2)
+        original_finish = ScriptedStreamingSession.finish_input
+
+        async def slow_finish(session):
+            # Widen the real race window: the audio socket is still draining the
+            # recogniser when the control socket reports the round.
+            await asyncio.sleep(0.6)
+            await original_finish(session)
+
+        with patch.object(ScriptedStreamingSession, 'finish_input', slow_finish):
+            with self.start_control(session_id) as control:
+                control.send_json({'type': 'start'})
+                control.receive_json()  # capture_mode
+                play = control.receive_json()
+                with self.audio.websocket_connect(
+                        f'/api/voice-test/sessions/{session_id}/audio') as ws:
+                    ws.send_json({'type': 'capture_started', 'turn_id': play['turn_id'],
+                                  'sample_rate': 16000, 'channels': 1, 'bits': 16})
+                    self.assertEqual(ws.receive_json()['type'], 'capture_ready')
+                    for index in range(4):
+                        ws.send_bytes(index.to_bytes(4, 'big') + b'\x01\x02' * 1600)
+                    ws.send_json({'type': 'capture_stopped', 'reason': 'speech_end'})
+                    # Report the round immediately, without waiting for the audio
+                    # socket's own result: exactly what a page whose local result
+                    # wait already expired does.
+                    control.send_json({'type': 'capture_result',
+                                       'turn_id': play['turn_id']})
+                    nxt = control.receive_json()
+                    # Drain the audio socket's own terminal message: display
+                    # updates (partial/final transcript) legitimately arrive first.
+                    audio_result = None
+                    for _ in range(20):
+                        message = ws.receive_json()
+                        if message.get('type') in ('capture_result', 'capture_error'):
+                            audio_result = message
+                            break
+
+        self.assertIsNotNone(audio_result)
+        self.assertEqual(audio_result['type'], 'capture_result', audio_result)
+        self.assertEqual(audio_result['final_text'], '这是设备的回答')
+        # The round advanced to the next question instead of stalling.
+        self.assertEqual(nxt['type'], 'play', nxt)
+        self.assertEqual(nxt['device_text'], '这是设备的回答')
+        self.assertNotEqual(nxt['turn_id'], play['turn_id'])
+
+        record = self.record(session_id)
+        kinds = [event['kind'] for event in record['events']]
+        self.assertIn('device_observation', kinds)
+        self.assertIn('capture_result_waited', kinds)
+        waited = [event for event in record['events']
+                  if event['kind'] == 'capture_result_waited'][0]
+        self.assertEqual(waited['turn_id'], play['turn_id'])
+        self.assertEqual(waited['detail']['evidence_scope'], 'control_evidence')
+        self.assertGreater(waited['detail']['waited_ms'], 0)
+
+    def test_session_progress_names_the_pending_observation_and_the_wait_reason(self):
+        session_id = self.create_free_session(max_turns=1)
+        with self.start_control(session_id) as control:
+            control.send_json({'type': 'start'})
+            control.receive_json()  # capture_mode
+            play = control.receive_json()
+            waiting = self.control.get(
+                f'/api/voice-test/sessions/{session_id}').json()['progress']
+            self.assertEqual(waiting['phase'], 'play_issued')
+            self.assertEqual(waiting['reason_code'], 'awaiting_playback_report')
+            self.assertEqual(waiting['turn_id'], play['turn_id'])
+
+            result = self.send_capture(session_id, play['turn_id'])
+            self.assertEqual(result['type'], 'capture_result')
+            # The recogniser has produced its result and the control loop has not
+            # consumed it yet: the state that used to be invisible.
+            pending = self.control.get(
+                f'/api/voice-test/sessions/{session_id}').json()['progress']
+            self.assertEqual(pending['phase'], 'capture_finalised')
+            self.assertEqual(pending['reason_code'],
+                             'capture_finalised_awaiting_control_result')
+            self.assertEqual(pending['turn_id'], play['turn_id'])
+
+            control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+            done = control.receive_json()
+            self.assertEqual((done['type'], done['reason']), ('complete', 'max_turns'))
+
+        finished = self.manager.get_session(session_id).to_dict()['progress']
+        self.assertEqual(finished['phase'], 'completed')
+        self.assertEqual(finished['reason_code'], 'session_not_running')
+
+    def test_a_finalisation_that_never_publishes_a_result_fails_explicitly(self):
+        session_id = self.create_free_session(max_turns=2, on_no_response='continue',
+                                              no_response_timeout_ms=1000)
+
+        async def never_finishes(session):
+            session.finished = True
+            # Never terminates: the recogniser accepts the input and stays open.
+            await asyncio.sleep(3600)
+
+        with patch.object(ScriptedStreamingSession, 'finish_input', never_finishes):
+            with self.start_control(session_id) as control:
+                control.send_json({'type': 'start'})
+                control.receive_json()  # capture_mode
+                play = control.receive_json()
+                with self.audio.websocket_connect(
+                        f'/api/voice-test/sessions/{session_id}/audio') as ws:
+                    ws.send_json({'type': 'capture_started', 'turn_id': play['turn_id'],
+                                  'sample_rate': 16000, 'channels': 1, 'bits': 16})
+                    self.assertEqual(ws.receive_json()['type'], 'capture_ready')
+                    ws.send_bytes((0).to_bytes(4, 'big') + b'\x01\x02' * 1600)
+                    ws.send_json({'type': 'capture_stopped', 'reason': 'speech_end'})
+                    # The control round is reported while the capture is still
+                    # being finalised; the server must bound that wait and end the
+                    # round explicitly instead of hanging forever.
+                    control.send_json({'type': 'capture_result',
+                                       'turn_id': play['turn_id']})
+                    failure = control.receive_json()
+
+        self.assertEqual(failure['type'], 'failed', failure)
+        self.assertEqual(failure['reason'], 'capture_finalisation_timeout')
+        self.assertEqual(failure['turn_id'], play['turn_id'])
+
+        session = self.manager.get_session(session_id)
+        self.assertEqual(session.status, 'failed')
+        self.assertEqual(session.stop_reason, 'capture_finalisation_timeout')
+        self.assertIsNone(session.awaiting_turn_id)
+        turn = self.manager.turn_by_id(session, play['turn_id'])
+        self.assertTrue(turn.closed)
+        self.assertEqual(turn.closure_reason, 'capture_finalisation_timeout')
+
+        record = self.record(session_id)
+        kinds = [event['kind'] for event in record['events']]
+        self.assertIn('capture_result_wait_timeout', kinds)
+        # A real failure is never recorded as an observed answer.
+        self.assertNotIn('device_observation', kinds)
+        self.assertEqual(record['stop_reason'], 'capture_finalisation_timeout')
+
+    def test_a_round_reported_with_no_capture_at_all_is_bounded_and_explained(self):
+        """The control socket may report a round the audio socket never captured.
+
+        ``finishFreeTurn`` reports the round regardless of what its own capture did,
+        so a page whose audio socket never opened reports a round with no capture
+        behind it. It must not wait forever on a recogniser that does not exist, and
+        the session snapshot must name that state instead of presenting it as
+        "device audio is being recognised" (Issue #113 review).
+        """
+        session_id = self.create_free_session(max_turns=2, on_no_response='continue',
+                                              no_response_timeout_ms=1000)
+        with self.start_control(session_id) as control:
+            control.send_json({'type': 'start'})
+            control.receive_json()  # capture_mode
+            play = control.receive_json()
+            # Report playback exactly as the page does, so the round reaches the
+            # observation phase instead of still waiting for a playback report.
+            control.send_json({'type': 'playback_started', 'turn_id': play['turn_id']})
+            control.send_json({'type': 'playback_ended', 'turn_id': play['turn_id']})
+            # No audio socket is opened at all for this turn.
+            control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+            # The bounded wait for a capture that never arrives is what makes this
+            # answerable at all; before, it returned immediately and unconditionally.
+            ignored = control.receive_json()
+
+            self.assertEqual(ignored['type'], 'ignored', ignored)
+            session = self.manager.get_session(session_id)
+            record = self.record(session_id)
+            self.assertIn('capture_result_without_capture',
+                          [event['kind'] for event in record['events']])
+            progress = self.control.get(
+                f'/api/voice-test/sessions/{session_id}').json()['progress']
+            self.assertEqual(progress['reason_code'], 'capture_result_without_capture')
+            self.assertEqual(progress['turn_id'], play['turn_id'])
+            # The round still has its own bound and still records no answer.
+            self.assertIsNotNone(session.awaiting_turn_id)
+            self.assertNotIn('device_observation',
+                             [event['kind'] for event in record['events']])
+
+            # And a capture that does start later clears that state again.
+            result = self.send_capture(session_id, play['turn_id'])
+            self.assertEqual(result['type'], 'capture_result', result)
+            progress = self.control.get(
+                f'/api/voice-test/sessions/{session_id}').json()['progress']
+            self.assertEqual(progress['reason_code'],
+                             'capture_finalised_awaiting_control_result')
+
+    def test_an_already_published_capture_still_advances_without_waiting(self):
+        """A published result is consumed directly; the bound is not a delay.
+
+        The waiting branch must not turn a normal round into a timeout: when the
+        audio socket has already published, the control socket advances immediately.
+        """
+        session_id = self.create_free_session(max_turns=2)
+        with self.start_control(session_id) as control:
+            control.send_json({'type': 'start'})
+            control.receive_json()  # capture_mode
+            play = control.receive_json()
+            result = self.send_capture(session_id, play['turn_id'])
+            self.assertEqual(result['type'], 'capture_result', result)
+            control.send_json({'type': 'capture_result', 'turn_id': play['turn_id']})
+            nxt = control.receive_json()
+
+        self.assertEqual(nxt['type'], 'play', nxt)
+        record = self.record(session_id)
+        kinds = [event['kind'] for event in record['events']]
+        self.assertIn('device_observation', kinds)
+        self.assertNotIn('capture_result_waited', kinds)
+        self.assertNotIn('capture_result_without_capture', kinds)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -351,6 +351,46 @@ class BrowserStationDeliveryContractTests(unittest.TestCase):
         self.assertIn('role-save', script)
         self.assertIn('请为每个说话人聚类选择角色（未知也是明确选择）', script)
 
+    def test_speaker_cluster_statistic_counts_clusters_not_segments(self):
+        """Speaker segments and speaker clusters are different facts (Issue #113).
+
+        Reporting the diarization document's entry count as the cluster count made a
+        5-cluster recording display 65 clusters. The delivered artifact must derive
+        the statistic from distinct ``speaker_id`` values. The behaviour itself is
+        pinned by ``scripts/smoke-web-station.mjs`` (``countClusters()``), so this
+        check stays on the artifact and its negative shape — a source-text assertion
+        would fail on unrelated refactors without adding evidence (PR #114 review).
+        """
+        script = self.client.get('/static/app.js').text
+        self.assertIn('distinctClusterIds', script)
+        self.assertIn('countClusters(data.speaker_segments)', script)
+        # The defect's shape must not come back: the segment list's length is not a
+        # cluster count anywhere in the analysis view.
+        self.assertNotIn("['说话人聚类', (data.speaker_segments || []).length]", script)
+        self.assertNotIn('聚类数 \' + (data.speaker_segments', script)
+
+    def test_a_stalled_rebuild_reports_the_authorized_recovery_action(self):
+        """A stalled operation must not leave the page with no way forward.
+
+        The server retires a stalled rebuild as ``interrupted`` only when an operator
+        explicitly resubmits, so the page has to say that instead of merely polling
+        until its own 20-minute bound (PR #114 review).
+        """
+        script = self.client.get('/static/app.js').text
+        self.assertIn('重新提交同一份角色决定', script)
+        self.assertIn('interrupted', script)
+
+    def test_async_role_rebuild_contract_survives_compilation(self):
+        """The page tracks the accepted operation instead of blocking on the save."""
+        script = self.client.get('/static/app.js').text
+        for token in ('trackRoleReview', 'role-review/operations', 'operation_id',
+                      'operation_in_progress', 'role-save-progress'):
+            self.assertIn(token, script, f'compiled analysis view lost {token!r}')
+        # A completed human decision is never presented as a promise that metrics
+        # will be generated.
+        self.assertIn('downstreamAbstentionNote', script)
+        self.assertIn('人工决策与下游指标是两件事', script)
+
     def test_workbench_contract_survives_compilation(self):
         """The compiled Evidence Workbench keeps its published surface (PRD-F014).
 

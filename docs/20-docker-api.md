@@ -73,7 +73,9 @@ host
 | POST | `/api/runs/{run_id}/resume` | 显式 retry ASR；不是通用重分析接口 |
 | GET | `/api/runs/{run_id}/role-review` | 人工说话人角色复核面：匿名聚类、代表性区间、转写片段、试听范围、已保存 revision 与 diff |
 | GET | `/api/runs/{run_id}/evidence-workbench` | Evidence Workbench 投影：region/track、Gate 状态、指标与 Findings、不可用/弃权阶段、`evidence_integrity`、provenance；坐标全部来自持久化证据（同 `AnalysisResponse.workbench`）。**三态契约**：Run 目录缺 manifest、缺 `analysis_id` 或没有任何可读证据 → **404**（“该记录没有可复核的证据工作台”）；证据存在但投影失败（例如投影层自身出错）→ **500**（“证据工作台投影失败：该 Run 的证据存在但无法投影”），绝不折叠成 404；投影成功 → **200**，并把该 revision 的全部缺口放在 `unavailable`（`not_run`/`incomplete`/`failed`/`unreadable`/`invalid`）与 `evidence_integrity`（`unreadable_documents`、`skipped_records`）中 |
-| POST | `/api/runs/{run_id}/role-review` | 保存 `{mapping, reviewer, reason}`：要求每个聚类都有明确决定（`unknown` 有效），创建不可变 revision 并重跑 Attribution 及下游；不调用 Provider |
+| POST | `/api/runs/{run_id}/role-review` | 保存 `{mapping, reviewer, reason}`：要求每个聚类都有明确决定（`unknown` 有效）。**异步契约**：合法请求立即返回 **202** 与 `{operation_id, poll_url, phases}`；重建（创建不可变 revision 并重跑 Attribution 及下游，不调用识别/聚类 Provider）在后台线程执行。拒绝一律以 `detail.code` 区分：`run_locked`（409）、`operation_in_progress`（409，附在跑的 `operation_id`）、`insufficient_evidence`（422）、`internal_error`（500）、`invalid_request`/`forbidden_origin`/`payload_too_large`/`legacy_analysis`；每个错误都带 `retryable` |
+| GET | `/api/runs/{run_id}/role-review/operations` | 该 Run 的全部角色重建操作（新→旧）与当前 `active` 操作；用于页面刷新或第二个操作者恢复 `operation_id`，而不是重复提交 |
+| GET | `/api/runs/{run_id}/role-review/operations/{operation_id}` | 单个操作的阶段进度与终态：`status`（`accepted`/`running`/`succeeded`/`failed`）、`phase` 与 `phases`（取自 Run 自身阶段账本）、`elapsed_ms`、`heartbeat_at`、`stalled`、`error{code,message,retryable}`、`result{analysis_id,gate_status,metrics_status,…}`。**操作记录落在 `<output_root>/.role-review-operations/<run_id>/`**，与 Run 证据链分离：它是会被改写的控制簿记，不是不可变 artifact |
 | GET / POST | `/api/models` | 脱敏模型配置；长期凭据留在 server |
 | GET | `/api/voice-test/capabilities/{mode}` | 能力预检；不默认发起付费探测 |
 | POST | `/api/voice-test/sessions/{id}/start` | 启动会话；能力不足时明确拒绝 |

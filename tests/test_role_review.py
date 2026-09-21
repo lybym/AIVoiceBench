@@ -10,6 +10,10 @@ The contract under test:
 4. Saving creates a new immutable AnalysisRevision; the previous revision's outputs
    and earlier decisions are preserved, and the diff is shown.
 5. Reanalysis uses only the saved human mapping and stays usable after a restart.
+
+Saving answers ``202`` with a trackable operation (Issue #113); that operation
+contract, including its distinguishable refusals, is pinned by
+``tests/test_role_review_operations.py``, which runs without FFmpeg.
 """
 
 import json
@@ -28,6 +32,7 @@ from aivoicebench.role_review import (
     mapping_diff, review_status, save_revision, validate_decisions)
 from aivoicebench.runner import digest
 from aivoicebench.validation import schema_errors
+from tests.role_review_fixture import save_role_review, wait_for_operation
 
 _TMP_ROOT = Path(__file__).resolve().parent.parent / '.test-tmp'
 _TMP_ROOT.mkdir(exist_ok=True)
@@ -242,28 +247,37 @@ class RoleGateEndToEndTests(unittest.TestCase):
         clusters = self.cluster_ids()
         partial = self.client.post(f'/api/runs/{self.directory.name}/role-review',
             json={'mapping': {clusters[0]: 'tester'}, 'reviewer': 'zhang'})
-        self.assertEqual(partial.status_code, 400)
-        self.assertIn('explicit decision', partial.json()['detail'])
+        # An incomplete mapping is refused synchronously with its own code: it is a
+        # client error to fix, not a failed operation to poll.
+        self.assertEqual(partial.status_code, 422, partial.text)
+        self.assertEqual(partial.json()['detail']['code'], 'insufficient_evidence')
+        self.assertIn('explicit decision', partial.json()['detail']['message'])
         empty = self.client.post(f'/api/runs/{self.directory.name}/role-review',
             json={'mapping': {}, 'reviewer': 'zhang'})
         self.assertEqual(empty.status_code, 400)
         anonymous = self.client.post(f'/api/runs/{self.directory.name}/role-review',
             json={'mapping': {cluster: 'tester' for cluster in clusters}})
         self.assertEqual(anonymous.status_code, 400)
-        self.assertIn('复核人', anonymous.json()['detail'])
-        # A rejected request leaves no revision behind.
+        self.assertIn('复核人', anonymous.json()['detail']['message'])
+        # A rejected request leaves no revision and no operation behind.
         self.assertEqual(load_revisions(self.directory), [])
+        self.assertEqual(self.client.get(
+            f'/api/runs/{self.directory.name}/role-review/operations').json()['operations'], [])
 
     def test_applying_a_mapping_creates_a_new_revision_with_role_outputs(self):
         clusters = self.cluster_ids()
         before = {a['path']: a['sha256'] for a in self.manifest['artifacts']}
         with patch('aivoicebench.cloud_transport.HTTPTransport.request',
                    side_effect=AssertionError('Role reanalysis must not call a cloud provider')):
-            response = self.client.post(f'/api/runs/{self.directory.name}/role-review',
-                json={'mapping': {clusters[0]: 'tester', clusters[1]: 'device'},
-                      'reviewer': 'zhang', 'reason': '听音比对后确认'})
-        self.assertEqual(response.status_code, 200, response.text)
-        latest = response.json()
+            accepted, operation, latest = save_role_review(
+                self.client, self.directory.name,
+                {'mapping': {clusters[0]: 'tester', clusters[1]: 'device'},
+                 'reviewer': 'zhang', 'reason': '听音比对后确认'})
+        # The save is accepted asynchronously and reports a trackable operation.
+        self.assertEqual(accepted.status_code, 202, accepted.text)
+        self.assertTrue(accepted.json()['operation_id'].startswith('OP-'))
+        self.assertEqual(operation['status'], 'succeeded', operation)
+        self.assertEqual(operation['result']['gate_status'], 'complete_review')
 
         # A new AnalysisRevision; earlier revision artifacts are byte-identical.
         self.assertNotEqual(latest['analysis_id'], self.manifest['analysis_id'])
@@ -287,6 +301,15 @@ class RoleGateEndToEndTests(unittest.TestCase):
             json.loads((self.directory / 'manifest.json').read_text(encoding='utf-8')),
             self.directory), [])
 
+        # The operation record is durable and lists every phase it passed through.
+        operations = self.client.get(
+            f'/api/runs/{self.directory.name}/role-review/operations').json()
+        self.assertEqual(len(operations['operations']), 1)
+        self.assertIsNone(operations['active'])
+        phases = operations['operations'][0]['phases']
+        self.assertEqual(operations['operations'][0]['completed_phases'], phases)
+        self.assertEqual(operations['operations'][0]['phase_index'], len(phases))
+
         # No cloud provider was contacted during reanalysis: inline transport means the
         # import's single recognition POST is still the only call ever made.
         self.assertEqual([m for m, *_ in self.transport.calls], ['POST'])
@@ -296,13 +319,14 @@ class RoleGateEndToEndTests(unittest.TestCase):
         mapping = {clusters[0]: 'tester', clusters[1]: 'device'}
         with patch('aivoicebench.cloud_transport.HTTPTransport.request',
                    side_effect=AssertionError('no cloud call')):
-            first = self.client.post(f'/api/runs/{self.directory.name}/role-review',
-                json={'mapping': mapping, 'reviewer': 'zhang'}).json()
+            _post, _operation, first = save_role_review(
+                self.client, self.directory.name, {'mapping': mapping, 'reviewer': 'zhang'})
         swapped = {clusters[0]: 'device', clusters[1]: 'tester'}
         with patch('aivoicebench.cloud_transport.HTTPTransport.request',
                    side_effect=AssertionError('no cloud call')):
-            second = self.client.post(f'/api/runs/{self.directory.name}/role-review',
-                json={'mapping': swapped, 'reviewer': 'li', 'reason': '角色标反了'}).json()
+            _post, _operation, second = save_role_review(
+                self.client, self.directory.name,
+                {'mapping': swapped, 'reviewer': 'li', 'reason': '角色标反了'})
 
         self.assertNotEqual(first['analysis_id'], second['analysis_id'])
         review = second['role_review']
@@ -321,10 +345,17 @@ class RoleGateEndToEndTests(unittest.TestCase):
         clusters = self.cluster_ids()
         with patch('aivoicebench.cloud_transport.HTTPTransport.request',
                    side_effect=AssertionError('no cloud call')):
-            latest = self.client.post(f'/api/runs/{self.directory.name}/role-review',
-                json={'mapping': {cluster: 'unknown' for cluster in clusters},
-                      'reviewer': 'zhang', 'reason': '无法判断'}).json()
-        # Reviewed and recorded, but no role claim is invented from it.
+            _post, operation, latest = save_role_review(
+                self.client, self.directory.name,
+                {'mapping': {cluster: 'unknown' for cluster in clusters},
+                 'reviewer': 'zhang', 'reason': '无法判断'})
+        # Reviewed and recorded, but no role claim is invented from it. The
+        # operation still succeeds: the human decision completed, and the
+        # downstream abstention is its own, separately-reported state.
+        self.assertEqual(operation['status'], 'succeeded', operation)
+        self.assertEqual(operation['result']['gate_status'], 'complete_review')
+        self.assertIn(operation['result']['metrics_status'],
+                      ('partial', 'insufficient_evidence', 'failed'))
         self.assertEqual(latest['role_review']['status'], 'complete_review')
         self.assertEqual(sorted(latest['role_review']['unknown_clusters']), sorted(clusters))
         self.assertEqual(latest['turns'], [])
@@ -337,14 +368,24 @@ class RoleGateEndToEndTests(unittest.TestCase):
         clusters = self.cluster_ids()
         with patch('aivoicebench.cloud_transport.HTTPTransport.request',
                    side_effect=AssertionError('no cloud call')):
-            self.client.post(f'/api/runs/{self.directory.name}/role-review',
-                json={'mapping': {clusters[0]: 'tester', clusters[1]: 'device'},
-                      'reviewer': 'zhang'}).raise_for_status()
+            _post, operation, _view = save_role_review(
+                self.client, self.directory.name,
+                {'mapping': {clusters[0]: 'tester', clusters[1]: 'device'},
+                 'reviewer': 'zhang'})
+        self.assertEqual(operation['status'], 'succeeded', operation)
         with TestClient(api.app) as restarted:
             view = restarted.get(f'/api/runs/{self.directory.name}').json()
             self.assertEqual(view['role_review']['status'], 'complete_review')
             self.assertEqual(view['role_review']['revision']['reviewer'], 'zhang')
             self.assertIn('tester', {s['speaker_role'] for s in view['fused_segments']})
+            # The accepted operation, its phases and its outcome survive the restart.
+            restored = restarted.get(
+                f'/api/runs/{self.directory.name}/role-review/operations').json()
+            self.assertEqual(restored['operations'][0]['operation_id'],
+                             operation['operation_id'])
+            self.assertEqual(restored['operations'][0]['status'], 'succeeded')
+            self.assertEqual(restored['operations'][0]['result']['analysis_id'],
+                             view['analysis_id'])
 
 
 if __name__ == '__main__':

@@ -138,6 +138,24 @@ def latest_revision(directory):
     return revisions[-1] if revisions else None
 
 
+def current_cluster_ids(directory):
+    """This Run's anonymous speaker clusters, in first-seen order.
+
+    Read from the *current* AnalysisRevision's own diarization document: a role
+    decision can only be validated against the clusters that revision actually
+    preserved. Returns ``[]`` when there is no readable document, which the caller
+    reports as insufficient evidence rather than as an empty-but-satisfied review.
+    """
+    manifest_path = Path(directory) / 'manifest.json'
+    if not manifest_path.is_file():
+        return []
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    analysis_root = Path(directory) / 'analysis' / (manifest.get('analysis_id') or '')
+    document = _read_document(analysis_root / 'speaker-assignments.json')
+    return list(dict.fromkeys(segment['speaker_id']
+                              for segment in (document or {}).get('speaker_segments') or []))
+
+
 def validate_decisions(decisions, cluster_ids):
     """Reject an incomplete or invented mapping before it can become evidence.
 
@@ -245,13 +263,21 @@ def review_status(cluster_ids, decisions):
             'All clusters have a user decision; role-dependent stages may run')
 
 
-def build_role_review(directory, diarization_doc=None, transcript_doc=None):
-    """Assemble the review surface, the gate state and the revision history."""
-    manifest = {}
-    manifest_path = Path(directory) / 'manifest.json'
-    if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
-    analysis_root = Path(directory) / 'analysis' / (manifest.get('analysis_id') or '')
+def build_role_review(directory, diarization_doc=None, transcript_doc=None, manifest=None):
+    """Assemble the review surface, the gate state and the revision history.
+
+    ``manifest`` lets a caller that already holds the Run's manifest in memory (a
+    rebuild whose on-disk checkpoint is deliberately still the *source* revision
+    until its new AnalysisRevision is complete) state which analysis this surface
+    describes. Without it the Run's own ``manifest.json`` is read, which is what
+    every read-side projection wants (Issue #113 review).
+    """
+    read_manifest = manifest
+    if read_manifest is None:
+        manifest_path = Path(directory) / 'manifest.json'
+        read_manifest = json.loads(manifest_path.read_text(encoding='utf-8')) \
+            if manifest_path.is_file() else {}
+    analysis_root = Path(directory) / 'analysis' / (read_manifest.get('analysis_id') or '')
     if diarization_doc is None:
         diarization_doc = _read_document(analysis_root / 'speaker-assignments.json')
     if transcript_doc is None:
@@ -274,7 +300,7 @@ def build_role_review(directory, diarization_doc=None, transcript_doc=None):
         'schema_version': SCHEMA_VERSION,
         'review_id': 'ROLEREVIEW-' + uuid.uuid4().hex,
         'run_id': Path(directory).name,
-        'analysis_id': manifest.get('analysis_id'),
+        'analysis_id': read_manifest.get('analysis_id'),
         'processor': {'name': PROCESSOR_NAME, 'version': PROCESSOR_VERSION,
                       'llm_role_inference': False},
         'scope': {
