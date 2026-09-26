@@ -329,7 +329,7 @@ class MockDiarizationProvider:
 
 
 def attribute_speakers(diarization_doc, acoustic_doc=None, transcript_doc=None,
-                       explicit_mapping=None):
+                       explicit_mapping=None, human_role_review=False):
     """Map speaker_id → tester/device/unknown using evidence.
 
     This is the Source Attribution step, separate from diarization.
@@ -340,6 +340,14 @@ def attribute_speakers(diarization_doc, acoustic_doc=None, transcript_doc=None,
 
     Without any evidence, ALL speakers remain 'unknown'.
     NEVER infers from first-speaker order or speaker count.
+
+    `human_role_review` states where `explicit_mapping` came from: a saved manual
+    role revision. A cluster the reviewer decided to leave `unknown` is then an
+    *attributed* outcome — `method: human_attribution`, `basis: human_review`,
+    `needs_review: false` — and not an open question, because the human answered it
+    (Issue #115). Without that provenance the same role keeps `method: none`, which
+    means "nobody has decided yet": the two must not be published identically, since
+    diagnostics and the metric-gap explanation read exactly this difference.
     """
     from .validation import schema_errors
 
@@ -360,22 +368,51 @@ def attribute_speakers(diarization_doc, acoustic_doc=None, transcript_doc=None,
     if explicit_mapping:
         attributions = []
         for sid in speaker_ids:
-            role = explicit_mapping.get(sid, 'unknown')
-            conf = 1.0 if role != 'unknown' else 0.0
+            # A cluster that is absent from the mapping has no decision at all; a
+            # cluster mapped to `unknown` under a saved manual review has one. Both
+            # leave the role unknown, so the distinction lives in the provenance.
+            declared = sid in explicit_mapping
+            role = explicit_mapping[sid] if declared else 'unknown'
+            if role != 'unknown':
+                method, basis = 'explicit_evidence', 'explicit_user_evidence'
+                reason = 'Explicitly mapped by user'
+                needs_review = False
+                conf = 1.0
+            elif declared and human_role_review:
+                method, basis = 'human_attribution', 'human_review'
+                reason = ('The saved manual review decided this cluster stays '
+                          'unattributed; no role may be inferred for it')
+                needs_review = False
+                conf = 0.0
+            else:
+                method, basis = 'none', 'none'
+                reason = ('No explicit evidence for this speaker' if declared
+                          else 'This cluster has no saved role decision')
+                needs_review = True
+                conf = 0.0
             attributions.append({
                 'speaker_id': sid,
                 'role': role,
                 'confidence': conf,
-                'confidence_basis': 'explicit_user_evidence' if role != 'unknown' else 'none',
-                'method': 'explicit_evidence' if role != 'unknown' else 'none',
+                'confidence_basis': basis,
+                'method': method,
                 'evidence_refs': [],
                 'provider': None,
                 'model': None,
-                'reason': f'Explicitly mapped by user' if role != 'unknown' else 'No explicit evidence for this speaker',
-                'needs_review': role == 'unknown',
+                'reason': reason,
+                'needs_review': needs_review,
             })
         status = 'complete' if all(a['role'] != 'unknown' for a in attributions) else 'partial'
-        reason = None if status == 'complete' else 'Some speakers have no role evidence'
+        if status == 'complete':
+            reason = None
+        elif any(a['method'] == 'human_attribution' for a in attributions):
+            # A saved review that answered `unknown` is not an open gate: saying "no
+            # role evidence" here would re-open a decision the user already made
+            # (Issue #115).
+            reason = ('Some clusters were answered `unknown` by the saved manual review; '
+                      'they stay unattributed by decision, not by omission')
+        else:
+            reason = 'Some speakers have no role evidence'
         return {
             'schema_version': '1.0.0',
             'document_id': 'ATTR-' + uuid.uuid4().hex,

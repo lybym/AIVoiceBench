@@ -22,6 +22,7 @@ Issue 定义工作单元，PR 定义一次可审阅变更，工作日志记录�
 | [#11](https://github.com/lybym/AIVoiceBench/issues/11) | F013–F014、N001/N002/N006 | wavesurfer.js Evidence Workbench、Finding/Metric/Event 音频定位与 evidence-linked JSON/Markdown 报告 |
 | [#27](https://github.com/lybym/AIVoiceBench/issues/27) | F004、F013–F017、N001–N006 | Linux Server + Docker + Remote Chrome 下的 M1 分阶段编排、持久化、失败恢复与 Web/API/CLI 一致性 |
 | [#113](https://github.com/lybym/AIVoiceBench/issues/113) | F012–F014、F017、F021、F023、N001/N003/N007 | v0.6.0-rc.3 端到端测试的三项行为修正：人工角色确认保存改为可跟踪的异步操作（202 + `operation_id` + 阶段进度 + 按 `code` 区分的拒绝 + 结构化日志）；Free 模式每轮推进有界且可解释（有界等待在飞的 finalisation、超时显式失败、会话快照公开 `progress`）；分析页聚类统计按 `speaker_id` 去重且 `complete_review` 不再承诺指标生成。软件验收已实现（API/worker 操作契约、Free 模式竞态与超时集成测试、Web 契约测试）；真实录音/实体设备/真实云验收仍属 #85 |
+| [#115](https://github.com/lybym/AIVoiceBench/issues/115) | F006–F009、F012–F013、M001–M010、N001–N003 | 角色复核完成后 `unknown` 片段使 EventTimeline 全局无事件、指标全弃权：角色证据按区间资格化、逐区间显式 gap、人工判定 `unknown` 与尚未决定分码并保留 provenance。软件验收已实现（合成 producer 回归 + 授权真实 Run 的只读重放）；**同一授权样本的 EventTimeline/MetricResult/Judge/浏览器复核与 [#85](https://github.com/lybym/AIVoiceBench/issues/85) 的真实录音门槛仍属 #85，本变更不声明 `real_recording_verified`** |
 | [#85](https://github.com/lybym/AIVoiceBench/issues/85) | F001–F017、M001–M010、N001–N007 | M1 最终真实证据 Gate：授权真实录音、真实云调用、人工标注/复核、修订重分析、浏览器证据回放与验收状态记录 |
 
 ### M1 依赖与验收关系
