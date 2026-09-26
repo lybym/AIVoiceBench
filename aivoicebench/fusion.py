@@ -403,7 +403,10 @@ def apply_speakers(fused_doc, diarization_doc=None, attribution_doc=None, alignm
         if abstained:
             notes.append(f'{abstained} abstained on conflicting speaker overlaps')
         if unroled:
-            notes.append(f'{unroled} segment(s) have no role evidence')
+            # The count alone cannot say whether the human gate is still open, so the
+            # cause breakdown travels with it (Issue #115).
+            notes.append(f'{unroled} segment(s) have no role evidence '
+                         f'({_withheld_summary(output)})')
         fused_doc['reason'] = '; '.join(notes)
     return fused_doc
 
@@ -466,10 +469,38 @@ def _assign_speaker(seg, speaker_id, confidence, roles, evidence):
             'reported_confidence': role.get('confidence') if basis not in CALIBRATED_ROLE_BASES else None,
         }
     else:
-        # No role evidence: the cluster is known, the person is not.
+        # The cluster is known, the person is not. A saved manual decision that this
+        # cluster stays unknown is still a decision, so its provenance is recorded
+        # while the role itself remains `unknown`: no role-dependent event and no
+        # role confidence can ever be built from it (Issue #115).
         seg['speaker_role'] = 'unknown'
         seg['role_attribution_confidence'] = None
-        seg['role_attribution'] = None
+        seg['role_attribution'] = _declared_unknown_provenance(role)
+
+
+def _declared_unknown_provenance(role):
+    """Record that a saved human review decided this cluster keeps no role.
+
+    Returns None when no such decision exists. That is the whole point: "the
+    reviewer has not decided this cluster yet" and "the reviewer decided that this
+    cluster has no attributable role" used to collapse into the same null
+    `role_attribution`, which made `metrics_gap` report a completed review as if the
+    human gate were still open (Issue #115). The decision is provenance, not a role:
+    `speaker_role` stays `unknown` and `role_attribution_confidence` stays null.
+    """
+    if not role or role.get('method') != 'human_attribution':
+        return None
+    basis = role.get('confidence_basis')
+    return {
+        'method': role['method'],
+        'basis': basis if basis in CALIBRATED_ROLE_BASES else 'human_review',
+        'provider': role.get('provider'),
+        'model': role.get('model'),
+        'prompt_version': role.get('prompt_version'),
+        'invocation_id': role.get('invocation_id'),
+        'needs_review': bool(role.get('needs_review')),
+        'reported_confidence': None,
+    }
 
 
 def _split_by_speaker(seg, ordered, roles, native_to_local):
@@ -728,6 +759,17 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
     `run_id`/`case_id` must be the identity of the Run the events belong to. The
     defaults exist only for standalone CLI use; an imported Run passes its own
     identity so the timeline, its events and its metrics agree.
+
+    Role evidence is qualified **per interval** (Issue #115). A segment whose cluster
+    a human left unknown, whose clusters conflict, or that no speaker span covers
+    contributes no role-dependent event — and it no longer erases the events of the
+    intervals that do carry a confirmed tester/device role. The previous
+    whole-recording guard ("any unknown segment anywhere ⇒ abstain everywhere") threw
+    away usable evidence from the attributed part of a recording, which is what
+    `partial` evidence and an explicit unknown decision are never allowed to do.
+    Nothing is inferred to fill the remainder: an unresolved interval still yields no
+    event, and the timeline publishes one gap per interval naming the evidence that
+    is missing.
     """
     segments = fused_doc.get('segments', [])
     turns = turns_doc.get('turns', [])
@@ -736,8 +778,16 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
     if not segments:
         return [], [], 'insufficient_evidence', 'No fused segments to detect events from'
 
-    if any(seg.get('speaker_role') == 'unknown' for seg in segments):
-        return [], [], 'insufficient_evidence', 'Speaker attribution is unresolved'
+    qualified = [seg for seg in segments if _role_is_confirmed(seg)]
+    if not qualified:
+        # Nothing in this recording carries a role, so no role-dependent event can be
+        # claimed anywhere: this is the only case that still empties the whole event
+        # set, and it names the causes instead of "an unknown exists".
+        return [], [], 'insufficient_evidence', (
+            'Speaker attribution is unresolved: no fused segment carries a confirmed '
+            f'tester/device role ({_withheld_summary(segments)})')
+
+    withheld = [seg for seg in segments if not _role_is_confirmed(seg)]
 
     events = []
     evidence = []
@@ -833,6 +883,15 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
     # evidence snippet covering the gap. Citing a neighbouring speech segment would
     # not cover the interval the event claims, and the timeline contract rejects it.
     for i in range(1, len(segments)):
+        if not (_role_is_confirmed(segments[i - 1]) and _role_is_confirmed(segments[i])):
+            # Silence is only claimable between two intervals the recording actually
+            # attributes. If either neighbour carries no confirmed role, calling the
+            # space around it an observed no-speech window would present an
+            # unattributed stretch as a measured outcome, and a `timeout` next to it
+            # would claim a PRD-F008 observation window that was never established.
+            # The withheld segment is reported as a gap over its own interval instead
+            # (Issue #115).
+            continue
         gap_start = segments[i - 1]['end_ms']
         gap_end = segments[i]['start_ms']
         if gap_end > gap_start + 1:
@@ -929,18 +988,103 @@ def detect_events(fused_doc, turns_doc, *, timeout_ms=DEFAULT_TIMEOUT_MS,
     if not events:
         status = 'insufficient_evidence'
         reason = 'No events could be detected'
-    elif all(seg.get('speaker_role') in ('tester', 'device') for seg in segments):
+    elif not withheld:
         status, reason = 'complete', None
     else:
         # Events exist only for the attributed part of the recording. Saying
         # "complete" would present a partial observation as the whole recording, so
-        # the timeline stays partial and the untranscribed remainder is recorded.
+        # the timeline stays partial and the reason states which cause withheld how
+        # many segments. `generate_timeline` then publishes the same causes as one
+        # auditable gap per interval, so a reader can find out why a stretch of the
+        # recording produced nothing without being told "an unknown exists" (Issue #115).
         status = 'partial'
-        unattributed = sum(1 for seg in segments
-                           if seg.get('speaker_role') not in ('tester', 'device'))
-        reason = (f'{unattributed} segment(s) have no confirmed speaker role; only the '
-                  'attributed portions of the recording are represented')
+        reason = (f'{len(withheld)} segment(s) carry no confirmed speaker role '
+                  f'({_withheld_summary(withheld)}); only the attributed intervals of '
+                  'the recording are represented')
     return events, evidence, status, reason
+
+
+def _role_is_confirmed(seg):
+    """Whether one fused segment may carry role-dependent evidence at all.
+
+    A tester/device role only comes from a saved human mapping or explicit case
+    evidence, never from cluster order, speaker count or acoustic timing. Anything
+    else — an unknown the human chose to keep, an undecided cluster, a conflict or a
+    segment no speaker span covers — is not a role and must not become an event.
+    """
+    return seg.get('speaker_role') in ('tester', 'device')
+
+
+# Each withheld cause names the evidence that would have to arrive to close it. The
+# labels live here so the stage reason, the timeline gap and `metrics_gap` cannot
+# drift into three different vocabularies for one interval.
+WITHHELD_CAUSE_LABELS = {
+    'human_declared_unknown': 'a saved review decided this cluster has no attributable role',
+    'awaiting_decision': 'no human role decision is saved for this cluster',
+    'cluster_conflict': 'conflicting speaker clusters overlap this interval',
+    'no_speaker_span': 'no ASR speaker span overlaps this interval',
+}
+
+GAP_REQUIRED_EVIDENCE = {
+    'human_declared_unknown': 'new_human_role_decision',
+    'awaiting_decision': 'speaker_diarization_or_human_review',
+    'cluster_conflict': 'unambiguous_speaker_alignment',
+    'no_speaker_span': 'overlapping_speaker_span',
+}
+
+# Compact cause names for the stage-level reason, which is shown next to a document
+# status and must stay readable. The per-interval gap rows use the sentence forms
+# above instead.
+WITHHELD_CAUSE_SHORT = {
+    'human_declared_unknown': 'decided unknown by a saved review',
+    'awaiting_decision': 'no saved role decision',
+    'cluster_conflict': 'conflicting speaker clusters',
+    'no_speaker_span': 'no overlapping speaker span',
+}
+
+
+def _withheld_cause(seg):
+    """The one reason this segment carries no role-dependent event."""
+    from .alignment import role_evidence_category
+    category = role_evidence_category(seg)
+    if category == 'confirmed':
+        return None
+    return category
+
+
+def _withheld_summary(segments):
+    """Count the withheld segments by cause, in a fixed order."""
+    counts = {}
+    for seg in segments:
+        cause = _withheld_cause(seg)
+        if cause:
+            counts[cause] = counts.get(cause, 0) + 1
+    return ', '.join(f'{counts[cause]} {WITHHELD_CAUSE_SHORT[cause]}'
+                     for cause in WITHHELD_CAUSE_SHORT if cause in counts)
+
+
+def _withheld_intervals(segments):
+    """Merge contiguous segments that are withheld for the same cause into intervals.
+
+    One row per auditable interval, in document order: `{cause, start_ms, end_ms,
+    segment_count}`. A recording where unknown stretches alternate with attributed
+    speech therefore reports each stretch separately instead of one vague
+    whole-recording gap (Issue #115).
+    """
+    intervals = []
+    for seg in segments:
+        cause = _withheld_cause(seg)
+        if cause is None:
+            continue
+        current = intervals[-1] if intervals and intervals[-1]['cause'] == cause else None
+        if current is None:
+            intervals.append({'cause': cause, 'start_ms': seg['start_ms'],
+                              'end_ms': seg['end_ms'], 'segment_count': 1})
+        else:
+            current['end_ms'] = max(current['end_ms'], seg['end_ms'])
+            current['start_ms'] = min(current['start_ms'], seg['start_ms'])
+            current['segment_count'] += 1
+    return intervals
 
 
 def _event(event_id, event_type, start_ms, end_ms, turn_id, response_id,
@@ -998,16 +1142,11 @@ def generate_timeline(fused_doc, turns_doc, events, evidence, status, reason,
             },
         },
         'status': status if status != 'insufficient_evidence' else 'partial',
-        # A gap is recorded whenever the timeline cannot claim complete coverage:
-        # either nothing is attributed at all, or part of the recording carries no
-        # confirmed role. The Run is then readable as partial-with-cause instead of
-        # as a complete observation that happens to be missing some speech.
-        'gaps': [{
-            'reason': reason or 'Automatic event detection did not produce complete coverage',
-            'required_evidence': 'speaker_diarization_or_human_review',
-            'start_ms': 0,
-            'end_ms': round(duration_ms, 3),
-        }] if status != 'complete' else [],
+        # A gap is recorded whenever the timeline cannot claim complete coverage, so
+        # the Run reads as partial-with-cause instead of as a complete observation
+        # that happens to be missing some speech. See `_timeline_gaps` for how the
+        # cause is located per interval.
+        'gaps': _timeline_gaps(fused_doc, status, reason, duration_ms),
         'tracks': [{
             'track_id': 'TRACK-mix',
             'role': 'room_mix',
@@ -1034,6 +1173,42 @@ def generate_timeline(fused_doc, turns_doc, events, evidence, status, reason,
         'events': events,
     }
     return timeline
+
+
+def _timeline_gaps(fused_doc, status, reason, duration_ms):
+    """The gap rows of a timeline that cannot claim complete coverage.
+
+    Two states must not look alike (Issue #115):
+
+    * nothing in the recording is attributable — one gap over the whole recording,
+      carrying the stage reason, exactly as `detect_events` abstained before;
+    * part of the recording is attributable — one auditable gap per withheld
+      interval, naming its cause and the evidence that could close it, so an empty
+      stretch of the EventTimeline explains itself instead of inheriting a blanket
+      "an unknown exists somewhere".
+
+    A non-`complete` timeline always publishes at least one gap: the schema forbids
+    an empty list, and "we could not say anything" is itself a coverable statement.
+    """
+    if status == 'complete':
+        return []
+    segments = fused_doc.get('segments') or []
+    if any(_role_is_confirmed(seg) for seg in segments):
+        intervals = _withheld_intervals(segments)
+        if intervals:
+            return [{
+                'reason': (f'{item["segment_count"]} segment(s) here carry no confirmed '
+                           f'speaker role: {WITHHELD_CAUSE_LABELS[item["cause"]]}'),
+                'required_evidence': GAP_REQUIRED_EVIDENCE[item['cause']],
+                'start_ms': round(item['start_ms'], 3),
+                'end_ms': round(item['end_ms'], 3),
+            } for item in intervals]
+    return [{
+        'reason': reason or 'Automatic event detection did not produce complete coverage',
+        'required_evidence': 'speaker_diarization_or_human_review',
+        'start_ms': 0,
+        'end_ms': round(duration_ms, 3),
+    }]
 
 
 def analyze_segments(acoustic_path, transcript_path=None, output=None, *,

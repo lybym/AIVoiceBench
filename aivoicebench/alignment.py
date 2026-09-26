@@ -341,6 +341,35 @@ def alignment_for(fused_doc, alignment_doc):
             for item in (alignment_doc or {}).get('alignments', [])}
 
 
+# The four reasons a fused segment may not carry role-dependent evidence, plus the
+# one reason it may. `fusion.detect_events` withholds events per segment using this
+# vocabulary and `generate_timeline` names the same cause on its gap, so an interval
+# that produced nothing can always be traced to the evidence that is missing.
+ROLE_EVIDENCE_CATEGORIES = ('confirmed', 'cluster_conflict', 'no_speaker_span',
+                            'human_declared_unknown', 'awaiting_decision')
+
+
+def role_evidence_category(segment):
+    """State why one fused segment may (or may not) support role-dependent analysis.
+
+    Before Issue #115 a reader could only ask "is this segment unknown", which merged
+    four different statements: a human decided it has no attributable role, nobody
+    has been asked yet, no speaker span overlaps it, or conflicting clusters claimed
+    the same instant. Those need different follow-up — and only the first is already
+    answered — so the distinction is made here once and reused by every projection.
+    """
+    if segment.get('speaker_role') in ('tester', 'device'):
+        return 'confirmed'
+    if segment.get('speaker_evidence') == 'ambiguous_overlap':
+        # Conflicting clusters: the segment abstained and owns no speaker id.
+        return 'cluster_conflict'
+    if segment.get('speaker_id') is None:
+        return 'no_speaker_span'
+    if (segment.get('role_attribution') or {}).get('method') == 'human_attribution':
+        return 'human_declared_unknown'
+    return 'awaiting_decision'
+
+
 def explain_metric_gap(fused_doc, timeline_doc=None, metrics_doc=None, alignment_doc=None):
     """State why role-dependent metrics are unavailable, with counts.
 
@@ -356,8 +385,21 @@ def explain_metric_gap(fused_doc, timeline_doc=None, metrics_doc=None, alignment
                 'reasons': [], 'segment_count': len(segments)}
 
     unclustered = [s for s in segments if s.get('speaker_id') is None]
-    unroled = [s for s in segments if s.get('speaker_role') not in ('tester', 'device')]
     ambiguous = [s for s in segments if s.get('speaker_evidence') == 'ambiguous_overlap']
+    # Issue #115: "the role is not tester/device" is four different statements, and
+    # only some of them name a pending action. A reviewer who explicitly answered
+    # `unknown` has finished, so counting those segments under `roles_not_confirmed`
+    # told the operator the role gate was still open after they had closed it. One
+    # classification pass over the withheld segments keeps every code consistent with
+    # the others instead of re-deriving the cause with a different predicate.
+    withheld = [role_evidence_category(s) for s in segments
+                if s.get('speaker_role') not in ('tester', 'device')]
+    causes = {category: sum(1 for cause in withheld if cause == category)
+              for category in ROLE_EVIDENCE_CATEGORIES}
+    # Everything a review has *not* already answered keeps the existing umbrella code,
+    # so a consumer that only watches `roles_not_confirmed` still sees a non-zero count
+    # whenever a decision is genuinely outstanding or the alignment is missing.
+    not_confirmed = len(withheld) - causes['human_declared_unknown']
     diagnostics = (alignment_doc or {}).get('diagnostics') or {}
 
     reasons = []
@@ -374,15 +416,34 @@ def explain_metric_gap(fused_doc, timeline_doc=None, metrics_doc=None, alignment
         reasons.append({'code': 'ambiguous_speaker_overlap',
                         'count': len(ambiguous),
                         'detail': 'Conflicting clusters claimed the same instant, so these segments abstained.'})
-    if unroled:
+    if causes['human_declared_unknown']:
+        reasons.append({'code': 'roles_human_declared_unknown',
+                        'count': causes['human_declared_unknown'],
+                        'detail': ('A saved human review decided that these clusters have no attributable '
+                                   'role, so their intervals stay unmeasured by design. This is a finished '
+                                   'decision, not an open review item: `complete_review` only states that '
+                                   'every cluster was answered and never means a role-dependent metric '
+                                   'passed.')})
+    if causes['awaiting_decision']:
+        reasons.append({'code': 'roles_awaiting_human_decision',
+                        'count': causes['awaiting_decision'],
+                        'detail': ('These segments belong to a known cluster that has no saved tester/device '
+                                   'decision yet; role-dependent turns, timeline and metrics abstain until a '
+                                   'human mapping is saved.')})
+    if not_confirmed:
         reasons.append({'code': 'roles_not_confirmed',
-                        'count': len(unroled),
-                        'detail': ('Tester/device roles are user decisions. Until a human mapping is saved, '
-                                   'role-dependent turns, timeline and metrics must abstain.')})
+                        'count': not_confirmed,
+                        'detail': ('Role-dependent analysis cannot use these segments: the cause is the '
+                                   'missing speaker span, the conflicting clusters or the decision that has '
+                                   'not been saved above. Counts are per cause, so one segment can appear '
+                                   'under more than one code; segments a review already decided to leave '
+                                   'unknown are counted separately.')})
     if timeline_doc is not None and not (timeline_doc or {}).get('events'):
         reasons.append({'code': 'no_timeline_events',
                         'count': 0,
-                        'detail': 'No canonical event was produced, so the metric engine had no observation window.'})
+                        'detail': ('No canonical event was produced for any interval, so the metric engine '
+                                   'had no observation window. Each cause above names which intervals were '
+                                   'withheld.')})
     if not reasons:
         reasons.append({'code': 'metrics_not_eligible',
                         'count': len(metrics),
