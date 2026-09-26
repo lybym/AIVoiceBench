@@ -427,7 +427,7 @@ def explain_metric_gap(fused_doc, timeline_doc=None, metrics_doc=None, alignment
     if causes['awaiting_decision']:
         reasons.append({'code': 'roles_awaiting_human_decision',
                         'count': causes['awaiting_decision'],
-                        'detail': ('These segments belong to a known cluster that has no saved tester/device '
+                        'detail': ('These segments belong to a known cluster that has no saved role '
                                    'decision yet; role-dependent turns, timeline and metrics abstain until a '
                                    'human mapping is saved.')})
     if not_confirmed:

@@ -283,6 +283,30 @@ class MetricGapCauseTests(unittest.TestCase):
         self.assertEqual(codes['roles_not_confirmed'], 1)
         self.assertNotIn('roles_human_declared_unknown', codes)
 
+    def test_the_gap_never_names_a_role_it_has_not_been_given(self):
+        """An abstention must not read as though a role had been decided.
+
+        `metrics_gap` states what is missing, so it may only describe roles as pending
+        or human-owned. Naming a concrete role here would leak an assignment the
+        evidence does not support, which is the same boundary `tests.test_alignment`
+        pins for the blank-metrics explanation. The two new codes this Issue adds are
+        the ones that can most easily drift, so both the answered and the pending
+        review states are checked.
+        """
+        cases = (('answered review', MIXED_MAPPING, True, 'roles_human_declared_unknown'),
+                 ('pending review', {'speaker_0': 'tester', 'speaker_1': 'device'}, False,
+                  'roles_awaiting_human_decision'))
+        for label, mapping, human_role_review, expected in cases:
+            with self.subTest(label):
+                case = build(MIXED_ROWS, MIXED_SPANS, mapping,
+                             human_role_review=human_role_review)
+                gap = explain_metric_gap(case['fused'], case['timeline'], {'metrics': []})
+                self.assertIn(expected, gap_codes(gap))
+                serialized = json.dumps(gap, ensure_ascii=False).lower()
+                self.assertNotIn('tester', serialized)
+                self.assertNotIn('device', serialized)
+                self.assertNotIn('speaker_role', serialized)
+
     def test_the_umbrella_code_still_counts_an_unmatched_segment(self):
         case = build([(1000, 2000), (3000, 3500)],
                      [('speaker_0', 1000, 2000, 0.9)], {'speaker_0': 'tester'},
