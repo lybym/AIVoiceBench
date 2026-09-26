@@ -115,6 +115,23 @@ class ConfirmedAndUnknownCoexistTests(unittest.TestCase):
         # The cause is named, not merely "an unknown exists somewhere".
         self.assertIn('saved review', gaps[0]['reason'])
 
+    def test_same_cause_gaps_do_not_bridge_a_confirmed_interval(self):
+        """Each withheld interval stays local when confirmed speech lies between it."""
+        case = build(
+            [(1000, 2000), (3000, 4000), (5000, 6000)],
+            [('speaker_0', 1000, 2000, 0.9), ('speaker_1', 3000, 4000, 0.9),
+             ('speaker_0', 5000, 6000, 0.9)],
+            {'speaker_0': 'unknown', 'speaker_1': 'tester'})
+
+        self.assertTrue(any(event['type'] == 'tester_speech_start'
+                            and event['start_ms'] == 3000 for event in case['events']))
+        gaps = case['timeline']['gaps']
+        self.assertEqual([(gap['start_ms'], gap['end_ms']) for gap in gaps],
+                         [(1000.0, 2000.0), (5000.0, 6000.0)])
+        self.assertTrue(all(gap['required_evidence'] == 'new_human_role_decision'
+                            for gap in gaps))
+        self.assertEqual(timeline_errors(case['timeline']), [])
+
     def test_eligible_metrics_are_observed_for_the_attributed_window(self):
         metrics = compute_timeline_metrics(self.case['timeline'])
         self.assertGreater(metrics['counts']['observed'], 0,

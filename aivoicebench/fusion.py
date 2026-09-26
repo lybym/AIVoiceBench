@@ -1072,11 +1072,19 @@ def _withheld_intervals(segments):
     whole-recording gap (Issue #115).
     """
     intervals = []
+    previous_cause = None
+    previous_end_ms = None
     for seg in segments:
         cause = _withheld_cause(seg)
         if cause is None:
+            # A confirmed interval breaks contiguity even if the withheld cause on
+            # either side is the same.
+            previous_cause = None
+            previous_end_ms = None
             continue
-        current = intervals[-1] if intervals and intervals[-1]['cause'] == cause else None
+        contiguous = (previous_cause == cause and previous_end_ms is not None and
+                      seg['start_ms'] <= previous_end_ms)
+        current = intervals[-1] if contiguous else None
         if current is None:
             intervals.append({'cause': cause, 'start_ms': seg['start_ms'],
                               'end_ms': seg['end_ms'], 'segment_count': 1})
@@ -1084,6 +1092,8 @@ def _withheld_intervals(segments):
             current['end_ms'] = max(current['end_ms'], seg['end_ms'])
             current['start_ms'] = min(current['start_ms'], seg['start_ms'])
             current['segment_count'] += 1
+        previous_cause = cause
+        previous_end_ms = seg['end_ms']
     return intervals
 
 
