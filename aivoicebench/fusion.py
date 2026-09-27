@@ -695,8 +695,12 @@ def build_turns(fused_doc):
                         start < current_turn['tester_speech_end_ms']):
                     current_turn['has_overlap'] = True
         else:
-            # unknown role — skip for turn building
-            pass
+            # An unattributed interval breaks response continuity. A later device
+            # segment cannot be claimed as the answer to tester speech before this
+            # interval: its unknown speaker may have changed the conversation.
+            if current_turn is not None:
+                turns.append(_finalize_turn(current_turn))
+                current_turn = None
 
     if current_turn is not None:
         turns.append(_finalize_turn(current_turn))

@@ -1,5 +1,7 @@
 # Speaker clustering / Attribution / Fusion / Events
 
+未确认角色片段必须结束当前 Turn/response 关联。之后的 device 语音不能跨过 human unknown、待决定、冲突或无 speaker span 区间，被算作之前 tester 语音的回答；否则即使未知区间没有 Event，`first_speech_latency_ms`、`turn_gap_ms` 和 coverage 仍会把它伪装成已观察的响应窗口。coverage 的 `total_count` 是 attempted Turn 数，不代表全录音时长或说话人覆盖率。
+
 2026-09-11 基线 main c612d36 / alpha.2；产品要求见 [PRD-F006～F009](PRD.md)。
 
 ImportRun 分别登记 acoustic、diarization、attribution、fusion、turns、timeline、metrics。ASRNativeDiarizationProvider 复用已有 ASR 原生响应/Transcript 标签，不追加服务调用；需配置 ASR 与 diarization 路由。`partial` Transcript 中仍合法的 utterance/speaker labels 继续作为 evidence，gap 单独保留；缺标签则 insufficient_evidence，不按轮流发言补标签。

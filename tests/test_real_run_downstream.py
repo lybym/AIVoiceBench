@@ -12,8 +12,12 @@ import os
 from pathlib import Path
 import unittest
 
-from aivoicebench.fusion import build_turns, detect_events, generate_timeline
+from aivoicebench.alignment import align_speaker_spans
+from aivoicebench.diarization import attribute_speakers
+from aivoicebench.fusion import (apply_speakers, build_turns, detect_events, fuse,
+                                 generate_timeline)
 from aivoicebench.metrics import compute_timeline_metrics
+from aivoicebench.validation import metric_errors, schema_errors, timeline_errors
 
 
 RUN_ID = 'RUN-8f584eb322494ac99767e1a248e4b0bd'
@@ -56,13 +60,29 @@ class RealRunDownstreamReplayTests(unittest.TestCase):
         self.assertTrue(transcript['data'].get('segments'))
         self.assertTrue(speakers['data'].get('speaker_segments'))
 
-        fused = _read_json(analysis / 'fused-segments.json')['data']
+        acoustic = _read_json(analysis / 'acoustic-segments.json')['data']
+        attribution = attribute_speakers(
+            speakers['data'], explicit_mapping=review['decisions'], human_role_review=True)
+        alignment = align_speaker_spans(acoustic, speakers['data'], transcript_doc=transcript['data'])
+        fused = fuse(acoustic, transcript['data'])
+        apply_speakers(fused, speakers['data'], attribution, alignment)
+        self.assertEqual(schema_errors(attribution, 'source-attribution'), [])
+        self.assertEqual(schema_errors(alignment, 'speaker-alignment'), [])
+        self.assertEqual(schema_errors(fused, 'fused-segments'), [])
         self.assertTrue(fused['segments'])
         self.assertTrue({'tester', 'device', 'unknown'} <= {
             segment['speaker_role'] for segment in fused['segments']})
         turns = build_turns(fused)
-        self.assertEqual(turns['turns'],
-                         _read_json(analysis / 'turns.json')['data']['turns'])
+        segment_order = {seg['segment_id']: index
+                         for index, seg in enumerate(fused['segments'])}
+        unknown_indexes = {index for index, seg in enumerate(fused['segments'])
+                           if seg['speaker_role'] == 'unknown'}
+        for turn in turns['turns']:
+            indexes = [segment_order[sid] for sid in
+                       turn['tester_segment_ids'] + turn['device_segment_ids']]
+            self.assertFalse(any(min(indexes) < index < max(indexes)
+                                 for index in unknown_indexes),
+                             f'unknown evidence splits turn {turn["turn_id"]}')
 
         identity = {'run_id': RUN_ID,
                     'case_id': manifest.get('case_ref') or 'CASE-auto',
@@ -76,14 +96,22 @@ class RealRunDownstreamReplayTests(unittest.TestCase):
 
         self.assertEqual(timeline['run_id'], RUN_ID)
         self.assertEqual(len(timeline['events']), len(events))
-        self.assertIn(timeline['status'], ('complete', 'partial'))
-        self.assertIn(metrics['status'],
-                      ('observed', 'partial', 'insufficient_evidence'))
-        if timeline['status'] != 'complete':
-            self.assertTrue(timeline['gaps'])
-        # Current Issue #115 baseline: this mixed-role Run abstains globally.
-        # Deliberately do not assert zero events/metrics: the fix should make this
-        # same replay pass while producing eligible, traceable results.
+        self.assertEqual(len(fused['segments']), 195)
+        self.assertEqual(len(turns['turns']), 45)
+        self.assertEqual(len(events), 283)
+        self.assertEqual(timeline['status'], 'partial')
+        self.assertEqual(len(timeline['gaps']), 89)
+        self.assertEqual(metrics['counts']['observed'], 26)
+        self.assertEqual(len(metrics['metrics']), 327)
+        coverage = next(item for item in metrics['metrics'] if item['name'] == 'coverage')
+        self.assertEqual(coverage['aggregation']['sample_count'], 5)
+        self.assertEqual(coverage['aggregation']['total_count'], 45)
+        self.assertEqual(timeline_errors(timeline), [])
+        self.assertEqual(schema_errors(timeline, 'event-timeline'), [])
+        for metric in metrics['metrics']:
+            self.assertEqual(metric_errors(metric, timeline), [])
+        # Pin the eligible results from this authorized Run. A future change that
+        # bridges an unknown interval or erases confirmed evidence must fail here.
         print(f'Issue #115 replay: {len(fused["segments"])} fused segments, '
               f'{len(turns["turns"])} turns, {len(events)} events, '
               f'{metrics["counts"]["observed"]} observed metrics; '

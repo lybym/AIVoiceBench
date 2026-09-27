@@ -133,10 +133,34 @@ class ConfirmedAndUnknownCoexistTests(unittest.TestCase):
         self.assertEqual(timeline_errors(case['timeline']), [])
 
     def test_eligible_metrics_are_observed_for_the_attributed_window(self):
-        metrics = compute_timeline_metrics(self.case['timeline'])
+        case = build(
+            [(1000, 2000), (5000, 6000), (9000, 10000), (11000, 12000)],
+            [('speaker_0', 1000, 2000, 0.9), ('speaker_2', 5000, 6000, 0.9),
+             ('speaker_0', 9000, 10000, 0.9), ('speaker_1', 11000, 12000, 0.9)],
+            MIXED_MAPPING)
+        metrics = compute_timeline_metrics(case['timeline'])
         self.assertGreater(metrics['counts']['observed'], 0,
                            'the attributed interval must yield observed metrics')
         self.assertNotEqual(metrics['status'], 'insufficient_evidence')
+
+    def test_unknown_breaks_response_pairing_and_formal_measurement(self):
+        """An unknown speaker cannot be skipped to connect tester and device."""
+        turns = self.case['turns']['turns']
+        self.assertEqual(len(turns), 2)
+        self.assertEqual((turns[0]['tester_segment_ids'], turns[0]['device_segment_ids']),
+                         (['FSEG-0000'], []))
+        self.assertEqual((turns[1]['tester_segment_ids'], turns[1]['device_segment_ids']),
+                         ([], ['FSEG-0002']))
+        self.assertIsNone(turns[0]['response_id'])
+        self.assertIsNotNone(turns[1]['response_id'])
+        metrics = compute_timeline_metrics(self.case['timeline'])['metrics']
+        for name in ('first_speech_latency_ms', 'turn_gap_ms'):
+            self.assertFalse(any(m['name'] == name and m['status'] == 'observed'
+                                 for m in metrics), name)
+        coverage = next(m for m in metrics if m['name'] == 'coverage')
+        self.assertEqual(coverage['status'], 'insufficient_evidence')
+        self.assertEqual(coverage['aggregation']['total_count'], 2)
+        self.assertEqual(coverage['aggregation']['sample_count'], 0)
 
     def test_acoustic_evidence_of_the_unknown_interval_is_preserved(self):
         segments = self.case['fused']['segments']
@@ -370,10 +394,11 @@ class ManualRevisionProvenanceTests(unittest.TestCase):
 
     def test_the_issue_shape_of_five_clusters_two_roles_one_unknown_produces_events(self):
         """The reported case: 5 clusters, 2 tester, 2 device, 1 deliberate unknown."""
-        rows = [(1000, 2000), (3000, 4000), (5000, 6000), (7000, 8000), (9000, 10000)]
+        rows = [(1000, 2000), (3000, 4000), (5000, 6000),
+                (7000, 8000), (9000, 10000), (11000, 12000)]
         spans = [('speaker_0', 1000, 2000, 0.9), ('speaker_1', 3000, 4000, 0.9),
-                 ('speaker_2', 5000, 6000, 0.9), ('speaker_3', 7000, 8000, 0.9),
-                 ('speaker_4', 9000, 10000, 0.9)]
+                 ('speaker_2', 5000, 6000, 0.9), ('speaker_1', 7000, 8000, 0.9),
+                 ('speaker_3', 9000, 10000, 0.9), ('speaker_4', 11000, 12000, 0.9)]
         mapping = {'speaker_0': 'tester', 'speaker_1': 'tester', 'speaker_2': 'unknown',
                    'speaker_3': 'device', 'speaker_4': 'device'}
         case = build(rows, spans, mapping)
