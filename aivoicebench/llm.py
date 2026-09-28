@@ -512,13 +512,13 @@ class MockLLMProvider:
 
 
 PROMPT_VERSIONS = {
-    'meaningful_response': 'meaningful-v1.1.0',
-    'feedback_detection': 'feedback-v1.1.0',
-    'intent': 'intent-v1.0.0',
-    'conversation_quality': 'quality-v1.0.0',
-    'finding_candidate': 'finding-v1.0.0',
-    'semantic_response': 'semantic-response-v1.0.0',
-    'barge_in_compliance': 'barge-in-compliance-v1.0.0',
+    'meaningful_response': 'meaningful-v1.1.1',
+    'feedback_detection': 'feedback-v1.1.1',
+    'intent': 'intent-v1.0.1',
+    'conversation_quality': 'quality-v1.0.1',
+    'finding_candidate': 'finding-v1.0.1',
+    'semantic_response': 'semantic-response-v1.0.1',
+    'barge_in_compliance': 'barge-in-compliance-v1.0.1',
 }
 
 #: Dimensions whose timing output is a *selection* from measured anchors. These
@@ -532,29 +532,43 @@ SYSTEM_PROMPTS = {
         'whose boundary is the first point where meaningful content begins. Filler '
         'words (嗯, 啊, 好的, 让我看看) are NOT meaningful. Return "anchor_refs" with '
         'role "meaningful_start" and the chosen anchor_id. Never return milliseconds '
-        'and never name a boundary that was not supplied.'
+        'and never name a boundary that was not supplied. Return status "observed" '
+        'only when anchor_refs includes exactly one usable "meaningful_start" anchor; '
+        'otherwise abstain.'
     ),
     'feedback_detection': (
         'You are an AI voice evaluation judge. Detect non-speech feedback at the '
         'start of a device response. Classify as: filler, ack, thinking_cue, '
         'non_speech_tone, or other. Select two supplied anchors with roles '
-        '"feedback_start" and "feedback_end". Never return milliseconds.'
+        '"feedback_start" and "feedback_end". Return status "observed" only '
+        'when feedback_type is one of filler, ack, thinking_cue, non_speech_tone, '
+        'or other and both distinct measured anchors form a nonempty interval. '
+        'Otherwise abstain. Never return milliseconds.'
     ),
     'intent': (
         'You are an AI voice evaluation judge. Classify the user intent from '
         'their speech transcript. Use a concise label (e.g., weather_query, '
-        'time_query, media_playback, device_setting, reasoning_request).'
+        'time_query, media_playback, device_setting, reasoning_request). Return '
+        'status "observed" only with a nonempty string "intent_label"; otherwise abstain.'
     ),
     'conversation_quality': (
         'You are an AI voice evaluation judge. Assess overall conversation '
         'quality from the provided metrics and events. Return a score 0-1 '
-        'and a decision: acceptable, marginal, or poor.'
+        'and a decision: acceptable, marginal, or poor. The numeric "score", '
+        'when supplied, must be between 0 and 1.'
     ),
     'finding_candidate': (
         'You are an AI voice evaluation judge. Based on metrics and events, '
         'generate a finding candidate if any issues are detected. Include '
         'suspected_layer and severity. Suspected causes must be hypotheses, '
-        'not confirmed root causes. Cite the evidence/event ids you relied on.'
+        'not confirmed root causes. Cite the evidence/event ids you relied on. '
+        'Return status "observed" only with "finding_severity" set to info, '
+        'low, medium, high, or critical, and "suspected_layer" set to one of '
+        'vad, endpoint, asr, aec, network, llm, prompt, context, memory, agent, '
+        'tool, tts, safety, persona, or unknown. A suspected layer is only a '
+        'hypothesis: include numeric "attribution_confidence" from 0 to 1 and '
+        '"requires_log_verification": true. If there is no supportable finding, '
+        'abstain with status "insufficient_evidence" instead of inventing one.'
     ),
     'semantic_response': (
         'You are an AI voice evaluation judge applying criterion CRIT-SEMANTIC-RESPONSE. '
@@ -570,6 +584,29 @@ SYSTEM_PROMPTS = {
         'ids you relied on. Interruption timing alone never establishes compliance. If the '
         'supplied evidence is not enough to decide, abstain with a reason.'
     ),
+}
+
+# JSON Object mode requires an explicit JSON instruction in the prompt. Keep the
+# provider-facing envelope aligned with OpenAICompatibleProvider._parse_response;
+# the harness adds schema identity and provenance only after validation.
+JUDGE_JSON_CONTRACT = (
+    'Return exactly one valid JSON object and nothing else: no Markdown fence, '
+    'explanation, or surrounding text. The object must always contain all four '
+    'fields: "decision" (nonempty string), "reason" (nonempty string explaining '
+    'the judgment or abstention), "status" (exactly one of "observed", '
+    '"low_confidence", "insufficient_evidence"), and "confidence" (finite JSON '
+    'number from 0 to 1; never null, a string, or a boolean). When the supplied '
+    'observations cannot support a judgment, use "insufficient_evidence" with a '
+    'specific reason and a nonempty decision label such as "unknown"; do not '
+    'guess or fill missing evidence. An observed or low_confidence result must '
+    'cite supplied evidence_refs, event_refs, or valid measured anchor_refs; '
+    'never invent IDs or times. For semantic_response and barge_in_compliance, '
+    'an observed verdict also needs a boolean "semantic_decision". Include '
+    'dimension-specific fields only when supported by the supplied context.'
+)
+SYSTEM_PROMPTS = {
+    dimension: instruction + ' ' + JUDGE_JSON_CONTRACT
+    for dimension, instruction in SYSTEM_PROMPTS.items()
 }
 
 
