@@ -88,9 +88,9 @@ def build_document_run(root, *, gate='complete_review', metric_value=METRIC_VALU
     run.envelope('transcript', 'complete', 'Timestamped recognition', {
         'segments': [
             {'segment_id': 'ASR-0001', 'start_ms': 0.0, 'end_ms': 1000.5, 'text': '今天天气怎么样',
-             'speaker_id': 'speaker_0'},
+             'speaker_id': '1'},
             {'segment_id': 'ASR-0002', 'start_ms': 1200.0, 'end_ms': 2500.25, 'text': '北京今天晴',
-             'speaker_id': 'speaker_1'},
+             'speaker_id': '2'},
         ]})
     run.envelope('fused-segments', 'complete', 'Attribution and fusion', {
         'source': {'duration_ms': 3000.0, 'sample_rate': 16000, 'audio_sha256': 'a' * 64},
@@ -315,6 +315,39 @@ class ProjectionTests(WorkbenchFixture):
         self.assertEqual(rows['ASR-0001']['region_basis'], 'fused_acoustic_segment')
         self.assertNotEqual(rows['ASR-0001']['segment_id'],
                             self.region('acoustic:SEG-1')['detail']['segment_id'])
+
+    def test_native_speaker_label_maps_to_persisted_cluster_without_span_guessing(self):
+        rows = {row['segment_id']: row for row in self.document['transcript']}
+        self.assertEqual(rows['ASR-0001']['speaker_id'], '1')
+        self.assertEqual(rows['ASR-0001']['speaker_cluster_id'], 'speaker_0')
+        self.assertEqual(rows['ASR-0002']['speaker_id'], '2')
+        self.assertEqual(rows['ASR-0002']['speaker_cluster_id'], 'speaker_1')
+
+        analysis = self.directory / 'analysis' / self.manifest['analysis_id']
+        speakers = json.loads((analysis / 'speaker-assignments.json').read_text(encoding='utf-8'))
+        speakers['data']['speaker_segments'][0]['start_ms'] = None
+        speakers['data']['speaker_segments'][0]['end_ms'] = None
+        write_json(analysis / 'speaker-assignments.json', speakers)
+        without_drawable_span = build_workbench(self.directory)['transcript'][0]
+        self.assertEqual(without_drawable_span['speaker_cluster_id'], 'speaker_0')
+
+    def test_conflicting_native_speaker_mapping_does_not_pick_a_cluster(self):
+        analysis = self.directory / 'analysis' / self.manifest['analysis_id']
+        speakers = json.loads((analysis / 'speaker-assignments.json').read_text(encoding='utf-8'))
+        speakers['data']['speaker_segments'][1]['native_speaker_id'] = '1'
+        write_json(analysis / 'speaker-assignments.json', speakers)
+        rows = {row['segment_id']: row for row in build_workbench(self.directory)['transcript']}
+        self.assertIsNone(rows['ASR-0001']['speaker_cluster_id'])
+        self.assertIsNone(rows['ASR-0002']['speaker_cluster_id'])
+
+    def test_canonical_looking_native_label_is_not_a_mapping(self):
+        analysis = self.directory / 'analysis' / self.manifest['analysis_id']
+        transcript = json.loads((analysis / 'transcript.json').read_text(encoding='utf-8'))
+        transcript['data']['segments'][0]['speaker_id'] = 'speaker_0'
+        write_json(analysis / 'transcript.json', transcript)
+        row = build_workbench(self.directory)['transcript'][0]
+        self.assertEqual(row['speaker_id'], 'speaker_0')
+        self.assertIsNone(row['speaker_cluster_id'])
 
     def test_transcript_without_a_fusion_cross_reference_is_reported_unresolved(self):
         analysis = self.directory / 'analysis' / self.manifest['analysis_id']

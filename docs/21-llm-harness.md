@@ -9,7 +9,8 @@
 ```text
 EventTimeline + Turns + MetricResult（确定性，先算）
   ↓ 每个 Turn 的允许引用范围 = 该 Turn 自己的 events + 它们的 evidence
-Provider.complete(system_prompt, context, dimension, context)
+Provider.complete(system_prompt, user_prompt, dimension, context)
+  ↓ Judge Chat Completions 请求 JSON Object 模式；各维度 prompt 要求统一 JSON 信封
   ↓ 原始 provider 文本（原样保留）
 Harness 校验：锚点只能"选择"不能"编造"、引用必须存在、失败 invocation 不得 observed
   ↓
@@ -21,6 +22,7 @@ JudgeResult 1.0.0（validated）+ Invocation（raw response + provider/model/pro
 - **语义判定需要 criterion 与引用。** `semantic_response`（criterion `CRIT-SEMANTIC-RESPONSE`，PRD-M003）与 `barge_in_compliance`（`CRIT-BARGE-IN-COMPLIANCE`，PRD-M006）必须给出布尔 `semantic_decision`、criterion id/version、`judge_profile` 与至少一个可解析引用。缺引用、非布尔决定、criterion 不一致、invocation 未成功都会把结果降级为 `insufficient_evidence` + `abstention_reason`。
 - **引用范围由 harness 拥有。** 逐 Turn 判定只能引用该 Turn 的 events 与它们的 evidence；run 级判定（`conversation_quality`、`finding_candidate`）可引用同一 Timeline 的任意对象。被选中的 event 会自动把该 event 自身的 evidence 并入 `evidence_refs`，因此"事件证据必须包含在 metric/finding evidence_ids 中"这条不变式由构造保证。跨 Turn 引用被丢弃，不会借用别的 Turn 的证据。
 - **疑似根因永远是假设。** 具名 `suspected_layer` 一律强制 `requires_log_verification=true`，`attribution_confidence` 上限 0.99；没有设备日志时不得升为 verified。
+- **生成端与解析端使用同一信封。** Judge 的 shared prompt 明确要求只返回一个 JSON object，且始终包含非空 `decision`、非空 `reason`、枚举 `status`（`observed` / `low_confidence` / `insufficient_evidence`）和 0–1 的数值 `confidence`；各维度也说明 observed 所需的字段。Judge 请求携带 `response_format={"type":"json_object"}`；`complete_raw` 服务其它输出契约，不被此参数改变。JSON Object 模式只约束 JSON 语法，字段、引用和证据资格仍由严格解析器与 harness 校验；缺少维度必填项的输出在 invocation 层被拒并保留原文，不能在下游被补为有效 Finding。不支持此模式的 provider 明确失败并安全弃权，不补字段、修 JSON 或暗中重试。`json_schema` 待实际模型能力确认后另行评估（[#117](https://github.com/lybym/AIVoiceBench/issues/117)，[阿里云结构化输出文档](https://help.aliyun.com/zh/model-studio/qwen-structured-output)）。
 
 ## 受约束语义证据（PRD-M003 / PRD-M006）
 
@@ -58,7 +60,7 @@ JudgeResult 1.0.0（validated）+ Invocation（raw response + provider/model/pro
 
 ## 仍然存在的限制
 
-- **真实 provider 调用与真实录音验收未完成**：当前证据是 fixture 级（无音频、无网络）。"至少一次授权真实 Recording Analysis Run 执行真实 Judge 路径"由 [#85](https://github.com/lybym/AIVoiceBench/issues/85) 承载。
+- **真实录音验收未完成**：#117 已使用合成文本对配置的真实 `qwen3.8-flash` 做一次最小 Judge 调用，验证 JSON 信封和严格解析；原始响应仅留在本地 Git 外。此调用没有录音、Timeline/Findings 或浏览器复核，不能代替"授权真实 Recording Analysis Run 执行真实 Judge 路径"；该验收仍由 [#85](https://github.com/lybym/AIVoiceBench/issues/85) 承载。
 - `context_understanding` / `instruction_following` 等维度已在 schema 声明，但没有对应的 canonical metric 绑定；它们当前不是 PRD-M003/M006 的输入。
 - context/instruction 类语义 metric（`context_success` / `instruction_success`）仍未产出。
 - Judge/Findings 尚未接入 Web 的 Finding 复核工作台（[#11](https://github.com/lybym/AIVoiceBench/issues/11)）。

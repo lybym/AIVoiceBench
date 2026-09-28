@@ -137,15 +137,39 @@ function wbNumberOrNull(value) {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 /** Role label. `unknown` stays a deliberate state, never tester/device. */
-function wbRoleLabel(role) {
+function wbRoleLabel(role, roleBasis = null) {
     const name = wbString(role);
     if (name === 'tester')
         return '测试者（用户人工确认）';
     if (name === 'device')
         return 'AI 设备（用户人工确认）';
-    if (name === 'unknown')
-        return '角色待确认（用户明确选择未知）';
+    if (name === 'unknown') {
+        return wbString(roleBasis) === 'user_review' ? '人工明确 unknown' : '角色待确认';
+    }
     return 'N/A';
+}
+/** Explain only the backend's persisted transcript-to-region relation. */
+function wbTranscriptRegionReason(row) {
+    switch (row.region_basis) {
+        case 'unresolved': return '未建立转写到声学片段的可导航关联（unresolved）';
+        case 'ambiguous': return '存在多个候选声学片段，链接有冲突（ambiguous）';
+        case 'fused_acoustic_segment_span_unknown': return '已关联声学片段，但缺少可解析区间（span_unknown）';
+        case 'fused_acoustic_segment_container': return '声学区间包含该话语，区间不等值（container）';
+        case 'fused_acoustic_segment_partial_overlap': return '声学区间与话语部分重叠，未完全包含（partial_overlap）';
+        case 'fused_acoustic_segment': return '与声学区间等值';
+        default: return wbValueText(row.region_basis);
+    }
+}
+/** Resolve the human decision from the revision; ASR's `unknown` alone is not a decision. */
+function wbTranscriptRoleLabel(document, row) {
+    const decisions = document.revision && document.revision.decisions
+        ? document.revision.decisions : {};
+    const decision = row.speaker_cluster_id ? decisions[row.speaker_cluster_id] : null;
+    if (decision === 'unknown')
+        return '人工明确 unknown';
+    if (decision === 'tester' || decision === 'device')
+        return wbRoleLabel(decision, 'user_review');
+    return '角色待确认';
 }
 /* ------------------------------------------------------------------ */
 /* Projections                                                         */
@@ -249,6 +273,7 @@ function wbTranscriptRows(document) {
     const segments = document && Array.isArray(document.transcript) ? document.transcript : [];
     return segments.map(segment => ({
         segment_id: wbStringOrNull(segment.segment_id),
+        speaker_cluster_id: wbStringOrNull(segment.speaker_cluster_id),
         region_id: wbStringOrNull(segment.region_id),
         region_ids: Array.isArray(segment.region_ids)
             ? segment.region_ids.map(value => wbString(value)).filter(value => value !== '')
@@ -570,7 +595,7 @@ function wbRegionContent(row) {
     const styleClass = wbRegionStyleClass(row);
     const tags = [];
     if (row.role === 'unknown')
-        tags.push('角色待确认');
+        tags.push(row.role_basis === 'user_review' ? '人工明确 unknown' : '角色待确认');
     if (row.uncertain)
         tags.push('不确定');
     if (row.provisional)
@@ -684,7 +709,7 @@ function wbRenderEvidence(row) {
         ['label', wbValueText(row.label)],
         ['start（后端 start_sec）', wbValueText(row.start) + ' s'],
         ['end（后端 end_sec）', wbValueText(row.end) + ' s'],
-        ['角色', wbRoleLabel(row.role)],
+        ['角色', wbRoleLabel(row.role, row.role_basis)],
         ['角色依据 role_basis', wbValueText(row.role_basis)],
         ['证据类别 evidence_class', wbValueText(row.evidence_class)],
         ['状态 status', wbValueText(row.status)],
@@ -746,14 +771,14 @@ function wbRenderTables(document) {
         wbFlag(row.has_interruption),
         wbFlag(row.has_overlap),
     ]));
-    wbSetPanel('wb-transcript', '转写（时间戳为 ASR 估计）', ['片段', 'start_ms', 'end_ms', '说话人', '角色（后端）', '区间关联', '文本'], wbTranscriptRows(document).map(row => [
+    wbSetPanel('wb-transcript', '转写（时间戳为 ASR 估计）', ['片段', 'start_ms', 'end_ms', '说话人', '角色决定', '区间关联原因', '文本'], wbTranscriptRows(document).map(row => [
         wbButton(wbValueText(row.segment_id), document ? wbTranscriptRegionId(document, row) : null),
         wbValueText(row.start_ms),
         wbValueText(row.end_ms),
         wbValueText(row.speaker_id),
-        wbValueText(row.speaker_role),
-        // Served verbatim: a container region is never shown as an exact match.
-        wbValueText(row.region_basis),
+        (document ? wbTranscriptRoleLabel(document, row) : wbValueText(row.speaker_role))
+            + ' · speaker_role=' + wbValueText(row.speaker_role),
+        wbTranscriptRegionReason(row),
         wbValueText(row.text),
     ]));
 }
@@ -778,7 +803,9 @@ function wbRenderRevision(document) {
     ];
     const decisions = revision.decisions || null;
     const decisionRows = decisions
-        ? Object.keys(decisions).sort().map(key => [wbValueText(key), wbValueText(decisions[key])])
+        ? Object.keys(decisions).sort().map(key => [
+            wbValueText(key), wbRoleLabel(decisions[key], 'user_review') + ' · decision=' + wbValueText(decisions[key]),
+        ])
         : [];
     // The backend publishes the revision history either beside the revision or at the
     // document top level; both are accepted, and neither is reconstructed locally.
