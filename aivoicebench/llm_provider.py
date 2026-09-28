@@ -188,6 +188,9 @@ class OpenAICompatibleProvider:
             value = parsed.get(field)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f'Invalid {field}')
+        if parsed.get('feedback_type') not in (
+                None, 'filler', 'ack', 'thinking_cue', 'non_speech_tone', 'other'):
+            raise ValueError('Invalid feedback type')
         if parsed.get('finding_severity') not in (None, 'info', 'low', 'medium',
                                                    'high', 'critical'):
             raise ValueError('Invalid finding severity')
@@ -228,6 +231,18 @@ class OpenAICompatibleProvider:
             if any(key in selection for key in ('start_ms', 'end_ms')):
                 raise ValueError('Anchor selection must not carry model-authored timing')
         if parsed['status'] == 'observed':
+            if dimension == 'conversation_quality' and parsed.get('score') is None:
+                raise ValueError('Observed conversation quality needs a score')
+            if dimension == 'meaningful_response' and (
+                    len(selections or ()) != 1
+                    or (selections or ())[0].get('role') != 'meaningful_start'):
+                raise ValueError('Observed meaningful response needs one measured anchor')
+            if dimension == 'feedback_detection' and (
+                    len(selections or ()) != 2
+                    or {selection.get('role') for selection in selections}
+                    != {'feedback_start', 'feedback_end'}
+                    or len({selection['anchor_id'] for selection in selections}) != 2):
+                raise ValueError('Observed feedback needs two distinct measured anchors')
             if dimension in ('semantic_response', 'barge_in_compliance') and (
                     type(parsed.get('semantic_decision')) is not bool):
                 raise ValueError('Observed semantic verdict needs a boolean decision')
