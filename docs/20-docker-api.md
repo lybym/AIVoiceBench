@@ -84,6 +84,8 @@ host
 | WebSocket（planned） | `/api/voice-test/sessions/{id}/measurement-audio` | 跨整次 Run 的持续 PCM Measurement Capture |
 | GET（planned） | `/api/voice-test/sessions/{id}/measurement-audio` / metadata | Measurement Audio Artifact 与 contract metadata |
 
+Workbench 的 `transcript[]` 保留 ASR 原生 `speaker_id`，并发布可空 `speaker_cluster_id`：只有保存的 speaker-assignments 将该原生标签唯一关联到规范聚类时才填入；冲突或缺失时为 `null`。浏览器据此查询人工修订的 `decisions`，不靠发言顺序、区间重叠或可绘制 speaker region 推断角色。`region_basis=unresolved` 只表示未建立可导航的转写↔声学片段关联；无 speaker span 的具体原因仍由 alignment 与 `metrics_gap` 给出。
+
 Active Measurement API 在当前实现基线仍为 planned。现有 Free Streaming ASR 音频 WebSocket 不能被误报为跨整次 Run 的 F025 Measurement Audio。
 
 ## Remote Browser Station transport rule
