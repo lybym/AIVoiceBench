@@ -74,7 +74,10 @@ class OpenAICompatibleProvider:
 
         try:
             self._check_key()
-            raw_text = self._call_api(system_prompt, user_prompt)
+            raw_text = self._call_api(
+                system_prompt, user_prompt,
+                response_format={"type": "json_object"},
+            )
             result = self._parse_response(raw_text, dimension, context)
         except Exception as error:
             result = {'decision': 'unknown', 'score': None, 'confidence': 0.0,
@@ -128,7 +131,7 @@ class OpenAICompatibleProvider:
         inv.output_chars = len(json.dumps(result, ensure_ascii=False))
         return result, inv
 
-    def _call_api(self, system_prompt, user_prompt):
+    def _call_api(self, system_prompt, user_prompt, *, response_format=None):
         """Make the actual HTTP call to the OpenAI-compatible API."""
         import requests
 
@@ -145,6 +148,8 @@ class OpenAICompatibleProvider:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
+        if response_format is not None:
+            payload["response_format"] = response_format
 
         resp = requests.post(
             f"{self.base_url}/chat/completions",
@@ -177,8 +182,36 @@ class OpenAICompatibleProvider:
         if parsed['status'] not in ('observed', 'low_confidence', 'insufficient_evidence'):
             raise ValueError('Invalid decision status')
         if parsed.get('score') is not None and (type(parsed['score']) not in (int, float)
-                or not math.isfinite(parsed['score'])):
+                or not math.isfinite(parsed['score']) or not 0 <= parsed['score'] <= 1):
             raise ValueError('Invalid score')
+        for field in ('feedback_type', 'intent_label'):
+            value = parsed.get(field)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f'Invalid {field}')
+        if parsed.get('finding_severity') not in (None, 'info', 'low', 'medium',
+                                                   'high', 'critical'):
+            raise ValueError('Invalid finding severity')
+        if parsed.get('suspected_layer') not in (None, 'vad', 'endpoint', 'asr',
+                                                  'aec', 'network', 'llm', 'prompt',
+                                                  'context', 'memory', 'agent', 'tool',
+                                                  'tts', 'safety', 'persona', 'unknown'):
+            raise ValueError('Invalid suspected layer')
+        attribution_confidence = parsed.get('attribution_confidence')
+        if attribution_confidence is not None and (
+                type(attribution_confidence) not in (int, float)
+                or not math.isfinite(attribution_confidence)
+                or not 0 <= attribution_confidence <= 1):
+            raise ValueError('Invalid attribution confidence')
+        if ('requires_log_verification' in parsed
+                and type(parsed['requires_log_verification']) is not bool):
+            raise ValueError('Invalid log verification flag')
+        for field in ('evidence_refs', 'event_refs'):
+            refs = parsed.get(field)
+            if refs is not None and (not isinstance(refs, list)
+                                     or any(not isinstance(ref, str) or not ref.strip()
+                                            for ref in refs)
+                                     or len(refs) != len(set(refs))):
+                raise ValueError(f'Invalid {field}')
         # The model selects an anchor id from the supplied measured boundaries.
         # Model-authored times cannot become observable audio measurements.
         if any(parsed.get(k) is not None for k in ('meaningful_response_start_ms',
@@ -186,11 +219,31 @@ class OpenAICompatibleProvider:
             raise ValueError('Semantic timing requires verified anchor selection')
         allowed_anchors = {anchor.get('anchor_id') for anchor in context.get('anchors') or ()
                            if isinstance(anchor, dict)}
-        for selection in parsed.get('anchor_refs') or ():
+        selections = parsed.get('anchor_refs')
+        if selections is not None and not isinstance(selections, list):
+            raise ValueError('Invalid anchor selections')
+        for selection in selections or ():
             if not isinstance(selection, dict) or selection.get('anchor_id') not in allowed_anchors:
                 raise ValueError('Anchor selection names an unmeasured boundary')
             if any(key in selection for key in ('start_ms', 'end_ms')):
                 raise ValueError('Anchor selection must not carry model-authored timing')
+        if parsed['status'] == 'observed':
+            if dimension in ('semantic_response', 'barge_in_compliance') and (
+                    type(parsed.get('semantic_decision')) is not bool):
+                raise ValueError('Observed semantic verdict needs a boolean decision')
+            if dimension == 'intent' and not parsed.get('intent_label'):
+                raise ValueError('Observed intent needs an intent label')
+            if dimension == 'feedback_detection' and not parsed.get('feedback_type'):
+                raise ValueError('Observed feedback needs a feedback type')
+            if dimension == 'finding_candidate' and (
+                    parsed.get('finding_severity') is None
+                    or parsed.get('suspected_layer') is None):
+                raise ValueError('Observed finding needs severity and suspected layer')
+            if parsed.get('suspected_layer') is not None:
+                if attribution_confidence is None:
+                    raise ValueError('Observed suspected layer needs attribution confidence')
+                if parsed.get('requires_log_verification') is not True:
+                    raise ValueError('Observed suspected layer needs log verification')
         if parsed['status'] != 'insufficient_evidence':
             allowed_evidence = context.get('evidence_refs', [])
             allowed_events = context.get('event_refs', [])

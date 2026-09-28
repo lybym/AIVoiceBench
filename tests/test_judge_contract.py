@@ -16,9 +16,11 @@ model call or a hardware measurement.
 """
 
 import copy
+import json
 import unittest
 
-from aivoicebench.llm import LLMJudge, MockLLMProvider
+from aivoicebench.llm import LLMJudge, MockLLMProvider, PROMPT_VERSIONS, SYSTEM_PROMPTS
+from aivoicebench.llm_provider import OpenAICompatibleProvider
 from aivoicebench.metrics import compute_timeline_metrics
 from aivoicebench.semantic_evidence import (
     CRITERIA_VERSION, SEMANTIC_CRITERIA, build_judge_profile, judge_profile_id,
@@ -32,6 +34,115 @@ from tests.judge_fixture import (
     CASE_ID, RUN_ID, dialogue_timeline, fused_document, make_event, make_evidence,
     make_timeline, turns_document,
 )
+
+
+class ProviderOutputEnvelopeTests(unittest.TestCase):
+    """The prompt and strict parser agree on the provider's minimum output."""
+
+    def setUp(self):
+        self.provider = OpenAICompatibleProvider(
+            'fixture', 'https://example.invalid', 'fixture', api_key='fixture-only')
+        self.context = {'evidence_refs': ['EVD-1'], 'event_refs': []}
+
+    def test_every_judge_prompt_requests_the_same_json_envelope(self):
+        self.assertEqual(set(SYSTEM_PROMPTS), set(PROMPT_VERSIONS))
+        for dimension, prompt in SYSTEM_PROMPTS.items():
+            with self.subTest(dimension=dimension):
+                self.assertIn('valid JSON object', prompt)
+                for field in ('decision', 'reason', 'status', 'confidence'):
+                    self.assertIn('"' + field + '"', prompt)
+                self.assertIn('insufficient_evidence', prompt)
+                self.assertIn('evidence_refs', prompt)
+
+    def test_observed_dimension_prompts_name_their_extra_contract(self):
+        required = {
+            'meaningful_response': ('meaningful_start', 'anchor_refs'),
+            'feedback_detection': ('feedback_type', 'feedback_start', 'feedback_end'),
+            'intent': ('intent_label',),
+            'conversation_quality': ('score',),
+            'finding_candidate': ('finding_severity', 'suspected_layer',
+                                  'attribution_confidence', 'requires_log_verification'),
+            'semantic_response': ('semantic_decision',),
+            'barge_in_compliance': ('semantic_decision',),
+        }
+        for dimension, fields in required.items():
+            with self.subTest(dimension=dimension):
+                for field in fields:
+                    self.assertIn(field, SYSTEM_PROMPTS[dimension])
+
+    def test_complete_accepts_a_cited_structured_result(self):
+        raw_text = ('{"decision":"semantic_decision","reason":"Supplied reply answers '
+                    'the request","status":"observed","confidence":0.8,'
+                    '"semantic_decision":true,"evidence_refs":["EVD-1"]}')
+        self.provider._call_api = lambda *_args, **_kwargs: raw_text
+        result, invocation = self.provider.complete(
+            SYSTEM_PROMPTS['semantic_response'], '{}', 'semantic_response', self.context)
+        self.assertEqual(invocation.status, 'success')
+        self.assertEqual(invocation.raw_response, raw_text)
+        self.assertIs(result['semantic_decision'], True)
+        self.assertEqual(result['confidence'], 0.8)
+
+    def test_missing_envelope_field_and_non_json_fail_closed_with_raw_retained(self):
+        valid = {'decision': 'semantic_decision', 'reason': 'Cited reply',
+                 'status': 'observed', 'confidence': 0.8,
+                 'semantic_decision': True, 'evidence_refs': ['EVD-1']}
+        samples = [('non_json', 'The reply is relevant.')]
+        samples.extend((f'missing_{field}', json.dumps(
+            {key: value for key, value in valid.items() if key != field}))
+            for field in ('decision', 'reason', 'status', 'confidence'))
+        for name, raw_text in samples:
+            with self.subTest(name=name):
+                self.provider._call_api = lambda *_args, **_kwargs: raw_text
+                result, invocation = self.provider.complete(
+                    SYSTEM_PROMPTS['semantic_response'], '{}', 'semantic_response',
+                    self.context)
+                self.assertEqual(invocation.status, 'failed')
+                self.assertEqual(invocation.failure_code, 'invalid_output')
+                self.assertEqual(invocation.raw_response, raw_text)
+                self.assertEqual(result['status'], 'insufficient_evidence')
+                self.assertEqual(result['decision'], 'unknown')
+
+
+class ObservedDimensionDocumentTests(unittest.TestCase):
+    """A full Judge artifact enforces dimension fields after provider parsing."""
+
+    def setUp(self):
+        self.timeline = dialogue_timeline()
+        self.turns = turns_document()
+        self.fused = fused_document()
+        metrics = compute_timeline_metrics(self.timeline)
+        self.document = LLMJudge(MockLLMProvider()).evaluate(
+            self.fused, self.turns, metrics, self.timeline, run_id=RUN_ID)
+
+    def test_valid_observed_dimensions_pass_document_validation(self):
+        self.assertEqual(judge_document_errors(self.document, self.timeline, self.turns), [])
+        observed = {item['dimension'] for item in self.document['results']
+                    if item['status'] == 'observed'}
+        self.assertTrue({'meaningful_response', 'feedback_detection', 'intent',
+                         'finding_candidate', 'semantic_response'} <= observed)
+
+    def test_missing_observed_fields_invalidate_full_document(self):
+        cases = (
+            ('meaningful_response', 'meaningful_response_start_ms'),
+            ('feedback_detection', 'feedback_type'),
+            ('feedback_detection', 'feedback_start_ms'),
+            ('feedback_detection', 'feedback_end_ms'),
+            ('intent', 'intent_label'),
+            ('finding_candidate', 'finding_severity'),
+            ('finding_candidate', 'suspected_layer'),
+            ('finding_candidate', 'attribution_confidence'),
+            ('finding_candidate', 'requires_log_verification'),
+            ('semantic_response', 'semantic_decision'),
+        )
+        for dimension, field in cases:
+            with self.subTest(dimension=dimension, field=field):
+                document = copy.deepcopy(self.document)
+                result = next(item for item in document['results']
+                              if item['dimension'] == dimension)
+                result[field] = None
+                errors = judge_document_errors(document, self.timeline, self.turns)
+                self.assertTrue(errors, f'{dimension}.{field} unexpectedly accepted')
+                self.assertTrue(any(field in error for error in errors), errors)
 
 
 class FixtureIntegrity(unittest.TestCase):

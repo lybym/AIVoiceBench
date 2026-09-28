@@ -13,7 +13,7 @@ class EvidenceGuards(unittest.TestCase):
                                                  'fixture', api_key='fixture-only')
 
     def test_sdk_failure_is_failed_and_does_not_echo_secrets(self):
-        def fail(*args):
+        def fail(*args, **kwargs):
             raise RuntimeError('secret-canary')
         self.provider._call_api = fail
         result, invocation = self.provider.complete('test', 'test', 'intent', {})

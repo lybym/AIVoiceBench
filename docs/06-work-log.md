@@ -1,5 +1,12 @@
 # Continuous work log
 
+## 2026-09-28 — Issue #117：Judge 结构化输出生成契约（PRD-F010/F011、N001/N003/N004/N005）
+
+- **故障边界。** 授权真实录音的旧 AnalysisRevision 留有非 JSON 与缺少统一信封字段的真实 provider 响应；这些旧结果只证明旧生成端和严格解析端错位，不能证明本修复有效，也不用于 AC5 通过声明。#116 的 interval-local 分支保持独立，本分支从 `main` 创建。
+- **修复。** Judge 的 OpenAI 兼容 Chat Completions 请求显式设置 `response_format={"type":"json_object"}`；独立的 `complete_raw` 语音代理请求保持其自身输出契约。全部七个 Judge 维度的 system prompt 现要求单个 JSON object 和 `decision/reason/status/confidence` 四字段，并按维度要求 observed 判定所需字段；对应 prompt version 已更新。解析器继续严格拒绝缺字段、无效数值、非法引用与模型自报时间，且在维度字段缺失时于 invocation 层标记 `invalid_output`，保留原始响应并安全弃权，不让无效模型字段在下游被补成可接受 Finding，也不隐藏重试。
+- **软件验证。** `py -m pytest tests/test_llm_provider_contract.py tests/test_judge_contract.py tests/test_llm.py tests/test_evidence_guards.py -q`：82 passed；`py -m pytest tests/test_judge_import_stage.py tests/test_judge_pipeline.py tests/test_findings_generation.py -q`：37 passed。本机另一个包含 `tests/test_config_loaders.py` 的组合运行有 61 passed、2 failed，失败是 Python 3.12 缺少 `fastapi`，发生在与本改动无关的 `test_model_settings` 导入；随后在依赖完整的本地容器中复跑 `python -m unittest tests.test_config_loaders -q`：26 tests OK。`git diff --check` 通过。
+- **最小真实 provider 验证。** 使用 Git 外的既有 `providers.yaml` 和环境密钥引用，对配置的 `qwen3.8-flash` 执行一次合成文本 Judge 请求：provider 调用成功、响应为含四字段的 JSON object、现有严格解析得到 `observed`。原始响应与解析结果仅保存于 `C:\CODE\aivoicebench-data\data\validation`，不提交、不发布。现有 Git 外 Compose 已把该目录下的 `config` 只读挂到 `/app/config`、`data` 挂到 `/data`；容器内挂载与配置 dry run 成功。此验证没有使用真实录音，没有重跑 ASR/机器证据，也不构成 #115 AC5 或 `real_recording_verified`；同一授权录音的新 AnalysisRevision 重验依赖 #117/#118 合入与 #116 同步 main 后执行。
+
 ## 2026-09-19 — Issue #85 Step 05（第八轮）：修复 PR #108 第八轮 Review findings（PRD-N001/N002/N004/N007）
 
 - **输入与核实。** 第八个全新独立 `REVIEW_AGENT`（`lybym-codex-reviewer[bot]`，review id `5257577876`）对 `9dfab1d` 给出 `REQUEST_CHANGES`：**1 条 P0**（无 P1）+ 3 条 P2。审查者独立复核并确认此前各轮修复（尺寸对账、跨样本摘要唯一、`exposure_scan.findings`、gate 人工层摘要绑定、`verified_at` 非空）真实生效，且架构与 scope 干净。
