@@ -243,32 +243,39 @@ const roleNames = {
     device: 'AI 设备',
     unknown: '角色待确认',
 };
-/** How a role attribution was produced. Machine proposals are labelled as such. */
-const roleMethods = {
-    explicit_evidence: '用户人工指定',
-    semantic_attribution: '历史机器提议（不用于新分析）',
-    human_attribution: '人工复核',
-    none: '等待人工确认',
-};
-function roleEvidence(attribution) {
-    // A model's own confidence is not a calibrated accuracy; never show it as one.
-    const bits = [roleMethods[attribution.method || ''] || attribution.method || '无依据'];
-    if (attribution.confidence_basis === 'uncalibrated_model_self_report')
-        bits.push('模型自评置信度，非校准正确率');
-    else if (attribution.confidence_basis === 'explicit_user_evidence')
-        bits.push('显式证据');
-    else if (attribution.confidence_basis === 'human_review')
-        bits.push('人工复核');
-    if (attribution.needs_review)
-        bits.push('待复核');
-    return bits.join(' · ');
+function roleDecisionLabel(role) {
+    return role === 'unknown' ? '人工明确 unknown' : (roleNames[role] || role);
+}
+function roleDecisions(data) {
+    const reviewRevision = data.role_review?.revision;
+    if (reviewRevision?.decisions)
+        return reviewRevision.decisions;
+    const workbenchRevision = data.workbench?.revision;
+    if (!reviewRevision || !workbenchRevision ||
+        reviewRevision.revision_index !== workbenchRevision.revision_index ||
+        (reviewRevision.revision_id && workbenchRevision.revision_id &&
+            reviewRevision.revision_id !== workbenchRevision.revision_id))
+        return {};
+    return workbenchRevision.decisions || {};
+}
+function rawAttributionEvidence(attribution) {
+    return '原始 attribution 证据：role=' + esc(attribution.role)
+        + ' · method=' + esc(attribution.method ?? 'N/A')
+        + ' · confidence_basis=' + esc(attribution.confidence_basis ?? 'N/A')
+        + ' · needs_review=' + esc(attribution.needs_review ?? 'N/A')
+        + ' · reason=' + esc(attribution.reason ?? 'N/A');
 }
 function attributionNote(data) {
     const document = data.attribution || {};
     const items = document.attributions || [];
     if (!items.length)
         return '';
-    const rows = items.map(attribution => `<div class="segment"><div><strong>${esc(String(attribution.speaker_id).split(':').pop())}</strong> → ${esc(roleNames[attribution.role] || attribution.role)}<p>${esc(roleEvidence(attribution))}</p><p>${esc(attribution.reason || '')}</p></div></div>`).join('');
+    const decisions = roleDecisions(data);
+    const rows = items.map(attribution => {
+        const hasDecision = Object.prototype.hasOwnProperty.call(decisions, attribution.speaker_id);
+        const decisionLabel = hasDecision ? roleDecisionLabel(decisions[attribution.speaker_id]) : '角色待确认';
+        return `<div class="segment"><div><strong>${esc(String(attribution.speaker_id).split(':').pop())}</strong><p>人工决定：${esc(decisionLabel)}</p><p>${rawAttributionEvidence(attribution)}</p></div></div>`;
+    }).join('');
     const conflicts = (document.conflicts || []).map(conflict => `<p>聚类 ${esc(String(conflict.speaker_id).split(':').pop())} 存在历史角色冲突；新分析只接受用户保存的人工角色。</p>`).join('');
     return '<h3>角色归属</h3><p>请由用户根据音频与转写证据确认每个聚类是测试者、AI 设备或未知。完成并保存前，不生成后续指标和正式测试报告。</p>' + conflicts + rows;
 }
@@ -360,12 +367,12 @@ function roleReviewNote(data) {
         const label = String(cluster.speaker_id).split(':').pop();
         const intervals = (cluster.representative_intervals || []).map(interval => `<button class="text-button" data-time="${Number(interval.start_ms) / 1000}">${(Number(interval.start_ms) / 1000).toFixed(2)}s</button>`).join(' ');
         const snippets = (cluster.transcript_snippets || []).map(snippet => '<p>' + esc(snippet.text) + '</p>').join('');
-        const options = ['tester', 'device', 'unknown'].map(role => `<label><input type="radio" name="role-${esc(cluster.speaker_id)}" value="${role}"${cluster.decision === role ? ' checked' : ''}> ${esc(roleNames[role])}</label>`).join(' ');
+        const options = ['tester', 'device', 'unknown'].map(role => `<label><input type="radio" name="role-${esc(cluster.speaker_id)}" value="${role}"${cluster.decision === role ? ' checked' : ''}> ${esc(role === 'unknown' ? '明确选择 unknown' : roleNames[role])}</label>`).join(' ');
         const pending = (review.awaiting_decision_for || []).includes(cluster.speaker_id) ? ' <small>尚未确认</small>' : '';
         return `<div class="segment" data-cluster="${esc(cluster.speaker_id)}"><div><strong>聚类 ${esc(label)}</strong> <small>原生标签 ${esc(cluster.native_speaker_id ?? '未知')} · ${cluster.segment_count} 段 · ${(Number(cluster.speech_ms) / 1000).toFixed(1)} s</small>${pending}<p>${options}</p>${intervals ? '<p>试听区间：' + intervals + '</p>' : ''}${snippets}</div></div>`;
     }).join('');
     const diff = review.diff || {};
-    const changed = (diff.changed || []).map(change => `${esc(String(change.speaker_id).split(':').pop())}：${esc(roleNames[change.from] || change.from)} → ${esc(roleNames[change.to] || change.to)}`).join('；');
+    const changed = (diff.changed || []).map(change => `${esc(String(change.speaker_id).split(':').pop())}：${esc(roleDecisionLabel(change.from))} → ${esc(roleDecisionLabel(change.to))}`).join('；');
     let head = '<h3>人工确认说话人角色</h3><p>' + esc(statusText) + (review.reason ? ' · ' + esc(review.reason) : '') + '</p>';
     head += '<p>ASR 只给出匿名聚类；测试者、AI 设备或未知必须由人根据音频与转写证据确认。系统不调用 LLM 判断角色，也不按发言顺序推断。每个聚类都必须明确选择，「未知」是有效决定。</p>';
     if (revision)
@@ -480,22 +487,45 @@ function tab(name) {
     const data = current;
     let html = '';
     if (name === 'segments') {
-        const segments = data.transcript?.segments?.length
-            ? data.transcript.segments
+        const transcriptSegments = data.transcript?.segments || [];
+        const hasTranscript = transcriptSegments.length > 0;
+        const hasFusedFallback = !hasTranscript && data.fused_segments.length > 0;
+        const segments = hasTranscript
+            ? transcriptSegments
             : (data.fused_segments.length ? data.fused_segments : data.acoustic_segments);
-        const byNative = new Map((data.speaker_segments || []).map(segment => [String(segment.native_speaker_id), segment]));
-        const roles = new Map(((data.attribution || {}).attributions || []).map(attribution => [attribution.speaker_id, attribution.role]));
-        const clusterOf = (segment) => byNative.get(String(segment.speaker_id));
+        const byNative = new Map();
+        const byCanonical = new Map();
+        for (const speaker of data.speaker_segments || []) {
+            const canonicalId = String(speaker.speaker_id);
+            if (!byCanonical.has(canonicalId))
+                byCanonical.set(canonicalId, speaker);
+            else if (byCanonical.get(canonicalId)?.native_speaker_id !== speaker.native_speaker_id) {
+                byCanonical.set(canonicalId, null);
+            }
+            if (speaker.native_speaker_id == null)
+                continue;
+            const nativeId = String(speaker.native_speaker_id);
+            if (!byNative.has(nativeId))
+                byNative.set(nativeId, speaker);
+            else if (byNative.get(nativeId)?.speaker_id !== speaker.speaker_id)
+                byNative.set(nativeId, null);
+        }
+        const decisions = roleDecisions(data);
         html = '<h2>转写与语音片段</h2><p>转写时间是 ASR 估计，非精确声学边界；说话人聚类与角色判定是两件事。</p>' +
             diarizationNote(data) + roleReviewNote(data) + attributionNote(data) + alignmentNote(data) +
             segments.map(segment => {
-                const cluster = clusterOf(segment);
-                const role = (cluster && roles.get(cluster.speaker_id)) || segment.speaker_role || 'unknown';
+                const speakerId = segment.speaker_id == null ? null : String(segment.speaker_id);
+                const clusterMap = hasFusedFallback ? byCanonical : byNative;
+                const cluster = speakerId == null ? null : clusterMap.get(speakerId);
+                const conflictingClusters = speakerId != null && clusterMap.has(speakerId) && cluster === null;
+                const savedDecision = cluster ? decisions[cluster.speaker_id] : null;
+                const roleLabel = savedDecision ? roleDecisionLabel(savedDecision) : '角色待确认';
                 const clusterInfo = cluster
                     ? '<small>聚类 ' + esc(String(cluster.speaker_id).split(':').pop()) + '（服务原生标签 ' + esc(String(cluster.native_speaker_id)) + '）</small>'
-                    : '';
-                const review = segment.role_attribution?.needs_review ? ' <small>待复核</small>' : '';
-                return `<div class="segment"><button data-time="${Number(segment.start_ms) / 1000}">${(Number(segment.start_ms) / 1000).toFixed(2)} – ${(Number(segment.end_ms) / 1000).toFixed(2)} s</button><div><strong>${esc(roleNames[role] || '角色待确认')}</strong>${review}${clusterInfo}${segment.text_attribution === 'ambiguous_spans_speakers' ? '<small>该句跨越多个说话人，未归属给任一角色</small>' : ''}<p>${esc(segment.text || '暂无转写文本')}</p></div></div>`;
+                    : (conflictingClusters ? '<small>' + (hasFusedFallback
+                        ? '规范聚类对应多个原生标签，无法唯一归属' : '原生标签对应多个聚类，无法唯一归属') + '</small>' : '');
+                const review = !savedDecision && segment.role_attribution?.needs_review ? ' <small>待复核</small>' : '';
+                return `<div class="segment"><button data-time="${Number(segment.start_ms) / 1000}">${(Number(segment.start_ms) / 1000).toFixed(2)} – ${(Number(segment.end_ms) / 1000).toFixed(2)} s</button><div><strong>${esc(roleLabel)}</strong>${review}${clusterInfo}${segment.text_attribution === 'ambiguous_spans_speakers' ? '<small>该句跨越多个说话人，未归属给任一角色</small>' : ''}<p>${esc(segment.text || '暂无转写文本')}</p></div></div>`;
             }).join('');
         if (!segments.length)
             html += '<div class="empty">没有可用的语音片段，请查看报告中的处理状态。</div>';

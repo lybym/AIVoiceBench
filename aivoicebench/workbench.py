@@ -384,6 +384,30 @@ def build_workbench(directory):
 
     diarization_envelope, diarization = load('speaker-assignments')
     diarization_processor = document_processor('speaker-assignments.json')
+    # ASR transcript speaker_id is the provider's native label, while saved human
+    # decisions use the canonical cluster id from speaker-assignments. Publish the
+    # explicit relation even for segments without a drawable speaker interval;
+    # never infer a cluster from time overlap or ordering.
+    cluster_ids_by_native = {}
+    for speaker in diarization.get('speaker_segments') or []:
+        cluster_id = speaker.get('speaker_id')
+        native_id = speaker.get('native_speaker_id')
+        if cluster_id is None:
+            continue
+        if native_id is not None:
+            cluster_ids_by_native.setdefault(str(native_id), set()).add(str(cluster_id))
+
+    def transcript_cluster_id(native_id):
+        if native_id is None:
+            return None
+        label = str(native_id)
+        candidates = cluster_ids_by_native.get(label, set())
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        # A matching string is not proof that an ASR-native label already names a
+        # canonical cluster. Missing or conflicting assignments remain unresolved.
+        return None
+
     for index, speaker in enumerate(diarization.get('speaker_segments') or []):
         span = _span(speaker)
         if span is None:
@@ -694,6 +718,7 @@ def build_workbench(directory):
             'end_ms': _number(segment.get('end_ms')),
             'text': segment.get('text'),
             'speaker_id': segment.get('speaker_id'),
+            'speaker_cluster_id': transcript_cluster_id(segment.get('speaker_id')),
             'speaker_role': segment.get('speaker_role'),
             'timestamp_source': segment.get('timestamp_source'),
         })

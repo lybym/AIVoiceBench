@@ -201,6 +201,71 @@ try {
   if (settled !== '') {
     errors.push('a settled revision must not report an abstention');
   }
+  vm.runInContext(`current = {
+    transcript: { segments: [
+      { speaker_id: 'native-unknown', speaker_role: 'unknown', start_ms: 0, end_ms: 10, text: 'human unknown' },
+      { speaker_id: 'native-pending', speaker_role: 'unknown', start_ms: 10, end_ms: 20, text: 'pending role' },
+    ] }, fused_segments: [], acoustic_segments: [],
+    speaker_segments: [
+      { native_speaker_id: 'native-unknown', speaker_id: 'speaker_0' },
+      { native_speaker_id: 'native-pending', speaker_id: 'speaker_1' },
+    ], attribution: { attributions: [
+      { speaker_id: 'speaker_0', role: 'unknown', method: 'none', needs_review: true,
+        confidence_basis: 'legacy', reason: 'historical attribution' },
+    ] },
+    role_review: { clusters: [], revision: { revision_index: 1, decisions: { speaker_0: 'unknown' } } },
+    workbench: { revision: { revision_index: 1, decisions: { speaker_0: 'device' } } },
+    turns: [], metrics: [], findings: [], judge_results: [], stages: {},
+  }; tab('segments')`, sandbox);
+  const roleHtml = vm.runInContext("$('detail').innerHTML", sandbox);
+  if (!String(roleHtml).includes('人工明确 unknown')) {
+    errors.push('a saved unknown revision decision must appear as human-declared unknown in the main detail');
+  }
+  if (!String(roleHtml).includes('角色待确认')) {
+    errors.push('an unknown role without a saved revision decision must remain awaiting confirmation');
+  }
+  if (!String(roleHtml).includes('人工决定：人工明确 unknown')) {
+    errors.push('attributionNote() must present the saved human decision as authoritative');
+  }
+  for (const rawField of ['原始 attribution 证据：role=unknown', 'method=none', 'needs_review=true', 'historical attribution']) {
+    if (!String(roleHtml).includes(rawField)) errors.push(`attributionNote() dropped original evidence field ${rawField}`);
+  }
+  if (String(roleHtml).includes('等待人工确认')) {
+    errors.push('an old attribution method must not describe the already saved human decision as pending');
+  }
+  vm.runInContext(`current.role_review.revision = { revision_index: 3 };
+    current.workbench.revision = { revision_index: 2, decisions: { speaker_0: 'unknown' } };
+    tab('segments')`, sandbox);
+  if (!String(vm.runInContext("$('detail').innerHTML", sandbox)).includes('角色待确认')) {
+    errors.push('Workbench decisions from a different revision must not be used as a fallback');
+  }
+  vm.runInContext(`current.workbench.revision = { revision_index: 3, decisions: { speaker_0: 'unknown' } };
+    tab('segments')`, sandbox);
+  if (!String(vm.runInContext("$('detail').innerHTML", sandbox)).includes('人工明确 unknown')) {
+    errors.push('Workbench fallback may be used when its revision matches role_review');
+  }
+  vm.runInContext(`current.role_review.revision = {
+      revision_index: 3, decisions: { speaker_0: 'unknown', speaker_1: 'device' } };
+    current.speaker_segments.push({ native_speaker_id: 'native-unknown', speaker_id: 'speaker_1' });
+    tab('segments')`, sandbox);
+  const conflictHtml = String(vm.runInContext("$('detail').innerHTML", sandbox));
+  if (!conflictHtml.includes('<strong>角色待确认</strong><small>原生标签对应多个聚类，无法唯一归属</small>')) {
+    errors.push('a native speaker label shared by different clusters must not inherit either human decision');
+  }
+  vm.runInContext(`current.transcript = { segments: [] };
+    current.fused_segments = [{ speaker_id: 'speaker_0', speaker_role: 'unknown',
+      start_ms: 0, end_ms: 10, text: 'fused-only' }];
+    tab('segments')`, sandbox);
+  const fusedHtml = String(vm.runInContext("$('detail').innerHTML", sandbox));
+  if (!fusedHtml.includes('<strong>人工明确 unknown</strong>') || !fusedHtml.includes('fused-only')) {
+    errors.push('a fused-only segment must use its canonical speaker_id to read the saved decision');
+  }
+  vm.runInContext(`current.fused_segments = [{ speaker_id: 'not-a-cluster', speaker_role: 'tester',
+      start_ms: 0, end_ms: 10, text: 'unmapped fused' }];
+    tab('segments')`, sandbox);
+  if (!String(vm.runInContext("$('detail').innerHTML", sandbox)).includes('<strong>角色待确认</strong>')) {
+    errors.push('a fused segment without a persisted cluster must not inherit its legacy speaker_role');
+  }
 } catch (error) {
   errors.push(`the analysis-view statistics contract is not usable: ${error.message}`);
 }

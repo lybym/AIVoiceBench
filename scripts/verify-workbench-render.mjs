@@ -226,6 +226,16 @@ const REGION_B = {
   detail: { segment_id: 'SEG-2' },
 };
 
+const REGION_B_REVIEWED_UNKNOWN = {
+  ...REGION_B,
+  region_id: 'speaker:speaker_1:0',
+  label: 'speaker_1 · 明确未知',
+  role_basis: 'user_review',
+  uncertain: false,
+  provisional: false,
+  uncertainty: null,
+};
+
 /** A role-confirmed `turn` region: the panel must show these served fields verbatim. */
 const REGION_C = {
   region_id: 'turn:TURN-1',
@@ -365,7 +375,7 @@ const DOCUMENT = {
     role_dependent_available: true,
     view_kind: 'role_confirmed',
   },
-  revision: null,
+  revision: { decisions: { speaker_0: 'unknown' } },
   audio: {
     artifact_id: 'ART-audio',
     kind: 'normalized_audio',
@@ -381,7 +391,7 @@ const DOCUMENT = {
     { track_id: 'metric', label: '指标证据', evidence_class: 'deterministic' },
     { track_id: 'finding', label: 'Findings', evidence_class: 'semantic' },
   ],
-  regions: [REGION_A, REGION_B, REGION_C, REGION_D, REGION_E, REGION_F],
+  regions: [REGION_A, REGION_B, REGION_B_REVIEWED_UNKNOWN, REGION_C, REGION_D, REGION_E, REGION_F],
   metrics: [
     {
       metric_id: 'MET-1', name: 'first_speech_latency_ms', value: 432.75, unit: 'ms',
@@ -428,7 +438,7 @@ const DOCUMENT = {
       segment_id: 'ASR-0001', region_id: 'event:EVT-1', region_ids: ['event:EVT-1'],
       region_basis: 'fused_acoustic_segment',
       start_ms: 1234500.0, end_ms: 1300000.0, text: '合成文本',
-      speaker_id: 'speaker_0', speaker_role: null, timestamp_source: 'asr',
+      speaker_id: 'native-label-A', speaker_cluster_id: 'speaker_0', speaker_role: 'unknown', timestamp_source: 'asr',
     },
     {
       // Deliberately carries an id that *does* equal a served region's
@@ -436,7 +446,7 @@ const DOCUMENT = {
       // detail id must never create a link.
       segment_id: 'SEG-1', region_id: null, region_ids: [], region_basis: 'unresolved',
       start_ms: 2000000.0, end_ms: 2100000.0, text: '无对应区间',
-      speaker_id: 'speaker_1', speaker_role: null, timestamp_source: 'asr',
+      speaker_id: 'native-label-B', speaker_cluster_id: null, speaker_role: 'unknown', timestamp_source: 'asr',
     },
     {
       // The served region *contains* this utterance rather than equalling it (one
@@ -445,7 +455,19 @@ const DOCUMENT = {
       segment_id: 'ASR-0002', region_id: 'event:EVT-2', region_ids: ['event:EVT-2'],
       region_basis: 'fused_acoustic_segment_container', region_span_matches: false,
       start_ms: 30000.0, end_ms: 31000.0, text: '容器区间话语',
-      speaker_id: 'speaker_0', speaker_role: null, timestamp_source: 'asr',
+      speaker_id: 'native-label-A', speaker_cluster_id: 'speaker_0', speaker_role: null, timestamp_source: 'asr',
+    },
+    {
+      segment_id: 'ASR-0004', region_id: null, region_ids: ['event:EVT-1', 'event:EVT-2'],
+      region_basis: 'ambiguous', start_ms: 40000.0, end_ms: 41000.0,
+      text: '候选冲突话语', speaker_id: 'native-label-C', speaker_cluster_id: null,
+      speaker_role: 'unknown', timestamp_source: 'asr',
+    },
+    {
+      segment_id: 'ASR-0005', region_id: null, region_ids: [],
+      region_basis: 'fused_acoustic_segment_span_unknown', start_ms: null, end_ms: null,
+      text: '缺少区间话语', speaker_id: 'native-label-D', speaker_cluster_id: null,
+      speaker_role: 'unknown', timestamp_source: 'asr',
     },
     {
       // ...and here the region merely *overlaps* the utterance: fusion matches the
@@ -910,6 +932,33 @@ if (servedDocumentPath) {
       return 'a transcript row was linked by matching detail.segment_id instead of region_id';
     }
     if (!html.includes('SEG-1')) return 'the unmatched transcript row is missing from the table';
+    return true;
+  });
+
+  check('manual unknown is distinct from pending role review and transcript link gaps explain their cause', () => {
+    const html = confirmed.transcript;
+    if (!html.includes('人工明确 unknown')) return 'the saved unknown decision is not identified as human-declared';
+    if (!html.includes('角色待确认')) return 'an unresolved unknown role is not shown as awaiting a decision';
+    if (!html.includes('未建立转写到声学片段的可导航关联（unresolved）')) return 'an unresolved transcript link lacks its precise reason';
+    if (!html.includes('存在多个候选声学片段，链接有冲突（ambiguous）')) return 'a conflicting transcript link lacks its reason';
+    if (!html.includes('已关联声学片段，但缺少可解析区间（span_unknown）')) return 'a span with unknown coordinates lacks its reason';
+    const rows = inContext('WB.transcriptRows(__doc)');
+    const human = rows.find(row => row.segment_id === 'ASR-0001');
+    const pending = rows.find(row => row.segment_id === 'SEG-1');
+    if (!human || human.speaker_cluster_id !== 'speaker_0') return 'the canonical cluster id was not projected from the backend';
+    if (!pending || pending.speaker_cluster_id !== null) return 'a missing canonical cluster id must remain null';
+    if (!html.includes('native-label-A')) return 'the original ASR speaker label was not retained';
+    return true;
+  });
+
+  check('unknown speaker regions distinguish human decisions by label and presentation style', () => {
+    const undecided = confirmed.regions.find(region => region.id === 'speaker:speaker_0:0');
+    const reviewed = confirmed.regions.find(region => region.id === 'speaker:speaker_1:0');
+    if (!undecided || !reviewed) return 'the synthetic unknown speaker regions were not rendered';
+    if (!undecided.content.includes('角色待确认')) return 'an undecided unknown region lacks the pending label';
+    if (undecided.color !== 'rgba(120, 131, 124, 0.16)') return 'an undecided unknown region lacks unknown styling';
+    if (!reviewed.content.includes('人工明确 unknown')) return 'a user-reviewed unknown region lacks the human decision label';
+    if (reviewed.color !== 'rgba(120, 131, 124, 0.16)') return 'a reviewed unknown region must keep the unknown color';
     return true;
   });
 
