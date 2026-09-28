@@ -1868,3 +1868,10 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **持久化与浏览器边界。** 曾在 Git 外隔离副本以保存的人工决定建立新 AnalysisRevision，未调用 Judge。Docker 浏览器能从 Event、Turn 导航至音频；当时缺少可验 Finding，因此不能据此宣称 AC5 完成。
 - **独立问题。** 旧 Judge 修订的输出不符合严格 JSON 信封，跟踪于 [#117](https://github.com/lybym/AIVoiceBench/issues/117)。人工 unknown 的浏览器状态呈现跟踪于 [#118](https://github.com/lybym/AIVoiceBench/issues/118)，区域标签字面显示 HTML 跟踪于 [#119](https://github.com/lybym/AIVoiceBench/issues/119)。旧 Judge 产物不得证明新代码有效。
 - **验证与状态。** 合成的区间资格、Turn/Event 和指标契约回归，以及 opt-in 同样本只读回放通过；此前独立 reviewer 无新增 P0/P1。完整的 Timeline → Metrics → Judge → Findings → Browser 验收在 #117/#118 合并后重新执行；在获得新版本证据前，AC3/AC5 和 `real_recording_verified` 不声明通过，#115/#85 保持开放。
+
+## 2026-09-29 — PR #116 合入 #117/#118 后同一授权样本复验
+
+- **版本与证据。** 将已合入 main 的 #117 Judge JSON 输出契约及 #118 人工 unknown 界面语义同步到 PR #116 分支。使用同一授权录音与已保存的人工角色决定建立新的 AnalysisRevision；录音及原有机器证据的哈希逐项保持一致，未重跑 ASR 或说话人聚类。样本标识、精确派生数量、provider 原始响应和完整核验记录留在 Git 外。
+- **生产链结果。** 新 revision 完成 Timeline → Metrics → Judge → Findings。Timeline 为 `partial`，已确认角色区间产生 Event 与观测 MetricResult，未确认区间保留 gap。Judge 同时有合格观测和安全弃权；仍有部分输出被严格契约拒绝，原始响应继续保留供私下排查，未放宽解析器。Findings 阶段仅有低置信度候选，因声学边界锚点不足而未发布 Finding；这符合现有 fail-closed 门槛，不能人为补造结论。
+- **浏览器复核。** Evidence Workbench 将人工明确 unknown 显示为已保存的人工决定；观测 Metric、Event、Turn 均能定位到工作台音频波形的对应时间。该样本没有合格 Finding，因此 Finding → Metric/Event/Turn/Evidence → audio 的整条路径无法在该样本上验收。
+- **状态。** 当前 PR 的软件检查与 opt-in 同样本只读回放通过；AC3 的角色状态和区间指标行为已获真实样本支持，但部分缺口文案场景仍主要由自动化用例覆盖。AC5 仍待真实合格 Finding 验证，故不申请 PR #116 正式复审、不合并 PR #116、不关闭 #115；#85 继续开放。#117 的剩余严格输出拒绝问题应在独立范围跟踪，不并入 PR #116。
