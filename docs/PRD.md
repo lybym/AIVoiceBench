@@ -1,8 +1,8 @@
 ---
 prd_id: AIVB-PRD
-prd_version: 1.5.14
+prd_version: 1.5.15
 status: modularized_for_owner_review
-updated: 2026-09-20
+updated: 2026-09-26
 implementation_baseline: v0.4.0@9632844da6ddcef757fd7df20a6bb12e46853cdd
 main_baseline: 75ad82360a46bc90f7ba8156b095bc59ca712001
 ---
@@ -56,7 +56,7 @@ Online Event Producer                      Offline Event Producer
 3. Active 正式声学时间以 **Browser Station 现场产生的** `sample_index / sample_rate` 的 `audio_relative_ms` 为准。播放 callback、wall/monotonic clock、服务器接收时间和 provider timestamp 只可作控制、诊断或对齐先验。
 4. 外部 ASR 不等于设备内部 ASR；混音不伪装成独立声道；无法可靠归属或识别边界时输出 unknown、needs_review、insufficient_evidence 或 invalid。
 5. 原件、机器输出和人工修订分层保存；不以人工更正覆盖原始 Artifact。长期凭据只由后端持有。
-6. Recording Analysis 的 tester/device 角色只由用户人工确认；LLM 不参与角色归因。未完成角色确认时，role-dependent Turns、Timeline、Metrics 与正式测试报告保持 `awaiting_role_review` / `insufficient_evidence`，不得使用机器提议继续生成结论。
+6. Recording Analysis 的 tester/device 角色只由用户人工确认；LLM 不参与角色归因。未完成角色确认时，role-dependent Turns、Timeline、Metrics 与正式测试报告保持 `awaiting_role_review` / `insufficient_evidence`，不得使用机器提议继续生成结论。角色确认完成后，角色资格**按区间判定**：已确认 tester/device 的区间必须产生其事件与合格指标，人工判定 `unknown`、尚无决定、聚类冲突或无可归属 speaker span 的区间只保留显式 gap 与分母，不得因存在任一未确认区间而清空整段录音，也不得为补齐结果从邻接区间借角色或把未归属空间当作已观察窗口。
 
 ### 交付与部署边界
 

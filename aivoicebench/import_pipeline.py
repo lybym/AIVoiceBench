@@ -178,15 +178,21 @@ def _asr_invocation(run):
     return info
 
 
-def _attribute(run, diarization_doc, parent, explicit_mapping=None):
+def _attribute(run, diarization_doc, parent, explicit_mapping=None, human_role_review=False):
     """Map speaker_id to tester/device/unknown using evidence.
 
     Only explicit user/human evidence may assign tester/device. Without a saved
     mapping, all speakers remain unknown and role-dependent stages abstain.
+
+    `human_role_review` marks a mapping that came from a saved manual revision: a
+    cluster that revision decided to leave `unknown` is an answered decision, and the
+    attribution provenance has to say so, because the EventTimeline gap and
+    `metrics_gap` codes both read exactly that difference (Issue #115).
     """
     from .diarization import attribute_speakers
     attr_doc = attribute_speakers(
-        diarization_doc or {'speaker_segments': []}, explicit_mapping=explicit_mapping)
+        diarization_doc or {'speaker_segments': []}, explicit_mapping=explicit_mapping,
+        human_role_review=human_role_review)
     status = attr_doc['status']
     reason = attr_doc.get('reason') or attr_doc.get('notes') or 'Source attribution'
     output = run.envelope('attribution', status, reason,
@@ -790,22 +796,28 @@ def _run_evidence_chain(run, normalized, asr_available, providers=None):
 
 def _run_role_dependent_chain(run, acoustic_result, transcript_doc, diarization_result, *,
                               acoustic_art_id=None, diar_art_id=None, asr_art_id=None,
-                              norm_art_id=None, explicit_mapping=None, providers=None):
+                              norm_art_id=None, explicit_mapping=None, providers=None,
+                              human_role_review=False):
     """Run attribution → fusion → turns → timeline → Judge → metrics → findings.
 
     Split out of `_run_evidence_chain` so a saved human role mapping can rerun
     exactly this suffix in a new AnalysisRevision without recomputing recognition or
     clustering. Role assignment is user-owned: an unknown cluster stays unknown and
-    the role-dependent stages abstain rather than guessing.
+    no role-dependent event is produced for it — for its own intervals only, never at
+    the cost of the intervals a role does cover (Issue #115).
 
     `providers.judge` is the configured semantic Judge. It is passed through so a
     role revision re-runs the same semantic stage, and so a revision cannot
     silently inherit a different semantic configuration.
+
+    `human_role_review` states that `explicit_mapping` is a saved manual revision
+    rather than an ad-hoc fixture or case mapping, so a cluster that revision left
+    `unknown` is published as an answered decision.
     """
     attr_parents = [diar_art_id] if diar_art_id else [acoustic_art_id or norm_art_id]
     attribution_result = run.execute('attribution', attr_parents,
         lambda: _attribute(run, diarization_result, diar_art_id or (acoustic_art_id or norm_art_id),
-                           explicit_mapping))
+                           explicit_mapping, human_role_review=human_role_review))
 
     attr_art_id = None
     if run.manifest['stages']['attribution']['output_artifact_ids']:
@@ -1234,7 +1246,8 @@ def apply_role_mapping(directory, decisions, reviewer, *, reason='', model_snaps
         _run_role_dependent_chain(run, acoustic_doc, transcript_envelope.get('data'), diarization_doc,
                                   acoustic_art_id=acoustic_art_id, diar_art_id=diar_art_id,
                                   asr_art_id=asr_art_id, norm_art_id=revision_ref,
-                                  explicit_mapping=resolved, providers=providers)
+                                  explicit_mapping=resolved, providers=providers,
+                                  human_role_review=True)
         _resolve_unrun_stages(run, True)
         _retain_failures(run)
         run.execute('report', [a['artifact_id'] for a in run.manifest['artifacts']],

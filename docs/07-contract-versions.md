@@ -420,3 +420,79 @@ No stored document changes shape, so **no migration is required**.
      conflicting clusters, split-edge confidence, evidence coverage, run identity and
      reproducibility of the association and the timeline.
 
+## EventTimeline gap geometry, human `unknown` provenance and `metrics_gap` causes (Issue #115)
+
+A Run whose review was `complete_review` — every cluster answered, one of them
+deliberately `unknown` — still published an empty EventTimeline and zero observed
+metrics, because one global guard turned "some segment is unknown" into "measure
+nothing anywhere". The Issue authorizes narrowing the *qualification*, not weakening
+the evidence rules, so these decisions are recorded:
+
+1. **Role evidence is qualified per interval.** `detect_events` emits role-dependent
+   events for every segment that carries a confirmed tester/device role and skips the
+   rest, instead of returning an empty event set as soon as one unresolved segment
+   exists. A Run in which **no** segment carries a confirmed role still abstains as a
+   whole (`insufficient_evidence`), and its reason now states the cause and the counts
+   rather than "Speaker attribution is unresolved" alone.
+    - Migration: none. A fully attributed recording and a fully unattributed recording
+      produce exactly the events and statuses they produced before; only a mixed
+      recording gains events for the intervals its evidence already supported. No
+      timing, role or event is invented, and consumers that refuse to act on
+      `partial`/`insufficient_evidence` are unaffected.
+2. **A non-`complete` timeline states the intervals it withheld.** When part of the
+   recording is attributed, `generate_timeline` publishes one gap per contiguous
+   same-cause interval and names the evidence that could close it
+   (`new_human_role_decision`, `speaker_diarization_or_human_review`,
+   `unambiguous_speaker_alignment`, `overlapping_speaker_span`). When nothing is
+   attributed, the single whole-recording gap carrying the stage reason is kept, so a
+   total abstention stays one readable statement.
+    - Migration: none. The gap item shape (`reason`, `required_evidence`, `start_ms`,
+      `end_ms`), the `uniqueItems` rule and the schema rule that a non-`complete`
+      timeline carries at least one gap are unchanged; only the geometry becomes
+      interval-local. No backend or frontend consumer branches on a gap count or treats
+      `gaps[0]` as the whole recording (`metrics._boundary_gap_reason` reads the first
+      non-empty reason only, and timeline gaps are not projected as workbench regions).
+    - `silence`/`timeout` are emitted only when both flanking intervals carry a
+      confirmed role: the space around an unattributed segment is not an observed
+      no-speech window and must not become the PRD-F008 timeout observation window.
+3. **A human `unknown` decision is stored evidence.** A cluster that a saved manual
+   revision decided `unknown` keeps `speaker_role: unknown` and
+   `role_attribution_confidence: null`, and now also carries
+   `role_attribution` with `method: human_attribution`, `basis: human_review`,
+   `needs_review: false` and `reported_confidence: null`. A cluster with no saved
+   decision keeps `role_attribution: null`. This is the segment-level counterpart of
+   the SpeakerRoleReview contract that already separates `unknown_clusters` from
+   `awaiting_decision_for`.
+    - Migration: none, and no schema version changes: `role_attribution` is an existing
+      optional field whose enum already allows `human_attribution`/`human_review`.
+      Persisted FusedSegments documents of earlier revisions keep `null`, which reads
+      honestly as "no decision recorded here"; rebuilding a revision republishes the
+      provenance from its saved human mapping.
+    - The decision is provenance only: it never turns an `unknown` cluster into a role,
+      never publishes a role confidence, and produces no event or metric.
+4. **`metrics_gap` names the real cause.** `roles_human_declared_unknown` counts the
+   segments whose cluster a saved review decided `unknown`;
+   `roles_awaiting_human_decision` counts segments of clusters with no saved decision;
+   `roles_not_confirmed` counts every remaining role-unresolved segment (no
+   overlapping speaker span, conflicting clusters or a decision still outstanding).
+   Codes are per cause, so one segment may appear under more than one of them;
+   `segments_without_speaker_span` and `ambiguous_speaker_overlap` are unchanged.
+    - Migration: none. `roles_not_confirmed` keeps its meaning and its count whenever
+      no review has been saved, so a consumer that watches only that code keeps
+      working; a Run whose review answered `unknown` moves those segments to the new
+      code instead of presenting a closed gate as an open one. Renderers (API
+      `metrics_gap`, the report's 指标可用性 table, the Web metrics tab) treat `code` as
+      opaque text and branch on none of them.
+    - Positive/negative coverage: [test_local_evidence_qualification.py](../tests/test_local_evidence_qualification.py)
+      covers confirmed and declared-unknown intervals coexisting, an all-undecided
+      mapping, an all-declared-unknown mapping, a missing speaker span, a cluster
+      conflict, per-interval gap geometry with its required evidence, the refusal to
+      claim silence/timeout beside an unattributed segment, the provenance of both
+      decision states, schema validity with no schema change, and that re-detection
+      neither mutates nor re-derives the machine evidence it reads.
+      [test_turns_events_attribution.py](../tests/test_turns_events_attribution.py)
+      replaces the former all-or-nothing assertion with the interval statement.
+      [test_real_run_downstream.py](../tests/test_real_run_downstream.py) replays the
+      operator's authorized private Run read-only — no provider call and no rewrite of
+      the original Run — and skips when that data is absent.
+

@@ -239,13 +239,16 @@ class MissingAndAmbiguousEvidenceTests(unittest.TestCase):
         self.assertEqual(covered['speaker_role'], 'tester')
         self.assertEqual(fused['status'], 'partial')
 
-    def test_timeline_admits_it_does_not_cover_the_unmatched_part(self):
-        """A partially attributed recording must not yield a `complete` timeline.
+    def test_timeline_locates_the_uncovered_interval_instead_of_abstaining_globally(self):
+        """A partially attributed recording keeps its events and names what it withheld.
 
-        Event detection is deliberately all-or-nothing: one segment without a
-        confirmed role makes the whole automatic event set abstain rather than
-        produce events for a subset of the recording. The timeline therefore stays
-        explicit and carries the reason, instead of looking like a full observation.
+        Issue #24 fixed the opposite error — a partial event set presented as
+        `complete` — and made event detection deliberately all-or-nothing: one segment
+        without a confirmed role emptied the whole event set. Issue #115 replaced that
+        guard with interval-local qualification, so the interval that does carry a
+        confirmed role keeps its canonical events, the unmatched interval is published
+        as its own auditable gap, and `complete` is still refused while any segment
+        carries no confirmed role.
         """
         _, turns, events, _, timeline = build(
             [('speaker_0', 500, 1000, 0.9)],
@@ -255,12 +258,12 @@ class MissingAndAmbiguousEvidenceTests(unittest.TestCase):
 
         self.assertEqual(turns['status'], 'partial')
         self.assertTrue(turns['turns'])
-        self.assertEqual(events, [])
+        self.assertEqual({(event['type'], event['start_ms']) for event in events},
+                         {('tester_speech_start', 500), ('tester_speech_end', 1000)})
         self.assertEqual(timeline['status'], 'partial')
-        self.assertEqual(timeline['events'], [])
-        self.assertTrue(timeline['gaps'])
-        self.assertEqual(timeline['gaps'][0]['required_evidence'],
-                         'speaker_diarization_or_human_review')
+        self.assertEqual([(gap['start_ms'], gap['end_ms']) for gap in timeline['gaps']],
+                         [(6000.0, 6500.0)])
+        self.assertEqual(timeline['gaps'][0]['required_evidence'], 'overlapping_speaker_span')
         self.assertEqual(timeline_errors(timeline), [])
 
     def test_partial_timeline_keeps_its_gap_when_events_exist(self):
