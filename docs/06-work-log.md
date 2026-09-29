@@ -1882,3 +1882,11 @@ Bounded claim: "speaker clustering available, and roles may be proposed from evi
 - **生产链结果。** 新 revision 完成 Timeline → Metrics → Judge → Findings。Timeline 为 `partial`，已确认角色区间产生 Event 与观测 MetricResult，未确认区间保留 gap。Judge 同时有合格观测和安全弃权；仍有部分输出被严格契约拒绝，原始响应继续保留供私下排查，未放宽解析器。Findings 阶段仅有低置信度候选，因声学边界锚点不足而未发布 Finding；这符合现有 fail-closed 门槛，不能人为补造结论。
 - **浏览器复核。** Evidence Workbench 将人工明确 unknown 显示为已保存的人工决定；观测 Metric、Event、Turn 均能定位到工作台音频波形的对应时间。该样本没有合格 Finding，因此 Finding → Metric/Event/Turn/Evidence → audio 的整条路径无法在该样本上验收。
 - **状态。** 当前 PR 的软件检查与 opt-in 同样本只读回放通过；AC3 的角色状态和区间指标行为已获真实样本支持，但部分缺口文案场景仍主要由自动化用例覆盖。AC5 仍待真实合格 Finding 验证，故不申请 PR #116 正式复审、不合并 PR #116、不关闭 #115；#85 继续开放。#117 的剩余严格输出拒绝问题应在独立范围跟踪，不并入 PR #116。
+
+## 2026-09-29 — Issue #115 最终验收补记：同一授权样本 clean rerun 产出可发布 Finding（PR #116）
+
+- **范围（仅执行历史补记）。** 上一条目记录的“Findings 无可发布 Finding、AC5 待验证”状态已被取代：provider 恢复后，在本 PR HEAD 上对同一授权真实录音完成了最终 downstream clean rerun 并通过验收。本条目无产品行为、schema 或验收门槛改动；关联 PRD-F005–F009、F012–F014、PRD-N001/N002/N006 与 Issue #115。
+- **重跑边界。** 使用已保存的人工角色决定创建新的 AnalysisRevision；原始录音、ASR、acoustic 与 speaker/clustering 等机器证据按源 revision 恢复并逐项核验一致，未重新计算、未覆盖、未重跑 ASR。Run 标识、revision 标识、录音哈希全值、转写内容、provider 原始响应与完整核验记录仅存于 Git 外的私有验收记录。
+- **生产链结果。** Timeline → Metrics → Judge → Findings 完成：已确认 tester/device 区间产生 Event 与 eligible 观测 Metric；human-declared unknown、no-speaker-span 等区间继续保留按区间归因的 gap 与弃权；Timeline 保持 `partial`。strict Judge structured-output contract 在真实 provider 上验证：run 级两个维度（conversation_quality、finding_candidate）均收到真实 provider 响应，合法 observed Judge 结果与显式弃权共存；malformed / out-of-scope 模型输出继续 fail-closed，原始响应留存供私下排查，解析器未放宽。本轮实际产生一条可发布 Finding，其 Metric/Event/Turn/Evidence 引用均在 Timeline 内可解析，且不跨 unknown/gap 区间。
+- **浏览器复核。** 人工明确 unknown 正确显示为已保存的人工决定；Metric → audio、Event → audio、Turn → audio 与 Finding → Evidence/audio 的证据导航全部在该 HEAD 实测通过，补齐上一条目“该样本无合格 Finding、Finding 路径无法验收”的缺口。
+- **验收与边界。** #115 AC1–AC5 已在该样本上完成验收；#117 的输出契约缺陷在该样本上确认 resolved（#117 已关闭）。#85 仍是独立的 M1 整体真实录音验收 gate，本条目不声明其完成，#85 保持 open；PR #116 不自行合并，#115 待 merge 后关闭。
