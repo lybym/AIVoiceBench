@@ -5,7 +5,7 @@
 - **真实重验反馈。** #117 首批 JSON Object 修复合入后，同一授权录音的新 AnalysisRevision 已产生合格 Judge 观测与安全弃权；仍有一部分合法 JSON 因锚点引用形状或 observed 维度字段缺失被严格解析器拒绝。完整样本标识、派生数量和原始响应仅保存在 Git 外，未并入 PR #116。
 - **实现。** 阿里云官方文档已列明 Qwen3.8-Flash 系列支持 JSON Schema 模式。对已核验的百炼 OpenAI 兼容 endpoint 与该模型系列，Judge 请求改用按维度的 strict `json_schema`：统一信封四字段必填、禁止未定义字段，锚点维度仅允许 `role/anchor_id` 对象数组，其他维度不输出 `anchor_refs`；intent、quality、feedback、Finding 与语义维度分别声明自身字段。其他兼容模型继续使用 JSON Object。prompt 同步明确对象形状与 observed 必填条件，并递增版本。解析器进一步拒绝非锚点维度提交的任何 `anchor_refs`，防止 JSON Object 路径用时间锚点替代语义证据；其余严格校验、单次调用、原始响应留存和失败后安全弃权保持原契约。schema 只使用官方文档明确的基本类型和字段结构，非空与数值范围仍由解析器校验。
 - **软件验证。** 合成 provider 到 Judge 文档路径覆盖合格锚点选择、缺字段与模型自报时间的拒绝和原始响应留存；mock HTTP 请求体覆盖每个维度的 schema 及其他模型的 JSON Object 路径。相关定向测试通过，完整结果以 CI 为准。
-- **真实 provider 边界。** 当前本机自动审批因执行额度限制拒绝 Docker 检查，未再发起新 schema 模式的真实 provider 请求；其服务端接受情况仍待授权执行通道恢复后验证。官方文档建议结构化输出请求不限制 `max_tokens` 以避免截断；当前配置仍保留既有 token 上限，待真实验证观察是否有截断证据。该限制不改变 #115 AC5 的待验状态，也不放宽 Finding 门槛。
+- **最小真实 provider 验证。** 本机执行通道恢复后，使用 Git 外配置对当前百炼 Qwen 模型分别发送含合成测量锚点和不含锚点的两种 Judge 请求。严格 `json_schema` 均获服务端接受；返回单一 JSON object、四字段信封齐全，现有严格解析接受，invocation provenance 完整。原始响应与逐次诊断仅在 Git 外，不提交样本内容或请求细节。该最小合成验证不替代同一授权录音的 Findings/浏览器 AC5 验收。官方文档建议结构化输出请求不限制 `max_tokens` 以避免截断；当前配置保留既有 token 上限，本次最小验证未见截断。
 
 ## 2026-09-28 — Issue #118：人工 unknown 的浏览器状态呈现（PRD-F006/F012–F014、N001/N002/N006）
 
