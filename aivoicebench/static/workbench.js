@@ -591,6 +591,15 @@ function wbRegionColor(row) {
         return WB_PROVISIONAL_REGION_COLOR;
     return wbRegionColorForTrack(wbString(row.track_id));
 }
+/**
+ * One Region's label element (PRD-F014).
+ *
+ * The vendored Regions plugin (`regions.min.js` 7.12.12) assigns a *string*
+ * `content` to the content element's `textContent`, so an HTML string is shown
+ * literally — Issue #119 rendered `<span class="wb-region-tag …">` on the waveform.
+ * A DOM element is used as-is instead, and the label is written as text: served
+ * evidence (including any `<`, `>`, `&` it contains) can never become live HTML.
+ */
 function wbRegionContent(row) {
     const styleClass = wbRegionStyleClass(row);
     const tags = [];
@@ -601,9 +610,14 @@ function wbRegionContent(row) {
     if (row.provisional)
         tags.push('provisional');
     const label = wbTruncate(wbString(row.label) || wbString(row.kind) || row.region_id, 32);
-    return '<span class="wb-region-tag wb-region-tag-' + styleClass + '">'
-        + wbEsc(label) + (tags.length ? ' · ' + wbEsc(tags.join(' / ')) : '')
-        + '</span>';
+    const node = document.createElement('span');
+    node.className = 'wb-region-tag wb-region-tag-' + styleClass;
+    // A string content would be wrapped by the plugin in a padded inline-block `<div>`;
+    // an element is appended as-is, so the same spacing is kept here or it is lost.
+    node.style.padding = row.start === row.end ? '0.2em 0.2em' : '0.2em 0.4em';
+    node.style.display = 'inline-block';
+    node.textContent = label + (tags.length ? ' · ' + tags.join(' / ') : '');
+    return node;
 }
 function wbRenderTracks(document) {
     const node = wbNode('wb-tracks');

@@ -272,6 +272,37 @@ class WorkbenchSameOriginTests(unittest.TestCase):
         self.assertIn('/api/runs/', script, 're-reading evidence must go through the backend API')
 
 
+class WorkbenchRegionLabelTests(unittest.TestCase):
+    """Issue #119: a Region label is DOM text, never HTML handed to the vendor plugin.
+
+    The vendored Regions plugin (`regions.min.js` 7.12.12) assigns a *string*
+    `content` to the content element's `textContent`, so an HTML string is displayed
+    literally — a real Run's waveform showed `<span class="wb-region-tag ...">`
+    instead of the label. The render gate proves the runtime contract (the plugin
+    receives a DOM node whose text is the served label, and a label that looks like
+    markup stays inert). This class pins the shipped artifact, because the Docker
+    image serves these bytes and a revert must not reach it unnoticed.
+    """
+
+    def test_the_compiled_renderer_builds_the_region_label_as_a_dom_node(self):
+        script = (STATIC_DIR / 'workbench.js').read_text(encoding='utf-8')
+        self.assertIn('function wbRegionContent(', script)
+        start = script.index('function wbRegionContent(')
+        # tsc emits top-level functions at column 0, so the next one bounds the body.
+        end = script.index('\nfunction ', start + 1)
+        body = script[start:end]
+        self.assertIn("createElement('span')", body,
+                      'the renderer must build the Region label element itself')
+        self.assertIn('textContent', body,
+                      'the served label must be written as text, never as markup')
+        self.assertNotIn('innerHTML', body,
+                         'the Region label must never be assembled as HTML')
+        self.assertNotIn("'<span class=\"wb-region-tag", body,
+                         'region-label HTML must not be handed to the vendored plugin')
+        self.assertIn("'wb-region-tag wb-region-tag-'", body,
+                      'the label must keep the existing class names for its styling')
+
+
 class WorkbenchDeliveryTests(unittest.TestCase):
     """The served bytes and the projection gate, against the real FastAPI app."""
 
@@ -315,7 +346,11 @@ class WorkbenchDeliveryTests(unittest.TestCase):
                        'exactly one Region per served region',
                        'seeks to its own persisted start_sec',
                        'does not move the player',
-                       'provisional mount creates no region'):
+                       'provisional mount creates no region',
+                       # Issue #119: the Region label contract.
+                       'Region content is a DOM node',
+                       'markup stays inert text',
+                       'clicking a Region still seeks'):
             self.assertTrue(any(wanted in name for name in names),
                             f'the render gate must check {wanted!r}: {names}')
 
@@ -366,6 +401,8 @@ class ServedProjectionRenderTests(unittest.TestCase):
         names = [str(entry.get('name')) for entry in result.get('checks') or []]
         self.assertTrue(any('served start_sec/end_sec' in name for name in names), names)
         self.assertTrue(any('navigable exactly when the backend published' in name for name in names), names)
+        # Issue #119: the content contract must hold on a real projection too.
+        self.assertTrue(any('DOM content node' in name for name in names), names)
 
     def test_the_projection_links_transcript_rows_through_the_fusion_cross_reference(self):
         rows = {row['segment_id']: row for row in self.document['transcript']}
