@@ -103,10 +103,25 @@ function buildSandbox() {
     handlers: {},
     records: [],
     addRegion(options) {
+      // Model the vendored `setContent()` contract exactly (regions.min.js 7.12.12):
+      // a *string* is assigned to the content element's `textContent`, so any markup
+      // in it stays literal text and becomes visible in the UI; a DOM element is used
+      // as the content element itself. Issue #119 was the renderer handing over an
+      // HTML string, which is why `<span class="wb-region-tag ...">` appeared on the
+      // waveform for a real Run.
+      const content = options.content === null || options.content === undefined ? '' : options.content;
+      const isString = typeof content === 'string';
+      const contentElement = isString ? makeElement('region-content-text') : content;
+      if (isString) contentElement.textContent = content;
       seen.regions.push({
         id: options.id, start: options.start, end: options.end,
         drag: options.drag, resize: options.resize, color: options.color,
-        content: String(options.content || ''),
+        // The text the real plugin would put on the page, for either branch.
+        content: typeof contentElement.textContent === 'string' ? contentElement.textContent : '',
+        contentIsString: isString,
+        contentIsElement: !isString && !!contentElement && typeof contentElement === 'object',
+        contentClassName: contentElement && typeof contentElement.className === 'string'
+          ? contentElement.className : '',
       });
       const handle = { id: options.id, start: options.start, end: options.end, element: makeElement(`region-${options.id}`), remove() {} };
       regionsPlugin.records.push(handle);
@@ -159,7 +174,7 @@ function buildSandbox() {
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
-  return { sandbox, elements };
+  return { sandbox, elements, regionsPlugin };
 }
 
 /* --- synthetic backend document ------------------------------------------- */
@@ -364,6 +379,45 @@ const REGION_F = {
   detail: { event_id: 'EVT-2', type: 'device_speech_end' },
 };
 
+/**
+ * A region whose served label *is* markup (Issue #119).
+ *
+ * The vendored Regions `setContent()` turns a string `content` into `textContent`, so
+ * the previously returned HTML string was displayed as the literal tag text. A served
+ * label that looks like markup must survive as inert text and must never be parsed
+ * into live HTML.
+ */
+const REGION_G = {
+  region_id: 'event:EVT-3',
+  track_id: 'event',
+  kind: 'event',
+  label: '<b>标签</b>&<i>斜体</i>',
+  start_ms: 41000.0,
+  end_ms: 41000.0,
+  start_sec: 41.0,
+  end_sec: 41.0,
+  role: null,
+  role_basis: null,
+  evidence_class: 'deterministic',
+  status: 'observed',
+  confidence: null,
+  uncertainty: null,
+  uncertain: false,
+  provisional: false,
+  envelope_of: null,
+  source: {
+    document: 'timeline.json',
+    document_id: 'timeline-synthetic',
+    processor: { name: 'synthetic-processor', version: '3.1.4' },
+    artifact_ref: 'ART-timeline',
+    evidence_ids: [],
+    event_ids: ['EVT-3'],
+    metric_ids: [],
+    turn_ids: [],
+  },
+  detail: { event_id: 'EVT-3', type: 'synthetic_markup_label' },
+};
+
 const DOCUMENT = {
   schema_version: '1.0.0',
   document_id: 'WORKBENCH-synthetic',
@@ -391,7 +445,7 @@ const DOCUMENT = {
     { track_id: 'metric', label: '指标证据', evidence_class: 'deterministic' },
     { track_id: 'finding', label: 'Findings', evidence_class: 'semantic' },
   ],
-  regions: [REGION_A, REGION_B, REGION_B_REVIEWED_UNKNOWN, REGION_C, REGION_D, REGION_E, REGION_F],
+  regions: [REGION_A, REGION_B, REGION_B_REVIEWED_UNKNOWN, REGION_C, REGION_D, REGION_E, REGION_F, REGION_G],
   metrics: [
     {
       metric_id: 'MET-1', name: 'first_speech_latency_ms', value: 432.75, unit: 'ms',
@@ -600,6 +654,23 @@ async function runServedDocumentChecks(path) {
       }
     }
     if (!documentRegions.length) return 'the served document published no region to check';
+    return true;
+  });
+
+  // Issue #119: on a document the Python backend actually produced, every drawn
+  // Region must still receive a DOM content node holding text, never an HTML string.
+  check('every served region draws a DOM content node carrying its label text', () => {
+    if (!documentRegions.length) return 'the served document published no region to check';
+    for (let index = 0; index < documentRegions.length; index += 1) {
+      const served = documentRegions[index];
+      const drawn = seen.regions[index];
+      if (!drawn) return `no drawn Region for ${served.region_id}`;
+      if (drawn.contentIsString) {
+        return `${served.region_id} was handed an HTML string instead of a DOM node`;
+      }
+      if (!drawn.contentIsElement) return `${served.region_id} content is not a DOM node`;
+      if (!drawn.content) return `${served.region_id} content node carries no label text`;
+    }
     return true;
   });
 
@@ -860,6 +931,19 @@ if (servedDocumentPath) {
       row: await vm.runInContext('window.WB.selectEvidence(__partial)', sandbox),
       evidence: elements.get('wb-evidence').innerHTML,
     };
+    // The Region click path must survive the content change: fire the renderer's own
+    // `region-clicked` handler (registered on the stand-in plugin) against the plugin's
+    // own region handle and record where the player was asked to seek.
+    const clickServed = DOCUMENT.regions.find(region => region.region_id === 'event:EVT-3');
+    const clickHandle = built.regionsPlugin.records.find(record => record.id === 'event:EVT-3');
+    const clickHandler = built.regionsPlugin.handlers['region-clicked'];
+    const seeksBeforeClick = seen.seeks.length;
+    if (typeof clickHandler === 'function' && clickHandle) clickHandler(clickHandle);
+    confirmed.click = {
+      registered: typeof clickHandler === 'function',
+      expected: clickServed ? clickServed.start_sec : null,
+      seeks: seen.seeks.slice(seeksBeforeClick),
+    };
     await vm.runInContext('window.WB.mount(__hostProvisional)', sandbox);
     provisional.regions = seen.regions.slice(confirmed.regions.length);
   } catch (error) {
@@ -894,6 +978,56 @@ if (servedDocumentPath) {
       if (region.drag !== false || region.resize !== false) {
         return 'regions must not be draggable or resizable (no local evidence editing)';
       }
+    }
+    return true;
+  });
+
+  // Issue #119: the vendored Regions `setContent()` assigns a string to
+  // `textContent`. Handing it the old HTML string therefore printed the tag itself on
+  // the waveform. The renderer must pass a DOM element whose text is the label.
+  check('every Region content is a DOM node, never an HTML string', () => {
+    for (let index = 0; index < DOCUMENT.regions.length; index += 1) {
+      const served = DOCUMENT.regions[index];
+      const region = confirmed.regions[index];
+      if (!region) return `no rendered Region for ${served.region_id}`;
+      if (region.contentIsString) {
+        return `${served.region_id} was handed a string; the vendored setContent() assigns `
+          + 'a string to textContent, so any markup in it is displayed literally';
+      }
+      if (!region.contentIsElement) return `${served.region_id} content is not a DOM node`;
+      if (typeof region.content !== 'string' || !region.content) {
+        return `${served.region_id} content node carries no readable text`;
+      }
+      if (!region.contentClassName.startsWith('wb-region-tag wb-region-tag-')) {
+        return `${served.region_id} content node lost its label class: '${region.contentClassName}'`;
+      }
+    }
+    return true;
+  });
+
+  check('a served label that looks like markup stays inert text', () => {
+    const index = DOCUMENT.regions.findIndex(region => region.region_id === 'event:EVT-3');
+    const served = DOCUMENT.regions[index];
+    const region = confirmed.regions[index];
+    if (!region) return 'the markup-label Region was not rendered';
+    if (region.contentIsString) return 'a markup label was handed over as a string';
+    if (region.content !== served.label) {
+      return `the markup label rendered as ${JSON.stringify(region.content)} `
+        + `instead of the served text ${JSON.stringify(served.label)}`;
+    }
+    if (!region.content.includes('<b>') || !region.content.includes('</b>')) {
+      return 'the served markup characters did not survive as literal text';
+    }
+    return true;
+  });
+
+  check('clicking a Region still seeks to its served start_sec exactly once', () => {
+    if (!confirmed.click) return 'the Region click probe did not run';
+    if (!confirmed.click.registered) return 'the renderer registered no region-clicked handler';
+    if (confirmed.click.expected === null) return 'the clicked Region is missing from the document';
+    if (confirmed.click.seeks.length !== 1 || confirmed.click.seeks[0] !== confirmed.click.expected) {
+      return `a Region click seeked ${JSON.stringify(confirmed.click.seeks)} `
+        + `instead of ${confirmed.click.expected}`;
     }
     return true;
   });

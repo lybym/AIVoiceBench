@@ -1,5 +1,14 @@
 # Continuous work log
 
+## 2026-09-29 — Issue #119：Evidence Workbench 波形区域标签露出原始 HTML（PRD-F014、PRD-N001/N002/N006）
+
+- **故障边界。** Docker 浏览器界面打开授权真实 Run 的 Evidence Workbench 后，波形区域标签直接显示字面量 `<span class="wb-region-tag ...">`（该 Run 显示 266 个区域），页面文本与可访问性文本同样如此。这是浏览器展示缺陷，与后端投影、指标和区域坐标无关：区域数量、坐标、点击定位都正常。
+- **根因（代码层，不涉及 vendored 修改）。** `web/src/workbench.ts::wbRegionContent()` 返回 HTML 字符串，而 `aivoicebench/static/vendor/regions.min.js`（7.12.12，逐文件 SHA256 已由 `VENDOR.json` 记录）的 `setContent()` 对字符串分支执行 `textContent = t`：字符串被当作纯文本写入，标注因此整段可见。vendored 树按字节精确哈希固定，只修调用方。
+- **修复。** `wbRegionContent()` 改为返回一个自行创建的 `<span>`：沿用既有 `wb-region-tag wb-region-tag-unknown|provisional|track` 类名（`app.css` 的样式与截断语义不变），标签文本用 `textContent` 写入而非拼装 HTML，因此服务端证据里的 `<`、`>`、`&` 只能成为惰性文本，不可能变成活动 HTML。字符串分支由插件包一层带 padding 的 inline-block `<div>`，元素分支按原样追加，故同一 padding/display 在此显式保留，避免视觉回归。标签截断到 32 字符、unknown/uncertain/provisional 标注与配色逻辑均未改变；`drag:false`/`resize:false` 与 `region-clicked` → `selectEvidence()` 定位路径未改动。同步重建提交制品 `aivoicebench/static/workbench.js`（Docker 镜像实际服务该文件）。
+- **测试（先失败后通过）。** `scripts/verify-workbench-render.mjs` 的插件替身现按 vendored `setContent()` 契约区分字符串与 DOM 节点，并新增三项检查：每个区域内容必须是 DOM 节点而非 HTML 字符串且保留标签类名；看起来像标记的服务端标签（新增合成区域 `event:EVT-3`，label 为 `<b>标签</b>&<i>斜体</i>`）必须原样成为惰性文本；点击区域仍须 seek 到其持久化 `start_sec` 恰好一次。`--document` 模式同步新增"真实投影的每个区域都必须画出承载标签文本的 DOM 内容节点"。在旧制品上运行该 gate：退出码 1，`event:EVT-1 was handed a string …`（复现 Issue #119）；修复并重建后 33 项检查全绿。`tests/test_web_workbench.py` 新增制品级回归钉（`wbRegionContent` 函数体必须 `createElement('span')` + `textContent`，不得出现 `innerHTML` 或 `<span class="wb-region-tag` 字面量）并扩展 gate 检查名断言；把旧制品临时还原后实测 3 项失败（含真实 `build_workbench()` 投影模式的 `acoustic:SEG-1 was handed an HTML string instead of a DOM node`），恢复新制品后全绿。
+- **实际执行的检查。** `npm ci` → `npm run build`（tsc strict，退出 0）→ `npm run verify`（严格类型检查 + 构建新鲜度 + 主站 smoke + Workbench 渲染 gate，退出 0，33 checks / 8 synthetic regions）；`py -3.12 -m pytest tests/test_web_workbench.py tests/test_web_station_build.py -q` → 31 passed（`VT_REQUIRE_WEB_BUILD=1`，无跳过）；`tests/test_workbench.py` → 57 passed。本机 Python 3.12 原本缺 `fastapi`/`python-multipart`，按 `requirements-api.txt` 约束就地安装后才可运行上述 Python 套件；这属于本机环境补齐，不改仓库依赖。
+- **未验证边界（不升级为完成）。** 本 PR 为 **software_verified**：Node gate 用 DOM stub + 插件替身执行渲染器自身代码，不能证明真实波形像素、真实 Regions 插件渲染、真实 seek 与屏幕阅读器文本。真实 Docker 镜像 + 浏览器窗口的视觉与可访问性复核仍属 Issue #85 / 容器验收路径，本条目不声明 browser_verified 或 real_recording_verified；未提交任何私有录音、转写或 Run 标识。
+
 ## 2026-09-29 — Issue #117 后续：按维度收紧 Judge 生成契约
 
 - **真实重验反馈。** #117 首批 JSON Object 修复合入后，同一授权录音的新 AnalysisRevision 已产生合格 Judge 观测与安全弃权；仍有一部分合法 JSON 因锚点引用形状或 observed 维度字段缺失被严格解析器拒绝。完整样本标识、派生数量和原始响应仅保存在 Git 外，未并入 PR #116。
