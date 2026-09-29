@@ -512,13 +512,13 @@ class MockLLMProvider:
 
 
 PROMPT_VERSIONS = {
-    'meaningful_response': 'meaningful-v1.1.1',
-    'feedback_detection': 'feedback-v1.1.1',
-    'intent': 'intent-v1.0.1',
-    'conversation_quality': 'quality-v1.0.1',
-    'finding_candidate': 'finding-v1.0.1',
-    'semantic_response': 'semantic-response-v1.0.1',
-    'barge_in_compliance': 'barge-in-compliance-v1.0.1',
+    'meaningful_response': 'meaningful-v1.1.2',
+    'feedback_detection': 'feedback-v1.1.2',
+    'intent': 'intent-v1.0.2',
+    'conversation_quality': 'quality-v1.0.2',
+    'finding_candidate': 'finding-v1.0.2',
+    'semantic_response': 'semantic-response-v1.0.2',
+    'barge_in_compliance': 'barge-in-compliance-v1.0.2',
 }
 
 #: Dimensions whose timing output is a *selection* from measured anchors. These
@@ -530,8 +530,10 @@ SYSTEM_PROMPTS = {
         'You are an AI voice evaluation judge. Given a device response transcript '
         'and the measured boundaries that exist inside this turn, select the anchor '
         'whose boundary is the first point where meaningful content begins. Filler '
-        'words (嗯, 啊, 好的, 让我看看) are NOT meaningful. Return "anchor_refs" with '
-        'role "meaningful_start" and the chosen anchor_id. Never return milliseconds '
+        'words (嗯, 啊, 好的, 让我看看) are NOT meaningful. For an observed '
+        'result, return "anchor_refs" as an array containing exactly one object '
+        'with "role": "meaningful_start" and "anchor_id" set to a supplied '
+        'measured anchor ID. Never return milliseconds '
         'and never name a boundary that was not supplied. Return status "observed" '
         'only when anchor_refs includes exactly one usable "meaningful_start" anchor; '
         'otherwise abstain.'
@@ -539,8 +541,10 @@ SYSTEM_PROMPTS = {
     'feedback_detection': (
         'You are an AI voice evaluation judge. Detect non-speech feedback at the '
         'start of a device response. Classify as: filler, ack, thinking_cue, '
-        'non_speech_tone, or other. Select two supplied anchors with roles '
-        '"feedback_start" and "feedback_end". Return status "observed" only '
+        'non_speech_tone, or other. For an observed result, return "anchor_refs" '
+        'as an array of exactly two objects, each with "role" and "anchor_id": '
+        'one role "feedback_start" and one role "feedback_end", with distinct '
+        'supplied measured anchor IDs. Return status "observed" only '
         'when feedback_type is one of filler, ack, thinking_cue, non_speech_tone, '
         'or other and both distinct measured anchors form a nonempty interval. '
         'Otherwise abstain. Never return milliseconds.'
@@ -549,13 +553,16 @@ SYSTEM_PROMPTS = {
         'You are an AI voice evaluation judge. Classify the user intent from '
         'their speech transcript. Use a concise label (e.g., weather_query, '
         'time_query, media_playback, device_setting, reasoning_request). Return '
-        'status "observed" only with a nonempty string "intent_label"; otherwise abstain.'
+        'status "observed" only with a separate nonempty string "intent_label" '
+        'field containing the classified label, even when "decision" already '
+        'contains that label; otherwise abstain. Do not return anchor_refs.'
     ),
     'conversation_quality': (
         'You are an AI voice evaluation judge. Assess overall conversation '
         'quality from the provided metrics and events. Return a score 0-1 '
-        'and a decision: acceptable, marginal, or poor. The numeric "score", '
-        'when supplied, must be between 0 and 1.'
+        'and a decision: acceptable, marginal, or poor. An observed result must '
+        'include a numeric "score" between 0 and 1; if a score cannot be '
+        'supported, return insufficient_evidence. Do not return anchor_refs.'
     ),
     'finding_candidate': (
         'You are an AI voice evaluation judge. Based on metrics and events, '
@@ -599,8 +606,12 @@ JUDGE_JSON_CONTRACT = (
     'observations cannot support a judgment, use "insufficient_evidence" with a '
     'specific reason and a nonempty decision label such as "unknown"; do not '
     'guess or fill missing evidence. An observed or low_confidence result must '
-    'cite supplied evidence_refs, event_refs, or valid measured anchor_refs; '
-    'never invent IDs or times. For semantic_response and barge_in_compliance, '
+    'cite supplied evidence_refs or event_refs as arrays of ID strings; only '
+    'meaningful_response and feedback_detection may use anchor_refs. For those '
+    'two dimensions, anchor_refs must be an array of objects with exactly '
+    '"role" and "anchor_id" keys, never an array of strings and never copied '
+    'timing fields. For every other dimension, omit anchor_refs entirely. '
+    'Never invent IDs or times. For semantic_response and barge_in_compliance, '
     'an observed verdict also needs a boolean "semantic_decision". Include '
     'dimension-specific fields only when supported by the supplied context.'
 )

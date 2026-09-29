@@ -18,6 +18,7 @@ model call or a hardware measurement.
 import copy
 import json
 import unittest
+from unittest.mock import Mock, patch
 
 from aivoicebench.llm import LLMJudge, MockLLMProvider, PROMPT_VERSIONS, SYSTEM_PROMPTS
 from aivoicebench.llm_provider import OpenAICompatibleProvider
@@ -101,6 +102,285 @@ class ProviderOutputEnvelopeTests(unittest.TestCase):
                 self.assertEqual(invocation.raw_response, raw_text)
                 self.assertEqual(result['status'], 'insufficient_evidence')
                 self.assertEqual(result['decision'], 'unknown')
+
+    def test_empty_envelope_text_and_out_of_range_numbers_still_fail_closed(self):
+        base = {'decision': 'cited', 'reason': 'Synthetic citation',
+                'status': 'observed', 'confidence': 0.8, 'evidence_refs': ['EVD-1']}
+        cases = (
+            ('semantic_response', {'decision': ''}),
+            ('semantic_response', {'reason': '  '}),
+            ('semantic_response', {'status': ''}),
+            ('semantic_response', {'confidence': -0.1}),
+            ('semantic_response', {'confidence': 1.1}),
+            ('conversation_quality', {'score': -0.1}),
+            ('conversation_quality', {'score': 1.1}),
+        )
+        for dimension, changes in cases:
+            with self.subTest(dimension=dimension, changes=changes):
+                response = dict(base, **changes)
+                if dimension == 'semantic_response':
+                    response['semantic_decision'] = True
+                raw = json.dumps(response)
+                self.provider._call_api = lambda *_args, **_kwargs: raw
+                result, invocation = self.provider.complete(
+                    SYSTEM_PROMPTS[dimension], '{}', dimension, self.context)
+                self.assertEqual(invocation.status, 'failed')
+                self.assertEqual(invocation.failure_code, 'invalid_output')
+                self.assertEqual(invocation.raw_response, raw)
+                self.assertEqual(result['status'], 'insufficient_evidence')
+
+
+class JudgeResponseFormatRequestTests(unittest.TestCase):
+    """Inspect the actual Chat Completions request sent for each Judge dimension."""
+
+    @staticmethod
+    def request_format(dimension, *, model='qwen3.8-flash',
+                       endpoint='https://dashscope.aliyuncs.com/compatible-mode/v1'):
+        provider = OpenAICompatibleProvider(
+            'aliyun', endpoint, model, api_key='fixture-only')
+        raw = json.dumps({'decision': 'unknown', 'reason': 'Synthetic evidence is insufficient',
+                          'status': 'insufficient_evidence', 'confidence': 0.1})
+        with patch('requests.post') as post:
+            post.return_value = Mock()
+            post.return_value.json.return_value = {
+                'choices': [{'message': {'content': raw}}]}
+            result, invocation = provider.complete(
+                SYSTEM_PROMPTS[dimension], '{}', dimension, {})
+            assert invocation.status == 'success', result
+            assert post.call_count == 1
+            return post.call_args.kwargs['json']['response_format']
+
+    def test_verified_bailian_model_sends_strict_dimension_schema(self):
+        envelope = {'decision', 'reason', 'status', 'confidence',
+                    'evidence_refs', 'event_refs'}
+        dimension_fields = {
+            'meaningful_response': {'anchor_refs'},
+            'feedback_detection': {'anchor_refs', 'feedback_type'},
+            'intent': {'intent_label'},
+            'conversation_quality': {'score'},
+            'finding_candidate': {'finding_severity', 'suspected_layer',
+                                  'attribution_confidence', 'requires_log_verification'},
+            'semantic_response': {'semantic_decision'},
+            'barge_in_compliance': {'semantic_decision'},
+        }
+        for dimension, extra in dimension_fields.items():
+            with self.subTest(dimension=dimension):
+                response_format = self.request_format(dimension)
+                self.assertEqual(response_format['type'], 'json_schema')
+                self.assertTrue(response_format['json_schema']['strict'])
+                schema = response_format['json_schema']['schema']
+                self.assertEqual(schema['type'], 'object')
+                self.assertIs(schema['additionalProperties'], False)
+                self.assertEqual(set(schema['properties']), envelope | extra)
+                optional = ({'semantic_decision'} if dimension in (
+                    'semantic_response', 'barge_in_compliance') else set())
+                self.assertEqual(set(schema['required']), (envelope | extra) - optional)
+                self.assertEqual(schema['properties']['status']['enum'],
+                                 ['observed', 'low_confidence', 'insufficient_evidence'])
+                self.assertEqual(schema['properties']['confidence'], {'type': 'number'})
+        self.assertEqual(self.request_format(
+            'intent', model='qwen3.8-flash-2026-09-01')['type'], 'json_schema')
+
+    def test_anchor_schema_allows_only_role_and_supplied_id_fields(self):
+        for dimension, roles in (
+                ('meaningful_response', {'meaningful_start'}),
+                ('feedback_detection', {'feedback_start', 'feedback_end'})):
+            with self.subTest(dimension=dimension):
+                schema = self.request_format(dimension)['json_schema']['schema']
+                selection = schema['properties']['anchor_refs']
+                self.assertEqual(selection['type'], 'array')
+                self.assertEqual(selection['items']['type'], 'object')
+                self.assertIs(selection['items']['additionalProperties'], False)
+                self.assertEqual(set(selection['items']['properties']),
+                                 {'role', 'anchor_id'})
+                self.assertEqual(set(selection['items']['required']),
+                                 {'role', 'anchor_id'})
+                self.assertEqual(set(selection['items']['properties']['role']['enum']),
+                                 roles)
+        for dimension in ('intent', 'conversation_quality', 'finding_candidate',
+                          'semantic_response', 'barge_in_compliance'):
+            with self.subTest(dimension=dimension):
+                schema = self.request_format(dimension)['json_schema']['schema']
+                self.assertNotIn('anchor_refs', schema['properties'])
+
+    def test_observed_dimension_fields_have_constrained_schema_types(self):
+        schemas = {dimension: self.request_format(dimension)['json_schema']['schema']
+                   for dimension in ('intent', 'conversation_quality',
+                                     'feedback_detection', 'finding_candidate',
+                                     'semantic_response')}
+        self.assertEqual(schemas['intent']['properties']['intent_label']['type'],
+                         ['string', 'null'])
+        score = schemas['conversation_quality']['properties']['score']
+        self.assertEqual(score, {'type': ['number', 'null']})
+        self.assertIn('ack', schemas['feedback_detection']['properties']['feedback_type']['enum'])
+        finding = schemas['finding_candidate']['properties']
+        self.assertIn('high', finding['finding_severity']['enum'])
+        self.assertIn('llm', finding['suspected_layer']['enum'])
+        self.assertEqual(finding['attribution_confidence']['type'], ['number', 'null'])
+        self.assertEqual(finding['requires_log_verification']['type'], 'boolean')
+        semantic = schemas['semantic_response']
+        self.assertEqual(semantic['properties']['semantic_decision']['type'], 'boolean')
+        self.assertNotIn('semantic_decision', semantic['required'])
+        self.assertIs(semantic['additionalProperties'], False)
+
+    def test_other_compatible_models_keep_json_object_request_mode(self):
+        cases = (
+            ('qwen-plus', 'https://dashscope.aliyuncs.com/compatible-mode/v1'),
+            ('qwen3.8-flash', 'https://example.invalid/compatible-mode/v1'),
+        )
+        for model, endpoint in cases:
+            with self.subTest(model=model, endpoint=endpoint):
+                self.assertEqual(self.request_format(
+                    'semantic_response', model=model, endpoint=endpoint),
+                    {'type': 'json_object'})
+
+
+class SyntheticProviderJudgePathTests(unittest.TestCase):
+    """Provider-shaped JSON must survive parsing, Judge grounding and artifact validation."""
+
+    def setUp(self):
+        self.timeline = dialogue_timeline()
+        self.turns = turns_document()
+        self.turn = self.turns['turns'][0]
+        self.provider = OpenAICompatibleProvider(
+            'fixture', 'https://example.invalid', 'fixture', api_key='fixture-only')
+
+    def judge_raw(self, dimension, raw_text, *, role=None):
+        self.provider._call_api = lambda *_args, **_kwargs: raw_text
+        judge = LLMJudge(self.provider)
+        turn = self.turn if role else None
+        result = judge._judge(
+            dimension, turn, self.turn.get('response_id') if turn else None,
+            {'text': 'synthetic response', 'tester_text': 'synthetic request',
+             'metrics': [], 'events': self.timeline['events']},
+            run_id=RUN_ID, timeline=self.timeline, role=role,
+        )
+        document = judge.judge_document([result], run_id=RUN_ID)
+        self.assertEqual(judge_document_errors(document, self.timeline, self.turns), [])
+        return result, document['invocations'][0]
+
+    def test_role_and_id_anchor_selection_validates_through_full_judge_path(self):
+        device_anchor = next(anchor for anchor in turn_anchors(
+            self.turn, self.timeline, role='device') if anchor['usable'])
+        raw = json.dumps({
+            'decision': 'meaningful_content_located',
+            'reason': 'The supplied response starts with content at this boundary',
+            'status': 'observed', 'confidence': 0.8,
+            'anchor_refs': [{'role': 'meaningful_start',
+                             'anchor_id': device_anchor['anchor_id']}],
+        })
+
+        result, invocation = self.judge_raw('meaningful_response', raw, role='device')
+
+        self.assertEqual(invocation['status'], 'success')
+        self.assertEqual(invocation['raw_response'], raw)
+        self.assertEqual(result['status'], 'observed')
+        self.assertEqual(result['meaningful_response_start_ms'], device_anchor['start_ms'])
+        self.assertEqual(result['anchor_refs'][0]['anchor_id'], device_anchor['anchor_id'])
+        self.assertTrue(result['evidence_refs'])
+
+    def test_bad_anchor_shapes_fail_closed_and_preserve_raw_text(self):
+        device_anchor = next(anchor for anchor in turn_anchors(
+            self.turn, self.timeline, role='device') if anchor['usable'])
+        base = {'decision': 'meaningful_content_located', 'reason': 'Selected boundary',
+                'status': 'observed', 'confidence': 0.8}
+        selections = (
+            [device_anchor['anchor_id']],
+            [{'role': 'meaningful_start', 'anchor_id': device_anchor['anchor_id'],
+              'start_ms': device_anchor['start_ms'],
+              'end_ms': device_anchor['end_ms']}],
+            [{'role': 'meaningful_start', 'anchor_id': device_anchor['anchor_id'],
+              'source': device_anchor['source']}],
+        )
+        for selection in selections:
+            with self.subTest(selection=selection):
+                raw = json.dumps(dict(base, anchor_refs=selection))
+                result, invocation = self.judge_raw(
+                    'meaningful_response', raw, role='device')
+                self.assertEqual(invocation['status'], 'failed')
+                self.assertEqual(invocation['failure_code'], 'invalid_output')
+                self.assertEqual(invocation['raw_response'], raw)
+                self.assertEqual(result['status'], 'insufficient_evidence')
+                self.assertEqual(result['decision'], 'unknown')
+
+    def test_observed_intent_and_quality_require_their_result_fields(self):
+        cases = (
+            ('intent', 'tester', {'decision': 'classified', 'event_refs': [
+                next(anchor['anchor_id'] for anchor in turn_anchors(
+                    self.turn, self.timeline, role='tester') if anchor['usable'])]}),
+            ('conversation_quality', None, {'decision': 'acceptable', 'event_refs': [
+                self.timeline['events'][0]['event_id']]}),
+        )
+        for dimension, role, extras in cases:
+            with self.subTest(dimension=dimension):
+                raw = json.dumps(dict(
+                    {'reason': 'A cited synthetic event supports this judgment',
+                     'status': 'observed', 'confidence': 0.8}, **extras))
+                result, invocation = self.judge_raw(dimension, raw, role=role)
+                self.assertEqual(invocation['status'], 'failed')
+                self.assertEqual(invocation['failure_code'], 'invalid_output')
+                self.assertEqual(invocation['raw_response'], raw)
+                self.assertEqual(result['status'], 'insufficient_evidence')
+
+    def test_cited_low_confidence_semantic_result_without_boolean_abstains(self):
+        evidence_id = self.timeline['evidence'][0]['evidence_id']
+        raw = json.dumps({
+            'decision': 'uncertain',
+            'reason': 'The supplied transcript supports only an uncertain interpretation',
+            'status': 'low_confidence', 'confidence': 0.3,
+            'evidence_refs': [evidence_id],
+        })
+
+        result, invocation = self.judge_raw('semantic_response', raw)
+
+        self.assertEqual(invocation['status'], 'success')
+        self.assertEqual(invocation['raw_response'], raw)
+        self.assertEqual(result['status'], 'low_confidence')
+        self.assertIsNone(result['semantic_decision'])
+        self.assertTrue(result['abstention_reason'])
+
+    @patch('requests.post')
+    def test_json_object_semantic_verdict_cannot_substitute_anchor_for_citation(self, post):
+        anchor = next(item for item in turn_anchors(self.turn, self.timeline)
+                      if item['usable'])
+        evidence_id = self.timeline['evidence'][0]['evidence_id']
+        base = {'decision': 'semantic_decision', 'reason': 'Synthetic cited judgment',
+                'status': 'observed', 'confidence': 0.8, 'semantic_decision': True}
+        cases = (
+            (dict(base, anchor_refs=[{'role': 'meaningful_start',
+                                      'anchor_id': anchor['anchor_id']}]), False),
+            (dict(base, evidence_refs=[evidence_id]), True),
+        )
+        for response, accepted in cases:
+            with self.subTest(accepted=accepted):
+                raw = json.dumps(response)
+                post.return_value = Mock()
+                post.return_value.json.return_value = {
+                    'choices': [{'message': {'content': raw}}]}
+                judge = LLMJudge(self.provider)
+                result = judge._judge(
+                    'semantic_response', self.turn, self.turn.get('response_id'),
+                    {'tester_text': 'synthetic request',
+                     'device_text': 'synthetic response'},
+                    run_id=RUN_ID, timeline=self.timeline)
+                document = judge.judge_document([result], run_id=RUN_ID)
+                self.assertEqual(post.call_args.kwargs['json']['response_format'],
+                                 {'type': 'json_object'})
+                invocation = document['invocations'][0]
+                self.assertEqual(invocation['raw_response'], raw)
+                self.assertEqual(judge_document_errors(
+                    document, self.timeline, self.turns), [])
+                if accepted:
+                    self.assertEqual(invocation['status'], 'success')
+                    self.assertEqual(result['status'], 'observed')
+                    self.assertIs(result['semantic_decision'], True)
+                    self.assertIn(evidence_id, result['evidence_refs'])
+                else:
+                    self.assertEqual(invocation['status'], 'failed')
+                    self.assertEqual(invocation['failure_code'], 'invalid_output')
+                    self.assertEqual(result['status'], 'insufficient_evidence')
+                    self.assertIsNone(result['semantic_decision'])
+                    self.assertEqual(result['decision'], 'unknown')
 
 
 class ObservedDimensionDocumentTests(unittest.TestCase):
