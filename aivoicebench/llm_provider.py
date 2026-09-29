@@ -13,6 +13,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from .llm import LLMInvocation, PROMPT_VERSIONS, SYSTEM_PROMPTS
 
@@ -76,7 +77,7 @@ class OpenAICompatibleProvider:
             self._check_key()
             raw_text = self._call_api(
                 system_prompt, user_prompt,
-                response_format={"type": "json_object"},
+                response_format=self._judge_response_format(dimension),
             )
             result = self._parse_response(raw_text, dimension, context)
         except Exception as error:
@@ -130,6 +131,96 @@ class OpenAICompatibleProvider:
         inv.input_chars = len(user_prompt)
         inv.output_chars = len(json.dumps(result, ensure_ascii=False))
         return result, inv
+
+    def _judge_response_format(self, dimension):
+        """Use a strict schema only for the verified Bailian Qwen model family.
+
+        Other OpenAI-compatible endpoints keep JSON Object mode. A request or
+        output failure is still reported by ``complete``; there is no retry or
+        silent downgrade after a schema request fails.
+        """
+        endpoint = urlsplit(self.base_url)
+        model = self.model.lower()
+        supported_model = model == 'qwen3.8-flash' or model.startswith('qwen3.8-flash-')
+        bailian_endpoint = ((endpoint.hostname or '').endswith('.aliyuncs.com')
+                            and endpoint.path.rstrip('/').endswith('/compatible-mode/v1'))
+        if not (supported_model and bailian_endpoint and dimension in SYSTEM_PROMPTS):
+            return {'type': 'json_object'}
+
+        properties = {
+            'decision': {'type': 'string'},
+            'reason': {'type': 'string'},
+            'status': {'type': 'string', 'enum': [
+                'observed', 'low_confidence', 'insufficient_evidence']},
+            'confidence': {'type': 'number'},
+            'evidence_refs': {'type': 'array', 'items': {'type': 'string'}},
+            'event_refs': {'type': 'array', 'items': {'type': 'string'}},
+        }
+        required = list(properties)
+        if dimension in ('meaningful_response', 'feedback_detection'):
+            roles = (['meaningful_start'] if dimension == 'meaningful_response'
+                     else ['feedback_start', 'feedback_end'])
+            properties['anchor_refs'] = {
+                'type': 'array',
+                'items': {
+                    'type': 'object',
+                    'properties': {
+                        'role': {'type': 'string', 'enum': roles},
+                        'anchor_id': {'type': 'string'},
+                    },
+                    'required': ['role', 'anchor_id'],
+                    'additionalProperties': False,
+                },
+            }
+            required.append('anchor_refs')
+        if dimension == 'feedback_detection':
+            properties['feedback_type'] = {
+                'type': ['string', 'null'],
+                'enum': ['filler', 'ack', 'thinking_cue', 'non_speech_tone', 'other', None],
+            }
+            required.append('feedback_type')
+        elif dimension == 'intent':
+            properties['intent_label'] = {'type': ['string', 'null']}
+            required.append('intent_label')
+        elif dimension == 'conversation_quality':
+            properties['score'] = {'type': ['number', 'null']}
+            required.append('score')
+        elif dimension == 'finding_candidate':
+            properties.update({
+                'finding_severity': {
+                    'type': ['string', 'null'],
+                    'enum': ['info', 'low', 'medium', 'high', 'critical', None],
+                },
+                'suspected_layer': {
+                    'type': ['string', 'null'],
+                    'enum': ['vad', 'endpoint', 'asr', 'aec', 'network', 'llm',
+                             'prompt', 'context', 'memory', 'agent', 'tool', 'tts',
+                             'safety', 'persona', 'unknown', None],
+                },
+                'attribution_confidence': {'type': ['number', 'null']},
+                'requires_log_verification': {'type': 'boolean'},
+            })
+            required.extend(('finding_severity', 'suspected_layer',
+                             'attribution_confidence', 'requires_log_verification'))
+        elif dimension in ('semantic_response', 'barge_in_compliance'):
+            # Omit the verdict when abstaining. The parser still requires a
+            # boolean for observed status and rejects an explicit null on
+            # low_confidence responses.
+            properties['semantic_decision'] = {'type': 'boolean'}
+
+        return {
+            'type': 'json_schema',
+            'json_schema': {
+                'name': f'judge_{dimension}',
+                'strict': True,
+                'schema': {
+                    'type': 'object',
+                    'properties': properties,
+                    'required': required,
+                    'additionalProperties': False,
+                },
+            },
+        }
 
     def _call_api(self, system_prompt, user_prompt, *, response_format=None):
         """Make the actual HTTP call to the OpenAI-compatible API."""
@@ -222,14 +313,17 @@ class OpenAICompatibleProvider:
             raise ValueError('Semantic timing requires verified anchor selection')
         allowed_anchors = {anchor.get('anchor_id') for anchor in context.get('anchors') or ()
                            if isinstance(anchor, dict)}
+        if (dimension not in ('meaningful_response', 'feedback_detection')
+                and 'anchor_refs' in parsed):
+            raise ValueError('Anchor selections are not valid for this dimension')
         selections = parsed.get('anchor_refs')
         if selections is not None and not isinstance(selections, list):
             raise ValueError('Invalid anchor selections')
         for selection in selections or ():
             if not isinstance(selection, dict) or selection.get('anchor_id') not in allowed_anchors:
                 raise ValueError('Anchor selection names an unmeasured boundary')
-            if any(key in selection for key in ('start_ms', 'end_ms')):
-                raise ValueError('Anchor selection must not carry model-authored timing')
+            if set(selection) != {'role', 'anchor_id'}:
+                raise ValueError('Anchor selection must contain only role and anchor_id')
         if parsed['status'] == 'observed':
             if dimension == 'conversation_quality' and parsed.get('score') is None:
                 raise ValueError('Observed conversation quality needs a score')
